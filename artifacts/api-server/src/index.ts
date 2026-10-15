@@ -1,5 +1,6 @@
 import app from "./app";
 import { logger } from "./lib/logger";
+import { shouldRunReconciliationSchedulers } from "./lib/reconciliation/backgroundSchedulerPolicy";
 import { runFleetAutoReminderSweep } from "./lib/fleet-wa-reminder";
 import {
   runKasScApprovedRuleBackfill,
@@ -103,6 +104,14 @@ if (fleetReminderTimer) {
   logger.info("Embedded Fleet reminder scheduler disabled; standalone Fleet owns reminder scheduling.");
 }
 
+const reconciliationSchedulersEnabled = shouldRunReconciliationSchedulers(
+  isDevelopmentEnvironment(),
+  process.env["DEV_RECONCILIATION_SCHEDULERS_ENABLED"],
+);
+if (!reconciliationSchedulersEnabled) {
+  logger.info("Background reconciliation schedulers disabled for DEV");
+}
+
 let kasScRuleBackfillRunning = false;
 const runKasScRuleBackfillTick = async () => {
   if (kasScRuleBackfillRunning) return;
@@ -123,11 +132,15 @@ const runKasScRuleBackfillTick = async () => {
   }
 };
 
-const kasScRuleBackfillTimer = setInterval(() => {
-  void runKasScRuleBackfillTick();
-}, 2 * 60 * 1000);
-kasScRuleBackfillTimer.unref();
-setTimeout(() => void runKasScRuleBackfillTick(), 20_000).unref();
+const kasScRuleBackfillTimer = reconciliationSchedulersEnabled
+  ? setInterval(() => {
+      void runKasScRuleBackfillTick();
+    }, 2 * 60 * 1000)
+  : null;
+if (kasScRuleBackfillTimer) {
+  kasScRuleBackfillTimer.unref();
+  setTimeout(() => void runKasScRuleBackfillTick(), 20_000).unref();
+}
 
 let qrisAutoCandidateRunning = false;
 const runQrisAutoCandidateTick = async () => {
@@ -154,11 +167,15 @@ const qrisAutoCandidateIntervalMs = Math.max(
   30_000,
   Number(process.env["QRIS_AUTO_CANDIDATE_INTERVAL_MS"] ?? 60_000) || 60_000,
 );
-const qrisAutoCandidateTimer = setInterval(() => {
-  void runQrisAutoCandidateTick();
-}, qrisAutoCandidateIntervalMs);
-qrisAutoCandidateTimer.unref();
-setTimeout(() => void runQrisAutoCandidateTick(), 30_000).unref();
+const qrisAutoCandidateTimer = reconciliationSchedulersEnabled
+  ? setInterval(() => {
+      void runQrisAutoCandidateTick();
+    }, qrisAutoCandidateIntervalMs)
+  : null;
+if (qrisAutoCandidateTimer) {
+  qrisAutoCandidateTimer.unref();
+  setTimeout(() => void runQrisAutoCandidateTick(), 30_000).unref();
+}
 
 server.on("error", (err) => {
   logger.error({ err, port, host }, "Error listening on host/port");
@@ -168,8 +185,8 @@ server.on("error", (err) => {
 
 const stopBackgroundTimers = () => {
   if (fleetReminderTimer) clearInterval(fleetReminderTimer);
-  clearInterval(qrisAutoCandidateTimer);
-  clearInterval(kasScRuleBackfillTimer);
+  if (qrisAutoCandidateTimer) clearInterval(qrisAutoCandidateTimer);
+  if (kasScRuleBackfillTimer) clearInterval(kasScRuleBackfillTimer);
   if (startupInitializationTimer) {
     clearTimeout(startupInitializationTimer);
     startupInitializationTimer = null;
