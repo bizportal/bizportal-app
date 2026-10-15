@@ -1,0 +1,29 @@
+{
+  "name": "workspace",
+  "version": "0.0.0",
+  "license": "MIT",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*|npm/*) ;; *) echo \"Use pnpm, or npm only as the Hostinger bootstrap package manager\" >&2; exit 1 ;; esac'",
+    "build": "node ./scripts/hostinger-build.mjs",
+    "build:workspace": "pnpm run typecheck && pnpm run test:auth:production && pnpm -r --if-present run build && node ./scripts/prepare-hostinger.mjs",
+    "hostinger:build": "npm run build",
+    "start": "node --max-http-header-size=65536 --enable-source-maps ./index.js",
+    "typecheck:libs": "tsc --build --force",
+    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck",
+    "test:auth:production": "pnpm --filter @workspace/api-server exec vitest run src/__tests__/production-auth-startup-contract.test.ts",
+    "test:auth:integration": "pnpm --filter @workspace/api-server exec vitest run src/routes/local-production-auth.test.ts src/routes/dev-auth.test.ts"
+  },
+  "private": true,
+  "dependencies": {
+    "@google-cloud/secret-manager": "^7.1.0",
+    "@replit/connectors-sdk": "^0.4.3",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "prettier": "^3.9.6",
+    "typescript": "~5.9.3"
+  }
+}

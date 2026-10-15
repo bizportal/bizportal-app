@@ -1,0 +1,1061 @@
+import crypto from "node:crypto";
+import { pool } from "@workspace/db";
+import {
+  readSpreadsheetValues,
+  spreadsheetCellRange,
+  writeSpreadsheetValues,
+  type SpreadsheetValueUpdate,
+} from "./google-sheets";
+
+type SheetConfig = {
+  id: number;
+  company_id: number | null;
+  sheet_id: string;
+  tab_name: string;
+  label: string;
+  bank_account_id: number | null;
+  bank_account_number: string | null;
+  account_type: string | null;
+};
+
+function assertProductionSheetSourceAllowed(config: Pick<SheetConfig, "tab_name">): void {
+  const appEnv = process.env.APP_ENV?.trim().toLowerCase();
+  const tabName = config.tab_name.trim().toLowerCase();
+  if (appEnv === "production" && tabName === "mutasidev") {
+    throw new Error("Tab mutasidev adalah sumber DEV dan tidak boleh dibaca dari production.");
+  }
+}
+
+type ParsedMutation = {
+  rowNumber: number;
+  transactionDate: string;
+  description: string;
+  debit: number;
+  credit: number;
+  amount: number;
+  direction: "IN" | "OUT";
+  bank: string | null;
+  mutationKey: string | null;
+  sheetStatus: string | null;
+};
+
+type ExistingMutation = {
+  id: number;
+  mutation_key: string | null;
+  description: string | null;
+  canonical_key: string | null;
+  status: string | null;
+  reconciliation_status: string | null;
+  journal_entry_id: number | null;
+  match_score: number | null;
+  match_reason: string | null;
+  match_status: string | null;
+  match_result: string | null;
+  coa_code: string | null;
+  coa_name: string | null;
+};
+
+type SheetMutationMetadata = {
+  key: string;
+  status: string;
+  description: string | null;
+  coaCode: string | null;
+  coaName: string | null;
+  matchScore: number | null;
+  matchResult: string | null;
+  lastSync: string;
+};
+
+function normalizeDescription(value: string): string {
+  return value
+    .toUpperCase()
+    .replace(/\s+/g, " ")
+    .replace(/[^A-Z0-9 ]/g, "")
+    .trim();
+}
+
+function canonicalKey(
+  row: ParsedMutation,
+  companyId: number | null,
+  bankAccountId: number | null,
+): string {
+  const payload = [
+    companyId ?? 0,
+    bankAccountId ?? 0,
+    row.transactionDate,
+    Math.round(Math.abs(row.debit) * 100),
+    Math.round(Math.abs(row.credit) * 100),
+    normalizeDescription(row.description),
+  ].join("|");
+  return crypto.createHash("sha256").update(payload, "utf8").digest("hex");
+}
+
+function normalizeMutationKey(value: string): string | null {
+  const normalized = value.trim();
+  return normalized ? normalized : null;
+}
+
+export function parseAmount(value: string): number {
+  const cleaned = String(value ?? "").replace(/[^0-9.,-]/g, "").trim();
+  if (!cleaned) return 0;
+
+  const lastComma = cleaned.lastIndexOf(",");
+  const lastDot = cleaned.lastIndexOf(".");
+  let normalized = cleaned;
+
+  if (lastComma >= 0 && lastDot >= 0) {
+    const decimalSeparator = lastComma > lastDot ? "," : ".";
+    const decimalIndex = Math.max(lastComma, lastDot);
+    const fractionalDigits = cleaned.length - decimalIndex - 1;
+    if (fractionalDigits <= 2) {
+      const integerPart = cleaned.slice(0, decimalIndex).replace(/[.,]/g, "");
+      const fractionPart = cleaned.slice(decimalIndex + 1).replace(/[.,]/g, "");
+      normalized = `${integerPart}.${fractionPart}`;
+    } else {
+      normalized = cleaned.replace(/[.,]/g, "");
+    }
+  } else if (lastComma >= 0) {
+    const fractionalDigits = cleaned.length - lastComma - 1;
+    normalized = fractionalDigits === 1 || fractionalDigits === 2
+      ? cleaned.replace(",", ".")
+      : cleaned.replace(/,/g, "");
+  } else if (lastDot >= 0) {
+    const fractionalDigits = cleaned.length - lastDot - 1;
+    normalized = fractionalDigits === 3
+      ? cleaned.replace(/\./g, "")
+      : cleaned;
+  }
+
+  return Math.abs(Number.parseFloat(normalized) || 0);
+}
+
+const MONTHS: Record<string, number> = {
+  januari: 1, februari: 2, maret: 3, april: 4, mei: 5, juni: 6,
+  juli: 7, agustus: 8, september: 9, oktober: 10, november: 11, desember: 12,
+  jan: 1, feb: 2, mar: 3, apr: 4, jun: 6, jul: 7, agu: 8, ags: 8,
+  sep: 9, okt: 10, nov: 11, des: 12,
+};
+
+type SlashDateOrder = "MDY" | "DMY";
+
+function formatCalendarDate(year: number, month: number, day: number): string | null {
+  if (
+    !Number.isInteger(year)
+    || !Number.isInteger(month)
+    || !Number.isInteger(day)
+    || month < 1
+    || month > 12
+    || day < 1
+    || day > 31
+  ) {
+    return null;
+  }
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (
+    date.getUTCFullYear() !== year
+    || date.getUTCMonth() !== month - 1
+    || date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function inferSlashDateOrder(
+  rows: string[][],
+  dateColumn: number,
+  start: number,
+  fallbackOrder: SlashDateOrder = "MDY",
+): SlashDateOrder {
+  let sawDmyEvidence = false;
+  let sawMdyEvidence = false;
+  for (const row of rows.slice(start)) {
+    const match = String(row?.[dateColumn] ?? "").trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (!match) continue;
+    const first = Number(match[1]);
+    const second = Number(match[2]);
+    if (first > 12 && second >= 1 && second <= 12) sawDmyEvidence = true;
+    if (second > 12 && first >= 1 && first <= 12) sawMdyEvidence = true;
+  }
+  if (sawDmyEvidence && !sawMdyEvidence) return "DMY";
+  if (sawMdyEvidence && !sawDmyEvidence) return "MDY";
+  // Some cash-ledger Sheets contain a mixture of locale-formatted values
+  // (for example 25/09/2026 and 09/25/2026) plus ambiguous rows such as
+  // 01/10/2026. In that mixed case, use the account-type fallback instead
+  // of silently defaulting every ambiguous row to US month-first order.
+  return fallbackOrder;
+}
+
+function parseDate(raw: string, slashOrder: SlashDateOrder = "MDY"): string | null {
+  const value = raw.trim();
+  if (!value) return null;
+
+  const iso = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) {
+    return formatCalendarDate(Number(iso[1]), Number(iso[2]), Number(iso[3]));
+  }
+
+  const slash = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (slash) {
+    const first = Number(slash[1]);
+    const second = Number(slash[2]);
+    const year = Number(slash[3]);
+    const order =
+      first > 12 && second <= 12 ? "DMY"
+      : second > 12 && first <= 12 ? "MDY"
+      : slashOrder;
+    const month = order === "DMY" ? second : first;
+    const day = order === "DMY" ? first : second;
+    return formatCalendarDate(year, month, day);
+  }
+
+  const dmy = value.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+  if (dmy) {
+    return formatCalendarDate(Number(dmy[3]), Number(dmy[2]), Number(dmy[1]));
+  }
+
+  const textDate = value.match(/^(\d{1,2})[\s-]+([a-zA-Z]+)[\s-]+(\d{4})$/);
+  if (textDate) {
+    const [, day, monthName, year] = textDate;
+    const month = MONTHS[monthName.toLowerCase()];
+    if (month) return formatCalendarDate(Number(year), month, Number(day));
+  }
+
+  const serial = Number(value);
+  if (Number.isInteger(serial) && serial > 1000 && serial < 100000) {
+    const epoch = Date.UTC(1899, 11, 30);
+    const date = new Date(epoch + serial * 86_400_000);
+    if (!Number.isNaN(date.getTime())) return date.toISOString().slice(0, 10);
+  }
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
+}
+
+function findColumn(headers: string[], candidates: string[]): number {
+  const normalized = headers.map((header) => header.trim().toLowerCase());
+  for (const candidate of candidates) {
+    const exact = normalized.findIndex((header) => header === candidate);
+    if (exact >= 0) return exact;
+  }
+  for (const candidate of candidates) {
+    const partial = normalized.findIndex((header) => header.includes(candidate));
+    if (partial >= 0) return partial;
+  }
+  return -1;
+}
+
+function findMetadataColumn(headers: string[], candidates: string[]): number {
+  const normalized = headers.map((header) => header.trim().toLowerCase());
+  for (const candidate of candidates) {
+    const exact = normalized.findIndex((header) => header === candidate);
+    if (exact >= 0) return exact;
+  }
+  return -1;
+}
+
+function statusLabel(mutation: {
+  status: string | null;
+  reconciliation_status: string | null;
+}): string {
+  const reconciliationStatus = String(mutation.reconciliation_status ?? "").toLowerCase();
+  const status = String(mutation.status ?? "").toLowerCase();
+  if (reconciliationStatus === "reconciled") return "RECONCILED";
+  if (reconciliationStatus === "posted" || status === "posted") return "POSTED";
+  if (["approved", "approved_pending_posting"].includes(status)) return "APPROVED";
+  if (reconciliationStatus === "matched" || status === "matched") return "MATCHED";
+  if (["void", "voided"].includes(status)) return "VOID";
+  return "UNMATCHED";
+}
+
+function headerFlowDirection(header: string): "IN" | "OUT" | null {
+  const normalized = header.trim().toLowerCase().replace(/\s+/g, " ");
+  if (!normalized) return null;
+  if (
+    normalized.includes("masuk")
+    || normalized === "in"
+    || normalized.includes("incoming")
+  ) return "IN";
+  if (
+    normalized.includes("keluar")
+    || normalized === "out"
+    || normalized.includes("outgoing")
+  ) return "OUT";
+  return null;
+}
+
+function mutationDirection(
+  debit: number,
+  credit: number,
+  debitHeader: string,
+  creditHeader: string,
+  accountType: string | null,
+): "IN" | "OUT" {
+  const debitFlow = headerFlowDirection(debitHeader);
+  const creditFlow = headerFlowDirection(creditHeader);
+  const isCashLedger = accountType?.trim().toLowerCase() === "cash";
+
+  if (debit > 0 && credit <= 0) {
+    if (debitFlow) return debitFlow;
+    // Cash ledgers use accounting semantics: debit increases cash.
+    // Bank statements use statement semantics: debit is money out.
+    return isCashLedger ? "IN" : "OUT";
+  }
+  if (credit > 0 && debit <= 0) {
+    if (creditFlow) return creditFlow;
+    // Cash ledgers use accounting semantics: credit decreases cash.
+    // Bank statements use statement semantics: credit is money in.
+    return isCashLedger ? "OUT" : "IN";
+  }
+
+  // Ambiguous rows with both sides populated keep the explicit flow header
+  // if one exists; otherwise preserve the historical bank-statement fallback.
+  if (credit > 0 && creditFlow) return creditFlow;
+  if (debit > 0 && debitFlow) return debitFlow;
+  return isCashLedger ? (debit > 0 ? "IN" : "OUT") : (debit > 0 ? "OUT" : "IN");
+}
+
+function parseRows(rows: string[][], accountType: string | null = null): {
+  mutations: ParsedMutation[];
+  headers: string[];
+  keyColumn: number;
+  statusColumn: number;
+  descriptionColumn: number;
+  coaCodeColumn: number;
+  coaNameColumn: number;
+  matchScoreColumn: number;
+  matchResultColumn: number;
+  lastSyncColumn: number;
+  headerRow: number;
+} {
+  if (rows.length < 2) {
+    return {
+      mutations: [],
+      headers: rows[0] ?? [],
+      keyColumn: -1,
+      statusColumn: -1,
+      descriptionColumn: -1,
+      coaCodeColumn: -1,
+      coaNameColumn: -1,
+      matchScoreColumn: -1,
+      matchResultColumn: -1,
+      lastSyncColumn: -1,
+      headerRow: rows.length === 1 ? 1 : 0,
+    };
+  }
+  const headers = rows[0] ?? [];
+  let dateColumn = findColumn(headers, ["tanggal", "tgl", "date", "waktu", "time"]);
+  let descriptionColumn = findColumn(headers, [
+    "keterangan", "narasi", "description", "desc", "berita", "remark", "info",
+  ]);
+  let creditColumn = findColumn(headers, ["kredit", "credit", "masuk", "cr", "jumlah masuk"]);
+  let debitColumn = findColumn(headers, ["debit", "debet", "keluar", "db", "out", "jumlah keluar"]);
+  const bankColumn = findColumn(headers, ["bank", "rekening", "akun"]);
+  let keyColumn = findMetadataColumn(headers, [
+    "mutation_key",
+    "mutation key",
+    "mutation id",
+    "id mutasi",
+    "kunci mutasi",
+  ]);
+  let statusColumn = findMetadataColumn(headers, [
+    "status_recon",
+    "status recon",
+    "status rekonsiliasi",
+    "reconciliation status",
+    "status",
+  ]);
+  let coaCodeColumn = findMetadataColumn(headers, ["coa_code", "kode coa", "coa"]);
+  let coaNameColumn = findMetadataColumn(headers, ["nama_coa", "nama coa", "coa name"]);
+  let matchScoreColumn = findMetadataColumn(headers, ["match_score", "match score", "confidence score"]);
+  let matchResultColumn = findMetadataColumn(headers, ["match_result", "match result", "hasil match"]);
+  let lastSyncColumn = findMetadataColumn(headers, ["last_sync", "last sync", "last synced", "sync terakhir"]);
+  let start = 1;
+  let headerRow = 1;
+
+  if (dateColumn < 0 && descriptionColumn < 0 && creditColumn < 0 && debitColumn < 0) {
+    const firstData = rows.findIndex((row) => parseDate(String(row[0] ?? "")) !== null);
+    if (firstData >= 0) {
+      start = firstData;
+      headerRow = 0;
+      dateColumn = 0;
+      descriptionColumn = 1;
+      debitColumn = 2;
+      creditColumn = 3;
+      keyColumn = -1;
+      statusColumn = -1;
+      coaCodeColumn = -1;
+      coaNameColumn = -1;
+      matchScoreColumn = -1;
+      matchResultColumn = -1;
+      lastSyncColumn = -1;
+    }
+  }
+
+  const slashDateOrder = inferSlashDateOrder(
+    rows,
+    dateColumn,
+    start,
+    accountType?.trim().toLowerCase() === "cash" ? "DMY" : "MDY",
+  );
+  const result: ParsedMutation[] = [];
+  for (const [offset, row] of rows.slice(start).entries()) {
+    if (!row?.some((cell) => String(cell ?? "").trim())) continue;
+    const date = parseDate(String(row[dateColumn] ?? ""), slashDateOrder);
+    const debit = parseAmount(String(row[debitColumn] ?? ""));
+    const credit = parseAmount(String(row[creditColumn] ?? ""));
+    const amount = credit || debit;
+    if (!date || amount <= 0) continue;
+    result.push({
+      rowNumber: start + offset + 1,
+      transactionDate: date,
+      description: String(row[descriptionColumn] ?? "").trim(),
+      debit,
+      credit,
+      amount,
+      direction: mutationDirection(
+        debit,
+        credit,
+        debitColumn >= 0 ? String(headers[debitColumn] ?? "") : "",
+        creditColumn >= 0 ? String(headers[creditColumn] ?? "") : "",
+        accountType,
+      ),
+      bank: bankColumn >= 0 ? String(row[bankColumn] ?? "").trim() || null : null,
+      mutationKey:
+        keyColumn >= 0 ? normalizeMutationKey(String(row[keyColumn] ?? "")) : null,
+      sheetStatus:
+        statusColumn >= 0 ? String(row[statusColumn] ?? "").trim() || null : null,
+    });
+  }
+  return {
+    mutations: result,
+    headers,
+    keyColumn,
+    statusColumn,
+    descriptionColumn,
+    coaCodeColumn,
+    coaNameColumn,
+    matchScoreColumn,
+    matchResultColumn,
+    lastSyncColumn,
+    headerRow,
+  };
+}
+
+function addSheetStatusUpdates(
+  config: SheetConfig,
+  parsed: ReturnType<typeof parseRows>,
+  mutationStatuses: Map<number, SheetMutationMetadata>,
+): SpreadsheetValueUpdate[] {
+  if (parsed.mutations.length === 0) return [];
+
+  let keyColumn = parsed.keyColumn;
+  let statusColumn = parsed.statusColumn;
+  const updates: SpreadsheetValueUpdate[] = [];
+  let nextColumn = parsed.headers.length;
+
+  if (keyColumn < 0 && parsed.headerRow > 0) {
+    keyColumn = nextColumn++;
+    updates.push({
+      range: spreadsheetCellRange(config.tab_name, keyColumn, parsed.headerRow),
+      values: [["mutation_key"]],
+    });
+  }
+  if (statusColumn < 0 && parsed.headerRow > 0) {
+    statusColumn = nextColumn++;
+    updates.push({
+      range: spreadsheetCellRange(config.tab_name, statusColumn, parsed.headerRow),
+      values: [["status_recon"]],
+    });
+  }
+  const metadataColumns = [
+    ["coaCodeColumn", "coa"],
+    ["coaNameColumn", "nama_coa"],
+    ["matchScoreColumn", "match_score"],
+    ["matchResultColumn", "match_result"],
+    ["lastSyncColumn", "last_sync"],
+  ] as const;
+  const resolvedColumns = new Map<string, number>();
+  for (const [property, header] of metadataColumns) {
+    const current = parsed[property];
+    if (current >= 0) {
+      resolvedColumns.set(property, current);
+    } else if (parsed.headerRow > 0) {
+      const column = nextColumn++;
+      resolvedColumns.set(property, column);
+      updates.push({
+        range: spreadsheetCellRange(config.tab_name, column, parsed.headerRow),
+        values: [[header]],
+      });
+    }
+  }
+
+  if (parsed.headerRow <= 0) return updates;
+  for (const row of parsed.mutations) {
+    const status = mutationStatuses.get(row.rowNumber);
+    if (!status) continue;
+    if (keyColumn >= 0) {
+      updates.push({
+        range: spreadsheetCellRange(config.tab_name, keyColumn, row.rowNumber),
+        values: [[status.key]],
+      });
+    }
+    if (statusColumn >= 0) {
+      updates.push({
+        range: spreadsheetCellRange(config.tab_name, statusColumn, row.rowNumber),
+        values: [[status.status]],
+      });
+    }
+    if (
+      parsed.descriptionColumn >= 0
+      && !row.description.trim()
+      && status.description?.trim()
+    ) {
+      updates.push({
+        range: spreadsheetCellRange(
+          config.tab_name,
+          parsed.descriptionColumn,
+          row.rowNumber,
+        ),
+        values: [[status.description]],
+      });
+    }
+    const valuesByColumn = [
+      ["coaCodeColumn", status.coaCode ?? ""],
+      ["coaNameColumn", status.coaName ?? ""],
+      ["matchScoreColumn", status.matchScore == null ? "" : String(status.matchScore)],
+      ["matchResultColumn", status.matchResult ?? ""],
+      ["lastSyncColumn", status.lastSync],
+    ] as const;
+    for (const [property, value] of valuesByColumn) {
+      const column = resolvedColumns.get(property);
+      if (column == null) continue;
+      updates.push({
+        range: spreadsheetCellRange(config.tab_name, column, row.rowNumber),
+        values: [[value]],
+      });
+    }
+  }
+  return updates;
+}
+
+async function markConfigSync(
+  configId: number,
+  status: string,
+  error: string | null = null,
+): Promise<void> {
+  await pool.query(
+    `update public.bank_sheet_configs
+        set last_synced_at = now(), last_sync_status = $1, last_sync_error = $2, updated_at = now()
+      where id = $3`,
+    [status, error, configId],
+  );
+}
+
+async function syncConfig(config: SheetConfig): Promise<{
+  imported: number;
+  total: number;
+  existing: number;
+  sheetUpdates: number;
+}> {
+  assertProductionSheetSourceAllowed(config);
+  const client = await pool.connect();
+  try {
+    const rows = await readSpreadsheetValues(config.sheet_id, config.tab_name);
+    const parsed = parseRows(rows, config.account_type);
+    if (parsed.mutations.length === 0) {
+      await markConfigSync(config.id, "success");
+      return {
+        imported: 0,
+        total: rows.length > 0 ? rows.length - 1 : 0,
+        existing: 0,
+        sheetUpdates: 0,
+      };
+    }
+
+    if (!Number.isInteger(config.bank_account_id) || Number(config.bank_account_id) <= 0) {
+      throw new Error("Koneksi Google Sheet belum memiliki Akun Rekonsiliasi yang valid.");
+    }
+
+    const prepared = parsed.mutations.map((row) => {
+      const generatedKey = canonicalKey(row, config.company_id, config.bank_account_id);
+      const legacyCanonicalKey = canonicalKey(row, config.company_id, null);
+      return {
+        row,
+        key: row.mutationKey ?? generatedKey,
+        canonical: generatedKey,
+        legacyCanonical: legacyCanonicalKey,
+      };
+    });
+    const mutationKeys = [...new Set(prepared.map((item) => item.key))];
+    const canonicalKeys = [...new Set(prepared.map((item) => item.canonical))];
+    const legacyCanonicalKeys = [...new Set(prepared.map((item) => item.legacyCanonical))];
+    let imported = 0;
+    let existing = 0;
+    const lastSync = new Date().toISOString();
+    const mutationStatuses = new Map<number, SheetMutationMetadata>();
+
+    const toSheetMetadata = (
+      mutation: Partial<ExistingMutation>,
+      fallbackKey: string,
+    ): SheetMutationMetadata => ({
+      key: mutation.mutation_key ?? fallbackKey,
+      status: statusLabel(mutation as ExistingMutation),
+      description: mutation.description ?? null,
+      coaCode: mutation.coa_code ?? null,
+      coaName: mutation.coa_name ?? null,
+      matchScore: mutation.match_score == null ? null : Number(mutation.match_score),
+      matchResult: mutation.match_result ?? mutation.match_reason ?? null,
+      lastSync,
+    });
+
+    await client.query("begin");
+    await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+      `google-sheet-sync:${config.id}`,
+    ]);
+    const existingResult = await client.query<ExistingMutation>(
+      `select bm.id, bm.mutation_key, bm.canonical_key, bm.description, bm.status,
+              bm.reconciliation_status, bm.journal_entry_id,
+              matched.match_score,
+              matched.match_reason,
+              matched.match_status,
+              case
+                when rule_classification.coa_code is not null then concat_ws(
+                  ' | ',
+                  concat(
+                    'Rule AI COA: ',
+                    rule_classification.coa_code,
+                    case
+                      when rule_classification.coa_name is not null
+                        then concat(' — ', rule_classification.coa_name)
+                      else ''
+                    end
+                  ),
+                  matched.match_result
+                )
+                else matched.match_result
+              end as match_result,
+              coalesce(
+                qris_sheet_classification.coa_code,
+                rule_classification.coa_code,
+                contra.coa_code,
+                canonical_contra.coa_code
+              ) as coa_code,
+              coalesce(
+                qris_sheet_classification.coa_name,
+                rule_classification.coa_name,
+                contra.coa_name,
+                canonical_contra.coa_name
+              ) as coa_name
+         from public.bank_mutations bm
+         left join lateral (
+           select m.match_score,
+                  m.match_reason,
+                  m.status as match_status,
+                  coalesce(
+                    nullif(trim(m.match_reason), ''),
+                    nullif(concat_ws(' | ', m.candidate_type, m.candidate_id::text, m.status), '')
+                  ) as match_result
+             from public.bank_reconciliation_matches m
+            where m.mutation_id = bm.id
+            order by case
+              when lower(coalesce(m.status, '')) in ('posted', 'approved', 'reconciled') then 0
+              when lower(coalesce(m.status, '')) = 'candidate' then 1
+              else 2
+            end, m.created_at desc nulls last, m.id desc
+            limit 1
+         ) matched on true
+         -- QRIS Sport Center rows get a concise Sheet-only business label as soon
+         -- as a canonical QRIS settlement candidate exists. This never renames
+         -- the underlying accounting COA; it only changes the label projected
+         -- back to Google Sheet.
+         left join lateral (
+           select
+                  clearing_coa.code as coa_code,
+                  'QR Payement sc'::text as coa_name
+             from public.bank_reconciliation_matches qris_match
+             join sport_center.payment_settlement_batches qris_batch
+               on qris_match.candidate_type = 'qris_settlement'
+              and qris_match.candidate_source = 'sport_center.payment_settlement_batches'
+              and qris_batch.id = qris_match.candidate_id
+              and qris_batch.company_id = bm.company_id
+             join lateral (
+               select coa.code
+                 from public.chart_of_accounts coa
+                where coa.company_id = bm.company_id
+                  and coa.code like '1-1024-%'
+                  and coa.name ilike 'Payment Clearing Sport Center / QRIS%'
+                  and coa.account_category = 'ASSET'
+                  and coa.is_active = true
+                  and coalesce(coa.is_header, false) = false
+                  and coalesce(coa.is_postable, true) = true
+                order by coa.id
+                limit 1
+             ) clearing_coa on true
+            where qris_match.mutation_id = bm.id
+              and lower(coalesce(qris_match.status, '')) in (
+                'candidate', 'approved', 'posted', 'reconciled'
+              )
+            order by qris_match.id desc
+            limit 1
+         ) qris_sheet_classification on true
+
+         -- The Sheet COA column is a business classification, not the technical
+         -- contra account of a bank-to-bank/source-journal reclassification.
+         -- When Rule AI matched the mutation, its validated target COA therefore
+         -- takes precedence while the real Sport Center/payment candidate remains
+         -- the reconciliation evidence and keeps its own match score/reason.
+         left join lateral (
+           select rule.target_coa_code as coa_code,
+                  target_coa.name as coa_name
+             from public.bank_reconciliation_matches rule_match
+             join public.recon_rules rule
+               on rule_match.candidate_type = 'recon_rule'
+              and rule_match.candidate_source = 'public.recon_rules'
+              and rule.id = rule_match.candidate_id
+              and rule.company_id = bm.company_id
+              and rule.is_active = true
+             join lateral (
+               select coa.name
+                 from public.chart_of_accounts coa
+                where coa.code = rule.target_coa_code
+                  and (coa.company_id = bm.company_id or coa.company_id is null)
+                  and coalesce(coa.is_active, true) = true
+                  and coalesce(coa.is_header, false) = false
+                  and coalesce(coa.is_postable, true) = true
+                order by case when coa.company_id = bm.company_id then 0 else 1 end, coa.id
+                limit 1
+             ) target_coa on true
+            where rule_match.mutation_id = bm.id
+              and rule.target_coa_code is not null
+              and lower(coalesce(rule_match.status, '')) in (
+                'candidate', 'approved', 'posted', 'reconciled'
+              )
+            order by rule_match.id desc
+            limit 1
+         ) rule_classification on true
+         left join lateral (
+           select coa.code as coa_code, coa.name as coa_name
+             from public.accounting_entry_lines line
+             join public.chart_of_accounts coa on coa.id = line.account_id
+            where line.entry_id = bm.journal_entry_id
+              and (
+                (upper(coalesce(bm.direction, '')) = 'IN' and coalesce(line.credit, 0) > 0)
+                or (upper(coalesce(bm.direction, '')) = 'OUT' and coalesce(line.debit, 0) > 0)
+              )
+            order by line.id
+            limit 1
+         ) contra on true
+         left join lateral (
+           select
+                  case
+                    when line.account_code = '1199'
+                     and lower(trim(coalesce(line.account_name, ''))) = 'payment clearing'
+                      then canonical_clearing.code
+                    else line.account_code
+                  end as coa_code,
+                  case
+                    when line.account_code = '1199'
+                     and lower(trim(coalesce(line.account_name, ''))) = 'payment clearing'
+                      then canonical_clearing.name
+                    else line.account_name
+                  end as coa_name
+             from public.bank_reconciliation_matches match
+             join sport_center.payment_settlement_batches batch
+               on match.candidate_type = 'qris_settlement'
+              and match.candidate_source = 'sport_center.payment_settlement_batches'
+              and batch.id = match.candidate_id
+             join sport_center.accounting_journals journal
+               on journal.id = batch.settlement_journal_id
+              and journal.status::text = 'posted'
+             join sport_center.accounting_journal_lines line
+               on line.journal_id = journal.id
+             left join lateral (
+               select coa.code, coa.name
+                 from public.chart_of_accounts coa
+                where coa.company_id = bm.company_id
+                  and coa.code like '1-1024-%'
+                  and coa.name ilike 'Payment Clearing Sport Center / QRIS%'
+                  and coa.account_category = 'ASSET'
+                  and coa.is_active = true
+                  and coalesce(coa.is_header, false) = false
+                  and coalesce(coa.is_postable, true) = true
+                order by coa.id
+                limit 1
+             ) canonical_clearing on true
+            where match.mutation_id = bm.id
+              and lower(coalesce(match.status, '')) in ('approved', 'posted', 'reconciled')
+              and batch.status::text in ('reconciled', 'settled', 'completed')
+              and coalesce(batch.canonical_bank_mutation_id, batch.bank_mutation_id) = bm.id
+              and (
+                (upper(coalesce(bm.direction, '')) = 'IN' and lower(coalesce(line.line_type::text, '')) = 'credit')
+                or (upper(coalesce(bm.direction, '')) = 'OUT' and lower(coalesce(line.line_type::text, '')) = 'debit')
+              )
+            order by line.id
+            limit 1
+         ) canonical_contra on bm.journal_entry_id is null
+        where bm.source = 'google_sheet'
+          and bm.company_id is not distinct from $1
+          and bm.bank_account_id = $5
+          and (
+            bm.mutation_key = any($2::text[])
+            or bm.canonical_key = any($3::text[])
+            or bm.canonical_key = any($4::text[])
+          )`,
+      [
+        config.company_id,
+        mutationKeys,
+        canonicalKeys,
+        legacyCanonicalKeys,
+        config.bank_account_id,
+      ],
+    );
+    const byMutationKey = new Map<string, ExistingMutation>();
+    const byCanonicalKey = new Map<string, ExistingMutation>();
+    for (const mutation of existingResult.rows) {
+      if (mutation.mutation_key) byMutationKey.set(mutation.mutation_key, mutation);
+      if (mutation.canonical_key) byCanonicalKey.set(mutation.canonical_key, mutation);
+    }
+
+    for (const item of prepared) {
+      // Prefer the row's current canonical identity over any stale mutation_key
+      // already written back to the Sheet. When only the stable mutation_key
+      // matches, the Sheet row may have been edited after its first import.
+      const foundByCanonical =
+        byCanonicalKey.get(item.canonical)
+        ?? byCanonicalKey.get(item.legacyCanonical);
+      const foundByMutationKey = byMutationKey.get(item.key);
+      const found = foundByCanonical ?? foundByMutationKey;
+      if (found) {
+        const mutationStatus = String(found.status ?? "").trim().toLowerCase();
+        const reconciliationStatus = String(found.reconciliation_status ?? "").trim().toLowerCase();
+        const matchStatus = String(found.match_status ?? "").trim().toLowerCase();
+        const canRefreshFromSheet =
+          !foundByCanonical
+          && foundByMutationKey?.id === found.id
+          && found.journal_entry_id == null
+          && ["", "new", "unmatched"].includes(mutationStatus)
+          && ["", "new", "unmatched"].includes(reconciliationStatus)
+          && !["approved", "posted", "reconciled"].includes(matchStatus);
+
+        if (canRefreshFromSheet) {
+          const refreshedDescription = item.row.description.trim()
+            ? item.row.description
+            : (found.description ?? "");
+          const refreshed = await client.query<ExistingMutation>(
+            `update public.bank_mutations bm
+                set canonical_key = $2,
+                    transaction_date = $3,
+                    description = $4,
+                    amount = $5,
+                    direction = $6,
+                    credit_amount = $7,
+                    debit_amount = $8,
+                    normalized_description = $9,
+                    source_account = $10,
+                    updated_at = now()
+              where bm.id = $1
+                and bm.journal_entry_id is null
+                and lower(coalesce(bm.status::text, 'unmatched')) in ('new', 'unmatched')
+                and lower(coalesce(bm.reconciliation_status::text, 'unmatched')) in ('new', 'unmatched')
+                and not exists (
+                  select 1
+                    from public.bank_reconciliation_matches final_match
+                   where final_match.mutation_id = bm.id
+                     and lower(coalesce(final_match.status::text, '')) in ('approved', 'posted', 'reconciled')
+                )
+              returning bm.id, bm.mutation_key, bm.canonical_key, bm.description,
+                        bm.status, bm.reconciliation_status, bm.journal_entry_id,
+                        null::int as match_score, null::text as match_reason,
+                        null::text as match_status, null::text as match_result,
+                        null::text as coa_code, null::text as coa_name`,
+            [
+              found.id,
+              item.canonical,
+              item.row.transactionDate,
+              refreshedDescription,
+              item.row.amount,
+              item.row.direction,
+              item.row.credit,
+              item.row.debit,
+              normalizeDescription(refreshedDescription),
+              item.row.bank,
+            ],
+          );
+          const refreshedMutation = refreshed.rows[0];
+          if (refreshedMutation) {
+            // Any provisional match was calculated from the old date/amount/
+            // description. Preserve it for audit, but remove it from the active
+            // candidate set so matching is recalculated against the edited row.
+            await client.query(
+              `update public.bank_reconciliation_matches
+                  set status = 'superseded'
+                where mutation_id = $1
+                  and lower(coalesce(status::text, '')) not in (
+                    'approved', 'posted', 'reconciled', 'superseded'
+                  )`,
+              [found.id],
+            );
+
+            if (
+              found.canonical_key
+              && byCanonicalKey.get(found.canonical_key)?.id === found.id
+            ) {
+              byCanonicalKey.delete(found.canonical_key);
+            }
+            byCanonicalKey.set(item.canonical, refreshedMutation);
+            byMutationKey.set(item.key, refreshedMutation);
+            existing += 1;
+            mutationStatuses.set(
+              item.row.rowNumber,
+              toSheetMetadata(refreshedMutation, item.key),
+            );
+            continue;
+          }
+        }
+
+        existing += 1;
+        mutationStatuses.set(item.row.rowNumber, toSheetMetadata(found, item.key));
+        continue;
+      }
+
+      const inserted = await client.query<ExistingMutation>(
+        `insert into public.bank_mutations
+          (mutation_key, canonical_key, transaction_date, description, amount, direction,
+           credit_amount, debit_amount, normalized_description, provider_name,
+           bank_account_id, source_classification, status, source, source_account,
+           company_id, sheet_config_id)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, null,
+                 $10,
+                 'actual_bank_mutation', 'unmatched', 'google_sheet', $11, $12, $13)
+         on conflict do nothing
+          returning id, mutation_key, canonical_key, description, status, reconciliation_status, journal_entry_id,
+                    null::int as match_score, null::text as match_reason,
+                    null::text as match_status, null::text as match_result,
+                    null::text as coa_code, null::text as coa_name`,
+        [
+          item.key,
+          item.canonical,
+          item.row.transactionDate,
+          item.row.description,
+          item.row.amount,
+          item.row.direction,
+          item.row.credit,
+          item.row.debit,
+          normalizeDescription(item.row.description),
+          config.bank_account_id,
+          item.row.bank,
+          config.company_id,
+          config.id,
+        ],
+      );
+      const mutation = inserted.rows[0];
+      if (mutation) {
+        imported += 1;
+        byMutationKey.set(item.key, mutation);
+        byCanonicalKey.set(item.canonical, mutation);
+        mutationStatuses.set(item.row.rowNumber, toSheetMetadata(mutation, item.key));
+      } else {
+        existing += 1;
+        mutationStatuses.set(item.row.rowNumber, {
+          key: item.key,
+          status: "UNMATCHED",
+          description: null,
+          coaCode: null,
+          coaName: null,
+          matchScore: null,
+          matchResult: null,
+          lastSync,
+        });
+      }
+    }
+    await client.query("commit");
+
+    const sheetUpdates = addSheetStatusUpdates(config, parsed, mutationStatuses);
+    try {
+      await writeSpreadsheetValues(config.sheet_id, sheetUpdates);
+    } catch (sheetError) {
+      const message = sheetError instanceof Error ? sheetError.message : String(sheetError);
+      await markConfigSync(config.id, "partial", message.slice(0, 500));
+      throw new Error(
+        `Data tersimpan di database, tetapi status sheet gagal diperbarui: ${message}`,
+      );
+    }
+
+    await markConfigSync(config.id, "success");
+    return {
+      imported,
+      total: parsed.mutations.length,
+      existing,
+      sheetUpdates: sheetUpdates.length,
+    };
+  } catch (error) {
+    try {
+      await client.query("rollback");
+    } catch {
+      // The transaction may already have been committed or the connection lost.
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    await markConfigSync(config.id, "error", message.slice(0, 500)).catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function syncOneBankSheetConfig(configId: number) {
+  const result = await pool.query<SheetConfig>(
+    `select config.id, config.company_id, config.sheet_id, config.tab_name, config.label,
+            config.bank_account_id, config.bank_account_number,
+            cba.account_type
+       from public.bank_sheet_configs config
+       left join public.company_bank_accounts cba on cba.id = config.bank_account_id
+      where config.id = $1 and config.is_active = true`,
+    [configId],
+  );
+  const config = result.rows[0];
+  if (!config) throw new Error("Konfigurasi tidak ditemukan atau tidak aktif");
+  const stats = await syncConfig(config);
+  return {
+    ok: true,
+    ...stats,
+    message: `Sync 2 arah selesai: ${stats.imported} mutasi baru, ${stats.existing} sudah ada dari ${stats.total} baris; ${stats.sheetUpdates} pembaruan metadata dikirim ke Sheet`,
+  };
+}
+
+export async function syncAllBankSheetConfigs(companyId?: number) {
+  const result = await pool.query<SheetConfig>(
+    `select config.id, config.company_id, config.sheet_id, config.tab_name, config.label,
+            config.bank_account_id, config.bank_account_number,
+            cba.account_type
+       from public.bank_sheet_configs config
+       left join public.company_bank_accounts cba on cba.id = config.bank_account_id
+      where config.is_active = true
+        and ($1::int is null or config.company_id = $1)
+      order by config.id`,
+    [companyId ?? null],
+  );
+  const summaries: Array<Record<string, unknown>> = [];
+  for (const config of result.rows) {
+    try {
+      summaries.push({
+        ok: true,
+        configId: config.id,
+        label: config.label,
+        ...(await syncConfig(config)),
+      });
+    } catch (error) {
+      summaries.push({
+        ok: false,
+        configId: config.id,
+        label: config.label,
+        imported: 0,
+        total: 0,
+        existing: 0,
+        sheetUpdates: 0,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return summaries;
+}
