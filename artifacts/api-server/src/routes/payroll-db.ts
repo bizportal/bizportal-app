@@ -1,7 +1,6 @@
-import { pool, createDedicatedPayrollPool } from "@workspace/db";
+import { pool, createDedicatedPayrollPool, type PayrollDbClient, type PayrollDbQueryResult } from "@workspace/db";
 
 type PayrollPool = typeof pool;
-type PayrollClient = Awaited<ReturnType<PayrollPool["connect"]>>;
 let dedicatedPool: PayrollPool | null = null;
 let initializedUrl: string | null = null;
 
@@ -40,7 +39,7 @@ export function getPayrollPool(): PayrollPool {
 }
 
 /** The company scope exists only for the active SQL transaction (not the pool). */
-export async function setPayrollCompanyScope(client: PayrollClient, companyId: number): Promise<void> {
+export async function setPayrollCompanyScope(client: PayrollDbClient, companyId: number): Promise<void> {
   if (!payrollDedicatedEnabled()) return;
   if (!Number.isSafeInteger(companyId) || companyId <= 0) throw new Error("Invalid payroll company scope");
   await client.query("SELECT set_config('app.payroll_company_id', $1, true)", [String(companyId)]);
@@ -50,7 +49,7 @@ export async function payrollScopedQuery(
   companyId: number,
   sql: string,
   values: unknown[],
-): Promise<Awaited<ReturnType<PayrollPool["query"]>>> {
+): Promise<PayrollDbQueryResult> {
   if (!payrollDedicatedEnabled()) return pool.query(sql, values);
   const client = await getPayrollPool().connect();
   try {
