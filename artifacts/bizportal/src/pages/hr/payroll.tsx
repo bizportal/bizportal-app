@@ -5,6 +5,7 @@ import { useCompany } from "@/contexts/CompanyContext";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertTriangle, Building2, Calculator, FileText, Loader2, RefreshCcw, Users } from "lucide-react";
 
 type PayrollRun = {
@@ -53,6 +54,7 @@ export default function PayrollWorkspace() {
   const companyId = !isConsolidated && Number.isSafeInteger(Number(activeCompanyId)) && Number(activeCompanyId) > 0
     ? Number(activeCompanyId) : null;
   const [runs, setRuns] = useState<PayrollRun[]>([]);
+  const [statusFilter, setStatusFilter] = useState<"all" | "draft" | "approved" | "paid">("all");
   const [canCreateDraft, setCanCreateDraft] = useState(false);
   const [canGenerate, setCanGenerate] = useState(false);
   const [canEditItems, setCanEditItems] = useState(false);
@@ -144,6 +146,14 @@ export default function PayrollWorkspace() {
   }
 
   const draft = detail?.run.status === "draft";
+  const statusCounts = {
+    all: runs.length,
+    draft: runs.filter((run) => run.status === "draft").length,
+    approved: runs.filter((run) => run.status === "approved").length,
+    paid: runs.filter((run) => run.status === "paid").length,
+  };
+  const visibleRuns = statusFilter === "all" ? runs : runs.filter((run) => run.status === statusFilter);
+  const statusLabels: Record<string, string> = { draft: "Draft", approved: "Disetujui", paid: "Dibayar", calculated: "Dihitung" };
   const editableFields = [
     ["baseSalary", "Gaji Pokok"], ["allowance", "Tunjangan"],
     ["bpjsJhtEmployee", "BPJS JHT"], ["bpjsKesEmployee", "BPJS Kesehatan"],
@@ -236,15 +246,33 @@ export default function PayrollWorkspace() {
             <Button disabled={!canCreateDraft || busy || loading || runs.some((run) => run.month === month && run.year === year)} onClick={() => perform("create")}>{canCreateDraft ? "Buat Draft DEV" : "Buat Draft (Belum Aktif)"}</Button>
           </CardContent>
         </Card>
+        <Card>
+          <CardContent className="space-y-3 pt-5">
+            <p className="text-sm font-medium">Status periode penggajian</p>
+            <Tabs value={statusFilter} onValueChange={(value) => setStatusFilter(value as typeof statusFilter)}>
+              <TabsList className="flex h-auto w-full flex-wrap justify-start gap-1">
+                {([
+                  ["all", "Semua"], ["draft", "Draft"], ["approved", "Disetujui"], ["paid", "Dibayar"],
+                ] as const).map(([value, label]) =>
+                  <TabsTrigger key={value} value={value} className="gap-2">
+                    {label} <span className="rounded-full bg-muted px-2 py-0.5 text-xs">{statusCounts[value]}</span>
+                  </TabsTrigger>,
+                )}
+              </TabsList>
+            </Tabs>
+            <p className="text-xs text-muted-foreground">Filter hanya menampilkan status asli dari database. Persetujuan, pembayaran, dan ekspor belum diaktifkan.</p>
+          </CardContent>
+        </Card>
         <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
           <Card><CardHeader><CardTitle className="text-lg">Riwayat Periode</CardTitle></CardHeader>
             <CardContent className="space-y-2">
               {loading && <Loader2 className="h-5 w-5 animate-spin" />}
               {!loading && runs.length === 0 && <p className="text-sm text-muted-foreground">Belum ada periode.</p>}
-              {runs.map((run) => <button key={run.id} type="button" onClick={() => setSelectedId(run.id)}
+              {!loading && runs.length > 0 && visibleRuns.length === 0 && <p className="text-sm text-muted-foreground">Tidak ada periode dengan status ini.</p>}
+              {visibleRuns.map((run) => <button key={run.id} type="button" onClick={() => setSelectedId(run.id)}
                 className={`flex w-full items-center justify-between rounded-md border p-3 text-left text-sm ${run.id === selectedId ? "border-primary bg-primary/10" : "hover:bg-muted"}`}>
                 <span>{String(run.month).padStart(2, "0")}/{run.year} <span className="text-muted-foreground">#{run.id}</span></span>
-                <Badge variant="secondary">{run.status}</Badge>
+                <Badge variant="secondary">{statusLabels[run.status] || run.status}</Badge>
               </button>)}
             </CardContent>
           </Card>
@@ -253,7 +281,7 @@ export default function PayrollWorkspace() {
               {!detail || detail.run.id !== selectedId ? <p className="text-sm text-muted-foreground">Pilih periode untuk melihat perhitungan.</p> : <>
                 {detail.integrityError && <div role="alert" className="flex gap-2 rounded-md border border-red-500/40 p-3 text-sm text-red-500"><AlertTriangle className="h-4 w-4 shrink-0" />{detail.integrityError}</div>}
                 <div className="flex flex-wrap gap-2">
-                  <Badge>{detail.run.status}</Badge>
+                  <Badge>{statusLabels[detail.run.status] || detail.run.status}</Badge>
                   <Badge variant="outline">Posting: {detail.run.postingStatus || "pending"}</Badge>
                 </div>
                 <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
