@@ -65,3 +65,11 @@ export async function payrollScopedQuery(
     client.release();
   }
 }
+
+/** Explicit pool shutdown for isolated test teardown / controlled maintenance. */
+export async function closeDedicatedPayrollPool(): Promise<void> {
+  const previous = dedicatedPool;
+  dedicatedPool = null;
+  initializedUrl = null;
+  if (previous) await previous.end();
+}
