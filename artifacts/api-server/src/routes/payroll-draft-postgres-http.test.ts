@@ -140,6 +140,50 @@ describe.skipIf(!enabled)("Payroll Draft REAL PostgreSQL HTTP isolated CI", () =
     expect((one?.body.run as { status: string }).status).toBe("draft");
   });
 
+  it("uses a distinct RLS-restricted login for HTTP Draft and denies unscoped reads", async () => {
+    const username = "bizportal_payroll_dev.xssrfshdrtdfupgqwfdw";
+    const ciPassword = "ci_only_disposable";
+    const roleSql = '"' + username + '"';
+    await pool.query(`CREATE ROLE ${roleSql} LOGIN PASSWORD '${ciPassword}'`);
+    await pool.query(`GRANT USAGE ON SCHEMA public TO ${roleSql}`);
+    await pool.query(`GRANT SELECT ON public.payroll_runs TO ${roleSql}`);
+    await pool.query(`GRANT INSERT (company_id,month,year,notes,status) ON public.payroll_runs TO ${roleSql}`);
+    await pool.query(`ALTER TABLE public.payroll_runs ENABLE ROW LEVEL SECURITY`);
+    await pool.query(`CREATE POLICY ci_payroll_read ON public.payroll_runs FOR SELECT TO ${roleSql}
+      USING (company_id = NULLIF(current_setting('app.payroll_company_id', true), '')::integer)`);
+    await pool.query(`CREATE POLICY ci_payroll_write ON public.payroll_runs FOR INSERT TO ${roleSql}
+      WITH CHECK (company_id = NULLIF(current_setting('app.payroll_company_id', true), '')::integer
+        AND status = 'draft' AND posting_status = 'pending'
+        AND accounting_entry_id IS NULL AND payment_entry_id IS NULL)`);
+
+    const dedicatedUrl = `postgresql://${username}:${ciPassword}@127.0.0.1:65432/payroll_ci`;
+    process.env.PAYROLL_DATABASE_URL_DEV = dedicatedUrl;
+    process.env.PAYROLL_DEV_DRAFT_ENABLED = "true";
+    actor.companyId = null;
+    try {
+      const response = await post(companyOne, 9, 2099);
+      expect(response.status).toBe(201);
+      expect((response.body.run as { companyId: number }).companyId).toBe(companyOne);
+      const row = await pool.query("SELECT company_id, status, posting_status, payment_entry_id FROM public.payroll_runs WHERE company_id=$1 AND month=9", [companyOne]);
+      expect(row.rows[0]).toMatchObject({ company_id: companyOne, status: "draft", posting_status: "pending", payment_entry_id: null });
+
+      const { createDedicatedPayrollPool } = await import("@workspace/db");
+      const unscopedPool = createDedicatedPayrollPool(dedicatedUrl);
+      try {
+        const unscoped = await unscopedPool.query("SELECT COUNT(*)::integer AS count FROM public.payroll_runs");
+        expect(unscoped.rows[0].count).toBe(0);
+        const updatePermission = await unscopedPool.query("SELECT has_table_privilege(current_user,'public.payroll_runs','UPDATE') AS allowed");
+        expect(updatePermission.rows[0].allowed).toBe(false);
+      } finally {
+        await unscopedPool.end();
+      }
+    } finally {
+      delete process.env.PAYROLL_DATABASE_URL_DEV;
+      const { closeDedicatedPayrollPool } = await import("./payroll-db");
+      await closeDedicatedPayrollPool();
+    }
+  });
+
   it("disables ALL Draft writes after flag is OFF", async () => {
     delete process.env.PAYROLL_DEV_DRAFT_ENABLED;
     const blocked = await post(companyOne, 11, 2099);
