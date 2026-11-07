@@ -43,6 +43,12 @@ describe("DEV payroll draft HTTP guard", () => {
   beforeAll(async () => {
     const { default: payrollRouter } = await import("./payroll");
     const app = express();
+    // The real app installs pino-http; this isolated HTTP fixture must match
+    // that request contract so rollback error handling can return HTTP 503.
+    app.use((req, _res, next) => {
+      req.log = { error: vi.fn() } as typeof req.log;
+      next();
+    });
     app.use(express.json());
     app.use("/api", payrollRouter);
     server = createServer(app);
