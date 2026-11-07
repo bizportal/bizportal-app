@@ -1,5 +1,6 @@
 import { Router, type IRouter, type Request, type Response, type NextFunction } from "express";
 import { pool } from "@workspace/db";
+import { getPayrollPool, payrollScopedQuery, setPayrollCompanyScope } from "./payroll-db";
 import { authorizePayrollCompany } from "./payroll-access";
 import { getDevSession, getProductionSession, getProductionUser, isDevelopmentEnvironment, type DevAuthUser } from "./dev-auth";
 
@@ -59,7 +60,7 @@ router.use("/payroll", authorize);
 router.get("/payroll/runs", async (req: PayrollRequest, res): Promise<void> => {
   const companyId = req.payrollCompanyId!;
   try {
-    const rows = await pool.query(
+    const rows = await payrollScopedQuery(companyId,
       `SELECT id, company_id, month, year, status, posting_status, accounting_entry_id, payment_entry_id
          FROM public.payroll_runs WHERE company_id = $1
         ORDER BY year DESC, month DESC, id DESC LIMIT 250`,
@@ -77,13 +78,13 @@ router.get("/payroll/runs/:id", async (req: PayrollRequest, res): Promise<void> 
   const runId = positiveId(req.params.id);
   if (!runId) { res.status(400).json({ message: "ID payroll tidak valid." }); return; }
   try {
-    const result = await pool.query(
+    const result = await payrollScopedQuery(companyId,
       `SELECT id, company_id, month, year, status, posting_status, accounting_entry_id, payment_entry_id
          FROM public.payroll_runs WHERE company_id = $1 AND id = $2 LIMIT 1`,
       [companyId, runId],
     );
     if (!result.rowCount) { res.status(404).json({ message: "Periode tidak ditemukan di perusahaan ini." }); return; }
-    const items = await pool.query(
+    const items = await payrollScopedQuery(companyId,
       `SELECT pi.id, pi.employee_id, pi.base_salary, pi.allowance, pi.gross_salary,
               pi.kasbon_deduction, pi.total_deductions, pi.net_salary,
               pi.bpjs_jht_employee, pi.bpjs_kes_employee, pi.pph21, pi.other_deductions,
@@ -156,11 +157,12 @@ router.post("/payroll/runs", async (req: PayrollRequest, res): Promise<void> => 
   }
   const companyId = req.payrollCompanyId!;
   try {
-    const client = await pool.connect();
+    const client = await getPayrollPool().connect();
     let activeTransaction = false;
     try {
       await client.query("BEGIN");
       activeTransaction = true;
+      await setPayrollCompanyScope(client, companyId);
       await client.query("SELECT pg_advisory_xact_lock($1::integer, $2::integer)", [companyId, year * 100 + month]);
       const existing = await client.query(
         "SELECT id FROM public.payroll_runs WHERE company_id = $1 AND month = $2 AND year = $3 LIMIT 1",
