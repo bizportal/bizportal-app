@@ -46,7 +46,7 @@ describe("DEV payroll draft HTTP guard", () => {
     // The real app installs pino-http; this isolated HTTP fixture must match
     // that request contract so rollback error handling can return HTTP 503.
     app.use((req, _res, next) => {
-      req.log = { error: vi.fn() } as typeof req.log;
+      req.log = { error: vi.fn() } as unknown as typeof req.log;
       next();
     });
     app.use(express.json());
