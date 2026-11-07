@@ -73,6 +73,9 @@ const lazyPool = {
  * frontend can start even when readiness is degraded.
  */
 export const pool = lazyPool;
+export type PayrollDbClient = import("pg").PoolClient;
+export type PayrollDbQueryResult = import("pg").QueryResult;
+
 
 /** Dedicated DEV Payroll connection with a restricted PostgreSQL role.
  * Never use this credential for the general BizPortal application pool.
