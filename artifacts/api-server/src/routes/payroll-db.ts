@@ -1,8 +1,8 @@
-import pg from "pg";
-import { pool } from "@workspace/db";
+import { pool, createDedicatedPayrollPool } from "@workspace/db";
 
-const { Pool } = pg;
-let dedicatedPool: pg.Pool | null = null;
+type PayrollPool = typeof pool;
+type PayrollClient = Awaited<ReturnType<PayrollPool["connect"]>>;
+let dedicatedPool: PayrollPool | null = null;
 let initializedUrl: string | null = null;
 
 /**
@@ -29,25 +29,18 @@ export function payrollDedicatedEnabled(): boolean {
   return dedicatedPayrollUrl() !== null;
 }
 
-export function getPayrollPool(): pg.Pool {
+export function getPayrollPool(): PayrollPool {
   const url = dedicatedPayrollUrl();
   if (!url) return pool;
   if (dedicatedPool && initializedUrl === url) return dedicatedPool;
   if (dedicatedPool) throw new Error("Payroll database credentials changed; restart the process");
-  dedicatedPool = new Pool({
-    connectionString: url,
-    application_name: "bizportal-payroll-dev",
-    max: 2,
-    idleTimeoutMillis: 5_000,
-    connectionTimeoutMillis: 8_000,
-    query_timeout: 15_000,
-  });
+  dedicatedPool = createDedicatedPayrollPool(url);
   initializedUrl = url;
   return dedicatedPool;
 }
 
 /** The company scope exists only for the active SQL transaction (not the pool). */
-export async function setPayrollCompanyScope(client: pg.PoolClient, companyId: number): Promise<void> {
+export async function setPayrollCompanyScope(client: PayrollClient, companyId: number): Promise<void> {
   if (!payrollDedicatedEnabled()) return;
   if (!Number.isSafeInteger(companyId) || companyId <= 0) throw new Error("Invalid payroll company scope");
   await client.query("SELECT set_config('app.payroll_company_id', $1, true)", [String(companyId)]);
@@ -57,7 +50,7 @@ export async function payrollScopedQuery(
   companyId: number,
   sql: string,
   values: unknown[],
-): Promise<pg.QueryResult> {
+): Promise<Awaited<ReturnType<PayrollPool["query"]>>> {
   if (!payrollDedicatedEnabled()) return pool.query(sql, values);
   const client = await getPayrollPool().connect();
   try {
