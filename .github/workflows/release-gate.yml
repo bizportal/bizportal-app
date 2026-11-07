@@ -99,4 +99,17 @@ jobs:
           fi
 
           curl -fsS http://127.0.0.1:3000/ >/dev/null
+
+          # Assert that Payroll routes are mounted in the actual build.
+          # Unauthenticated requests must fail at the Payroll authorization
+          # middleware (401) instead of falling into the generic 404 route.
+          for route in '/api/payroll/runs?companyId=1' '/api/payroll/capabilities?companyId=1'; do
+            code=$(curl -sS -o /tmp/payroll-route-check.json -w '%{http_code}' "http://127.0.0.1:3000$route")
+            if [ "$code" != "401" ] || ! grep -q 'Sesi tidak tersedia' /tmp/payroll-route-check.json; then
+              echo "PAYROLL_ROUTE_NOT_MOUNTED route=$route status=$code"
+              cat /tmp/payroll-route-check.json
+              exit 1
+            fi
+          done
+          echo PAYROLL_RUNTIME_ROUTE_PASS
           cat /tmp/bizportal-runtime.log
