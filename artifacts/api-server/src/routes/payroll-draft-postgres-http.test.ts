@@ -123,6 +123,23 @@ describe.skipIf(!enabled)("Payroll Draft REAL PostgreSQL HTTP isolated CI", () =
     expect(result.rows[0].count).toBe(0);
   });
 
+  it("serializes eight simultaneous HTTP requests into exactly one Draft", async () => {
+    // Separate period from earlier tests to prove real concurrent advisory locking.
+    actor.companyId = null;
+    const attempts = await Promise.all(
+      Array.from({ length: 8 }, () => post(companyOne, 10, 2099)),
+    );
+    const statuses = attempts.map((attempt) => attempt.status).sort((a, b) => a - b);
+    expect(statuses).toEqual([201, 409, 409, 409, 409, 409, 409, 409]);
+    const persisted = await pool.query(
+      "SELECT COUNT(*)::integer AS count FROM public.payroll_runs WHERE company_id=$1 AND month=$2 AND year=$3",
+      [companyOne, 10, 2099],
+    );
+    expect(persisted.rows[0].count).toBe(1);
+    const one = attempts.find((attempt) => attempt.status === 201);
+    expect((one?.body.run as { status: string }).status).toBe("draft");
+  });
+
   it("disables ALL Draft writes after flag is OFF", async () => {
     delete process.env.PAYROLL_DEV_DRAFT_ENABLED;
     const blocked = await post(companyOne, 11, 2099);
