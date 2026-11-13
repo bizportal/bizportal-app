@@ -275,7 +275,7 @@ export default function InvoiceSourcesTab() {
         access_denied:
           "Akses Gmail dibatalkan.",
         wrong_account:
-          "Akun Google yang dipilih bukan travelincars01@gmail.com.",
+          "Akun Google yang dipilih tidak sesuai dengan mailbox sumber yang dikonfigurasi untuk lingkungan ini.",
         refresh_token_missing:
           "Google tidak memberikan refresh token. Hubungkan ulang dan setujui akses.",
         oauth_failed:
@@ -700,7 +700,7 @@ export default function InvoiceSourcesTab() {
                   <p className="mt-1 text-sm font-semibold text-white">
                     {status?.connectedEmail ||
                       status?.expectedEmail ||
-                      "travelincars01@gmail.com"}
+                      "Mailbox sumber belum dikonfigurasi"}
                   </p>
                 </div>
 
@@ -734,6 +734,14 @@ export default function InvoiceSourcesTab() {
                   </p>
                 </div>
               </div>
+
+              {status && !status.expectedEmail?.trim() && (
+                <div className="rounded-lg border border-amber-700/50 bg-amber-950/20 p-4 text-sm text-amber-200">
+                  Mailbox Gmail sumber belum diatur khusus untuk lingkungan ini.
+                  Admin server perlu mengisi GMAIL_INVOICE_SOURCE_EMAIL sesuai mailbox DEV yang sah.
+                  Connect Gmail dan Sync Now tetap terkunci agar tidak menggunakan inbox PROD.
+                </div>
+              )}
 
               {!status?.oauthConfigured && (
                 <div className="rounded-lg border border-amber-700/50 bg-amber-950/20 p-4 text-sm text-amber-200">
@@ -769,6 +777,7 @@ export default function InvoiceSourcesTab() {
                     disabled={
                       !companyId ||
                       !status?.oauthConfigured ||
+                      !status?.expectedEmail?.trim() ||
                       action !== null
                     }
                     className="gap-2"
@@ -786,7 +795,8 @@ export default function InvoiceSourcesTab() {
                       onClick={() => void sync()}
                       disabled={
                         action !== null ||
-                        !status.aiConfigured
+                        !status.aiConfigured ||
+                        !status.expectedEmail?.trim()
                       }
                       className="gap-2"
                     >
@@ -803,7 +813,8 @@ export default function InvoiceSourcesTab() {
                       onClick={() => void connect()}
                       disabled={
                         action !== null ||
-                        !status.oauthConfigured
+                        !status.oauthConfigured ||
+                        !status.expectedEmail?.trim()
                       }
                       className="gap-2 border-slate-600"
                     >
