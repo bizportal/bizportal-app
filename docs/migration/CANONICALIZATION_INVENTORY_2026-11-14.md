@@ -34,6 +34,12 @@ Audit VPS DEV sebelumnya menunjukkan:
 - `/opt/bizportal-official-vendor-ap-dev-20261114` adalah checkout terpisah dengan remote canonical; **bukan bukti sumber runtime DEV yang aktif**.
 - Sumber deployment Hostinger PROD **belum diverifikasi**. Jangan menyimpulkannya hanya dari `git remote` suatu checkout atau PASS GitHub Actions.
 
+## Temuan perbandingan awal yang perlu ditindaklanjuti
+
+- Di canonical `develop`, `artifacts/api-server/src/routes/local-production-auth.ts` **sudah** menggunakan `values ($1, $2, $3, $4, $5)` untuk INSERT OTP; jangan menyalin PR lama #313 secara membabi buta.
+- Masih perlu audit kontrak parameter query gabungan: klausa invalidasi OTP memakai `purpose = $2`, sedangkan array parameter INSERT memakai urutan `[email, requestIp, EMAIL_OTP_PURPOSE, ...]`. Ini merupakan **indikasi mismatch** yang harus dibuktikan dengan tes sebelum perubahan kode; jangan mengklaim OTP E2E PASS.
+- Source DEV aktif pada VPS masih bukan repository canonical; tidak boleh mengganti origin atau deployment sebelum review working tree dan rollback.
+
 ## Urutan pekerjaan wajib (no rebuild)
 
 1. **Baseline aman dan read-only:** ambil bukti versi git, proses runtime, konfigurasi routing tanpa secrets, daftar endpoint, database/schema relevan, backup/rollback point, daftar fitur yang telah PASS. Dilarang menimpa working tree aktif.
