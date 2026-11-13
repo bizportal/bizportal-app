@@ -82,26 +82,19 @@ function requireCompanyScope(
 }
 
 function sourceEmail(): string {
-  return (
-    process.env.GMAIL_INVOICE_SOURCE_EMAIL ||
-    DEFAULT_SOURCE_EMAIL
-  )
-    .trim()
-    .toLowerCase();
+  const configured = process.env.GMAIL_INVOICE_SOURCE_EMAIL?.trim().toLowerCase() ?? "";
+  // DEV must never silently select the operational PROD mailbox.
+  return isDevelopmentEnvironment() ? configured : configured || DEFAULT_SOURCE_EMAIL;
 }
 
 async function googleClientId(): Promise<string> {
-  return (
-    (await getRuntimeConfig("GMAIL_GOOGLE_CLIENT_ID")) ||
-    (await getRuntimeConfig("GOOGLE_CLIENT_ID"))
-  );
+  const dedicated = await getRuntimeConfig("GMAIL_GOOGLE_CLIENT_ID");
+  return isDevelopmentEnvironment() ? dedicated : dedicated || await getRuntimeConfig("GOOGLE_CLIENT_ID");
 }
 
 async function googleClientSecret(): Promise<string> {
-  return (
-    (await getRuntimeConfig("GMAIL_GOOGLE_CLIENT_SECRET")) ||
-    (await getRuntimeConfig("GOOGLE_CLIENT_SECRET"))
-  );
+  const dedicated = await getRuntimeConfig("GMAIL_GOOGLE_CLIENT_SECRET");
+  return isDevelopmentEnvironment() ? dedicated : dedicated || await getRuntimeConfig("GOOGLE_CLIENT_SECRET");
 }
 
 function safeReturnPath(value: unknown): string {
@@ -199,11 +192,12 @@ async function setConfig(
     `insert into public.app_config(
        key,value,is_secret,description,environment,updated_at,updated_by
      )
-     values($1,$2,$3,$4,'production',now(),$5)
+     values($1,$2,$3,$4,$6,now(),$5)
      on conflict(key) do update set
        value=excluded.value,
        is_secret=excluded.is_secret,
        description=excluded.description,
+       environment=excluded.environment,
        updated_at=now(),
        updated_by=excluded.updated_by`,
     [
@@ -212,6 +206,7 @@ async function setConfig(
       options.secret ?? false,
       options.description ?? null,
       options.actor ?? null,
+      isDevelopmentEnvironment() ? "development" : "production",
     ],
   );
 }
@@ -890,6 +885,13 @@ router.post(
         req.body?.company_id,
       );
       if (!companyId) return;
+      if (!sourceEmail()) {
+        res.status(409).json({
+          code: "GMAIL_DEV_SOURCE_EMAIL_REQUIRED",
+          error: "Atur GMAIL_INVOICE_SOURCE_EMAIL khusus DEV sebelum menghubungkan atau menyinkronkan Gmail.",
+        });
+        return;
+      }
 
       const [clientId, clientSecret] =
         await Promise.all([
@@ -1195,6 +1197,13 @@ router.post(
         req.body?.company_id,
       );
       if (!companyId) return;
+      if (!sourceEmail()) {
+        res.status(409).json({
+          code: "GMAIL_DEV_SOURCE_EMAIL_REQUIRED",
+          error: "Atur GMAIL_INVOICE_SOURCE_EMAIL khusus DEV sebelum menghubungkan atau menyinkronkan Gmail.",
+        });
+        return;
+      }
 
       const encryptedToken = await getConfig(
         companyId,
