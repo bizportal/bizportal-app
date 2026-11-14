@@ -16,6 +16,7 @@ export async function withHrdCompanyReadOnly<T>(
   }
   const client = await pool.connect();
   let inTransaction = false;
+  let discardClient: Error | undefined;
   try {
     await client.query("BEGIN READ ONLY");
     inTransaction = true;
@@ -35,10 +36,13 @@ export async function withHrdCompanyReadOnly<T>(
     return result;
   } catch (error) {
     if (inTransaction) {
-      try { await client.query("ROLLBACK"); } catch { /* original error wins */ }
+      try { await client.query("ROLLBACK"); }
+      catch { discardClient = Error("HRD_READONLY_ROLLBACK_UNCONFIRMED"); }
     }
     throw error;
   } finally {
-    client.release();
+    // A failed rollback leaves session role/transaction state unknown. Never
+    // return that connection to the shared BizPortal pool.
+    client.release(discardClient);
   }
 }
