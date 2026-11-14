@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { pool } from "@workspace/db";
 import { authenticateAdmin, type AdminRequest } from "./admin-auth";
-import { isDevelopmentEnvironment } from "./dev-auth";
+import { getProductionSession, isDevelopmentEnvironment, isSignedOtpDevEnabled } from "./dev-auth";
 import { buildCustomerArMatchPreview, type CustomerArInvoiceEvidence, type IncomingBankMutationEvidence } from "../lib/reconciliation/customerArMatchPreview";
 
 const router: IRouter = Router();
@@ -55,6 +55,19 @@ router.get("/sales/customer-invoices/auto-match-preview", async (request, respon
   }
   if (actor?.companyId == null && !isPrivileged) {
     response.status(403).json({ error: "Hak akses perusahaan tidak terverifikasi.", code: "COMPANY_SCOPE_MISSING" });
+    return;
+  }
+  // OTP opt-in retains legacy DEV cookie compatibility for scoped requests.
+  // The legacy cookie alone is not sufficient for a global/cross-company
+  // Customer AR read. authenticateAdmin has already DB-verified any signed OTP
+  // identity before this handler is reached.
+  const crossesCompany = actor?.companyId == null || actor.companyId !== companyId;
+  if (isPrivileged && crossesCompany && isSignedOtpDevEnabled() &&
+      !getProductionSession(request)) {
+    response.status(403).json({
+      error: "Akses lintas perusahaan membutuhkan sesi Admin terverifikasi.",
+      code: "SIGNED_GLOBAL_ADMIN_REQUIRED",
+    });
     return;
   }
 
