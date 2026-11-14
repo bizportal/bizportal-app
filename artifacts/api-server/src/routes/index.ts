@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 import healthRouter from "./health";
 import companiesRouter from "./companies";
 import payrollRouter from "./payroll";
+import hrdRouter from "./hrd-routes";
 import bankReconciliationRouter from "./bank-reconciliation";
 import reconClassificationRouter from "./recon-classification";
 import accountingRouter from "./accounting";
@@ -46,6 +47,7 @@ router.post("/auth/email-login", (_request, response) => {
 });
 
 router.use(companiesRouter);
+router.use(hrdRouter);
 router.use(payrollRouter);
 router.use(bankReconciliationRouter);
 router.use(reconClassificationRouter);
