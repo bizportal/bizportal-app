@@ -67,6 +67,14 @@ function getSessionSecret(): string | null {
   return getExplicitSessionSecret() ?? initializedProductionSessionSecret;
 }
 
+/** Opt-in only. Never infer DEV OTP eligibility from a cookie or DB credential. */
+export function isSignedOtpDevEnabled(): boolean {
+  return isDevelopmentEnvironment()
+    && process.env.NODE_ENV !== "production"
+    && process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV === "true"
+    && getExplicitSessionSecret() !== null;
+}
+
 export async function initializeProductionSessionSigning(): Promise<void> {
   if (isDevelopmentEnvironment()) return;
   if (getSessionSecret()) return;
@@ -261,7 +269,7 @@ export function getDevSession(request: Request): DevAuthUser | null {
 }
 
 export function getProductionSession(request: Request): ProductionSession | null {
-  if (isDevelopmentEnvironment()) return null;
+  if (isDevelopmentEnvironment() && !isSignedOtpDevEnabled()) return null;
 
   const session = decodeSignedCookie<ProductionSession>(request, PRODUCTION_SESSION_COOKIE);
   if (
