@@ -1,4 +1,5 @@
 import app from "./app";
+import { registerGracefulShutdown } from "./lib/graceful-shutdown";
 import { logger } from "./lib/logger";
 import { shouldRunReconciliationSchedulers } from "./lib/reconciliation/backgroundSchedulerPolicy";
 import { runFleetAutoReminderSweep } from "./lib/fleet-wa-reminder";
@@ -192,5 +193,6 @@ const stopBackgroundTimers = () => {
     startupInitializationTimer = null;
   }
 };
-process.once("SIGTERM", stopBackgroundTimers);
-process.once("SIGINT", stopBackgroundTimers);
+registerGracefulShutdown(server, stopBackgroundTimers, {
+  onError: (error) => logger.error({ error }, "API graceful shutdown failed"),
+});
