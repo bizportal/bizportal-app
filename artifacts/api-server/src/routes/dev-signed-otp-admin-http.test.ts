@@ -116,6 +116,17 @@ describe("signed OTP HTTP admin middleware under explicit DEV opt-in", () => {
     expect(mocks.query).not.toHaveBeenCalled();
   });
 
+  it("rejects an inactive signed admin even with a valid signature", async () => {
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
+    mocks.query.mockResolvedValue({ rows: [{ user_data: {
+      email: "admin@example.com", role: "admin", company_id: 7,
+      is_active: false, status: "inactive",
+    } }] });
+    const res = await call(cookie());
+    expect(res.status).toBe(401);
+    expect(mocks.query).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects authenticated users without an admin role", async () => {
     process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
     mocks.query.mockResolvedValue({rows:[{user_data:{email:"admin@example.com",role:"viewer",company_id:7}}]});
