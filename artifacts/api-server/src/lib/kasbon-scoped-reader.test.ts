@@ -90,6 +90,28 @@ describe("isolated Kasbon read-only role and company boundary", () => {
     expect(f.release).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    "set_config('app.payroll_company_id'",
+    "current_user AS role",
+    "COMMIT",
+  ])("rolls back and releases client when %s fails", async step => {
+    const f = fake({ failOn: step });
+    const read = vi.fn(async () => "safe");
+    await expect(withScopedKasbonReadOnly(f.client, 1, read)).rejects.toThrow("DB_FAILURE");
+    if (step !== "COMMIT") expect(read).not.toHaveBeenCalled();
+    expect(f.statements.at(-1)?.sql).toBe("ROLLBACK");
+    expect(f.release).toHaveBeenCalledOnce();
+  });
+
+  it("releases the client when starting READ ONLY fails", async () => {
+    const f = fake({ failOn: "BEGIN READ ONLY" });
+    const read = vi.fn();
+    await expect(withScopedKasbonReadOnly(f.client, 1, read)).rejects.toThrow("DB_FAILURE");
+    expect(read).not.toHaveBeenCalled();
+    expect(f.statements.map(x => x.sql)).toEqual(["BEGIN READ ONLY"]);
+    expect(f.release).toHaveBeenCalledOnce();
+  });
+
   it("fails closed when role switch itself fails", async () => {
     const f = fake({failOn:"SET LOCAL ROLE"});
     await expect(withScopedKasbonReadOnly(f.client, 1, async ()=>null)).rejects.toThrow("DB_FAILURE");
