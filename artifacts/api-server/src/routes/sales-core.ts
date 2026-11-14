@@ -19,7 +19,20 @@ router.use(authenticateAdmin);
 
 router.get("/sales/ai-drafts", async (request, response): Promise<void> => {
   const adminRequest = request as AdminRequest;
-  const companyId = adminRequest.adminUser?.companyId ?? null;
+  const actor = adminRequest.adminUser;
+  const assignedCompanyId = actor?.companyId;
+  const companyId = Number.isSafeInteger(assignedCompanyId) &&
+    Number(assignedCompanyId) > 0 ? Number(assignedCompanyId) : null;
+  // A non-global actor with no verified company must not turn the SQL's
+  // optional company filter into an all-company read.
+  const isGlobalActor = ["super_admin", "owner"].includes(actor?.role?.toLowerCase() ?? "");
+  if (companyId === null && !isGlobalActor) {
+    response.status(403).json({
+      error: "Pilih perusahaan yang sesuai dengan hak akses.",
+      code: "COMPANY_SCOPE_REQUIRED",
+    });
+    return;
+  }
 
   try {
     const result = await pool.query<{
