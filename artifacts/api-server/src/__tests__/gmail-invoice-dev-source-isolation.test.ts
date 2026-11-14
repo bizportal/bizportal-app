@@ -15,9 +15,16 @@ describe("official BizPortal DEV Gmail invoice isolation", () => {
     expect(runtime).toContain("[key, gmailConfigEnvironment()]");
     expect(runtime).not.toContain("environment in ('all','production')");
   });
-  it("requires an explicit DEV-only mailbox for Connect and Sync", () => {
+  it("requires an explicit DEV mailbox independently for Connect, Verify, and Sync", () => {
     expect(route).toContain("isDevelopmentEnvironment() ? configured : configured || DEFAULT_SOURCE_EMAIL");
-    expect(route.match(/GMAIL_DEV_SOURCE_EMAIL_REQUIRED/g)).toHaveLength(2);
+    for (const action of ["connect", "verify-connection", "sync"]) {
+      const marker = `"/recon-classification/invoice-sources/gmail/${action}"`;
+      const start = route.indexOf(marker);
+      expect(start).toBeGreaterThan(-1);
+      const end = route.indexOf("\nrouter.", start);
+      const handler = route.slice(start, end < 0 ? undefined : end);
+      expect(handler).toContain('"GMAIL_DEV_SOURCE_EMAIL_REQUIRED"');
+    }
   });
   it("does not borrow general OAuth credentials in DEV", () => {
     expect(route).toContain('isDevelopmentEnvironment() ? dedicated : dedicated || await getRuntimeConfig("GOOGLE_CLIENT_ID")');
