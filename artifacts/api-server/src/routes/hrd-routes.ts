@@ -3,8 +3,12 @@ import { pool } from "@workspace/db";
 import { getProductionSession, getProductionUser } from "./dev-auth";
 import { authorizeHrdCompany } from "./hrd-access";
 import { withHrdCompanyReadOnly } from "./hrd-readonly-db";
+import { getEmployeeResignKasbonPrecheck } from "./hrd-resign-kasbon-precheck";
 
-type HrdReadRequest = Request & { hrdCompanyId?: number };
+type HrdReadRequest = Request & {
+  hrdCompanyId?: number;
+  hrdActor?: { role: string; email: string };
+};
 
 const router: IRouter = Router();
 // The existing legacy HRD release is separate. This canonical first slice stays
@@ -76,6 +80,7 @@ router.use("/hrd", async (req: HrdReadRequest, res: Response, next: NextFunction
       return;
     }
     req.hrdCompanyId = companyId;
+    req.hrdActor = { role: actorRole, email: actor.email };
     next();
   } catch (error) {
     req.log?.error?.({ error }, "HRD read-only authentication unavailable");
@@ -120,6 +125,53 @@ router.get("/hrd/employees", async (req: HrdReadRequest, res: Response) => {
   } catch (error) {
     req.log?.error?.({ error, companyId }, "HRD directory read unavailable");
     res.status(503).json({ message: "Direktori karyawan belum dapat dibaca." });
+  }
+});
+/**
+ * Stage-two advisory only: reproduces the legacy HRD resign kasbon precheck,
+ * with a separate flag and the existing role-scoped READ ONLY transaction.
+ * Does not register the employee-status PATCH endpoint.
+ */
+router.get("/hrd/employees/:id/resign-kasbon-precheck",async(req:HrdReadRequest,res:Response)=>{
+  if (process.env.HRD_CANONICAL_RESIGN_PREFLIGHT_ENABLED !== "true") {
+    res.status(404).json({message:"Pemeriksaan kasbon resign belum diaktifkan."});
+    return;
+  }
+  const rawId=req.params.id;
+  const employeeId=typeof rawId==="string" && /^[1-9][0-9]*$/.test(rawId)
+    ?Number(rawId):NaN;
+  if(!Number.isSafeInteger(employeeId)||employeeId<=0){
+    res.status(400).json({message:"ID karyawan tidak valid."});
+    return;
+  }
+  const companyId=req.hrdCompanyId!;
+  const role=req.hrdActor?.role?.trim().toLowerCase();
+  if(role!=="owner"&&role!=="super_admin"){
+    res.status(403).json({message:"Pemeriksaan hanya untuk Owner/Super Admin HRD."});
+    return;
+  }
+  try {
+    const record=await withHrdCompanyReadOnly(companyId,async client=>{
+      const employee=await client.query(
+        "SELECT id,status FROM public.employees WHERE id=$1 AND company_id=$2 AND deleted_at IS NULL LIMIT 1",
+        [employeeId,companyId],
+      );
+      if(employee.rowCount!==1)return null;
+      const kasbon=await getEmployeeResignKasbonPrecheck(client,companyId,employeeId);
+      return {employeeStatus:String(employee.rows[0].status),kasbon};
+    });
+    if(!record){
+      res.status(404).json({message:"Karyawan tidak ditemukan pada perusahaan aktif."});
+      return;
+    }
+    res.json({
+      companyId,employeeId,employeeStatus:record.employeeStatus,...record.kasbon,
+      checkReadOnly:true,kasbonUnchanged:true,canPay:false,canPostJournal:false,
+      canChangeStatus:false,
+    });
+  }catch(error){
+    req.log?.error?.({error,companyId,employeeId},"HRD read-only resign kasbon precheck failed");
+    res.status(503).json({message:"Pemeriksaan kasbon tidak tersedia. Tidak ada status karyawan yang diubah."});
   }
 });
 export default router;
