@@ -54,6 +54,7 @@ router.use((req, res, next) => {
   }).catch((error) => {
     req.log?.error({ error }, "DEV document template router unavailable");
     if (!res.headersSent) res.status(503).json({ error: "Template API unavailable" });
+  });
 });
 
 
