@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { PoolClient } from "pg";
-import { getEmployeeResignKasbonPrecheck } from "./hrd-resign-kasbon-precheck";
+import { getEmployeeResignKasbonPrecheck, type HrdKasbonQueryClient } from "./hrd-resign-kasbon-precheck";
 
 type RecordRow = Record<string, unknown>;
 const clearRow = (): RecordRow => ({
@@ -13,7 +12,7 @@ const clearRow = (): RecordRow => ({
 });
 function clientFor(row: RecordRow | null, rowCount = row ? 1 : 0) {
   const query = vi.fn().mockResolvedValue({ rowCount, rows: row ? [row] : [] });
-  return { client: { query } as unknown as Pick<PoolClient, "query">, query };
+  return { client: { query } as unknown as HrdKasbonQueryClient, query };
 }
 
 describe("HRD resignation kasbon preflight (not mounted)", () => {
