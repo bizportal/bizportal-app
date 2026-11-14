@@ -177,6 +177,10 @@ describe.skipIf(!enabled)("signed production session + Kasbon HTTP and disposabl
     await shared.client!.query("UPDATE public.users SET role='staff' WHERE email=$1",[alice]);
     expect((await request("/api/advances?companyId=900001",aliceCookie)).status).toBe(403);
   });
+  it("revokes an existing signed session when the account is deactivated",async()=>{
+    await shared.client!.query("UPDATE public.users SET is_active=false WHERE email=$1",[alice]);
+    expect((await request("/api/advances?companyId=900001",aliceCookie)).status).toBe(403);
+  });
   it("ensures writer endpoint remains unavailable",async()=>{
     const response=await fetch(base+"/api/advances?companyId=900001",{
       method:"POST",headers:{"content-type":"application/json",cookie:aliceCookie},body:"{}",
