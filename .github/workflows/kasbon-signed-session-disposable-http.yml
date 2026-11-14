@@ -1,0 +1,57 @@
+name: Kasbon Signed Session Disposable HTTP Gate
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "artifacts/api-server/src/routes/kasbon-signed-session-disposable-http.test.ts"
+      - ".github/workflows/kasbon-signed-session-disposable-http.yml"
+permissions:
+  contents: read
+jobs:
+  auth-disposable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci_only_disposable
+          POSTGRES_DB: kasbon_auth_ci
+        ports:
+          - 65432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d kasbon_auth_ci"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      APP_ENV: production
+      NODE_ENV: test
+      KASBON_SIGNED_PG_URL: postgresql://postgres:ci_only_disposable@127.0.0.1:65432/kasbon_auth_ci
+      SUPABASE_DATABASE_URL: ""
+      SUPABASE_DATABASE_URL_DEV: ""
+      PAYROLL_DATABASE_URL_PROD: ""
+      PAYROLL_PROD_SHARED_READONLY_ENABLED: "false"
+      FONNTE_TOKEN: ""
+      GCP_SECRET_MANAGER_BOOTSTRAP_JSON: ""
+      NODE_OPTIONS: --max-old-space-size=2048
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Verify ephemeral DB source and run signed-session real PostgreSQL HTTP
+        run: |
+          set -euo pipefail
+          test "$KASBON_SIGNED_PG_URL" = "postgresql://postgres:ci_only_disposable@127.0.0.1:65432/kasbon_auth_ci"
+          test -z "$SUPABASE_DATABASE_URL"
+          pnpm --filter @workspace/api-server exec vitest run src/routes/kasbon-signed-session-disposable-http.test.ts --maxWorkers=1 --no-file-parallelism
