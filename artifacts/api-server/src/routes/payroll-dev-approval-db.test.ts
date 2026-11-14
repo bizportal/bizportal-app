@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { devApprovalDedicatedEnabled, getDevApprovalPool } from "./payroll-dev-approval-db";
 
 const ref = "xssrfshdrtdfupgqwfdw";
@@ -37,6 +38,14 @@ describe("separate DEV Payroll approval database identity (source-only)", () => 
     ]) {
       vi.stubEnv("PAYROLL_APPROVAL_DATABASE_URL_DEV", url);
       expect(devApprovalDedicatedEnabled()).toBe(true);
+    }
+  });
+  it("keeps approval routes unmounted from the shipped API", () => {
+    const index = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+    const payroll = readFileSync(new URL("./payroll.ts", import.meta.url), "utf8");
+    for (const source of [index, payroll]) {
+      expect(source).not.toContain("registerPayrollSuperAdminApprovalRoutes");
+      expect(source).not.toContain("super-admin-approve");
     }
   });
   it("never enables the DEV writer in production", () => {
