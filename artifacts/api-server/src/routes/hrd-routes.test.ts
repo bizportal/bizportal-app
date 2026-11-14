@@ -7,7 +7,7 @@ const state=vi.hoisted(()=>({
   enabled:true, session:true, actor:true, active:true, role:"owner",
   companyId:1 as number|null, userId:"google_103728868378401731050",
   dbRole:"owner", dbCompanyId:1, readerError:false, precheckError:false,
-  storageReady:true, storageCalls:0,
+  storageReady:true, storageCalls:0, documentReadFailure:false,
   dbQueries:[] as Array<{sql:string; values:unknown[]}>,
   scoped:[] as Array<{companyId:number; sql:string; values:unknown[]}>,
 }));
@@ -40,6 +40,25 @@ vi.mock("./hrd-readonly-db",()=>({
           activeReservations:"0",activeReservationAmount:"0.00",
         }]};
       }
+      if(sql.includes("FROM hrd_private.employee_documents")) {
+        if(state.documentReadFailure)throw Error("SENSITIVE_PRIVATE_DOCUMENT_SQL_ERROR");
+        const rows=companyId===1?[{
+          id:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          doc_type:"ktp",mime_type:"image/png",status:"prepared",
+          confidence:null,created_at:"2026-11-10T00:00:00Z",
+          scanned_at:null,verified_at:null,
+        }]:[];
+        return {rowCount:rows.length,rows};
+      }
+      if(sql.includes("FROM hrd_private.employee_document_audit")) {
+        return {rowCount:1,rows:[{
+          document_id:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          action:"prepared",created_at:"2026-11-10T00:00:00Z",
+        }]};
+      }
+      if(sql.includes("FROM hrd_private.employee_profiles")) {
+        return {rowCount:1,rows:[{profilePresent:false}]};
+      }
       if(sql.includes("SELECT id FROM"))return{rowCount:1,rows:[{id:38}]};
       const rows=companyId===1?[{
         id:38,company_id:1,first_name:"Andi",last_name:"Wangsamas",
@@ -71,10 +90,11 @@ describe("canonical gated HRD directory stage-one",()=>{
     vi.stubEnv("HRD_CANONICAL_READONLY_ENABLED","true");
     vi.stubEnv("HRD_CANONICAL_RESIGN_PREFLIGHT_ENABLED","");
     vi.stubEnv("HRD_CANONICAL_STORAGE_PREFLIGHT_ENABLED","");
+    vi.stubEnv("HRD_CANONICAL_DOCUMENT_METADATA_ENABLED","");
     state.enabled=true;state.session=true;state.actor=true;state.active=true;
     state.role="owner";state.companyId=1;state.dbRole="owner";state.dbCompanyId=1;
     state.userId="google_103728868378401731050";state.readerError=false;state.precheckError=false;
-    state.dbQueries.length=0;state.scoped.length=0;state.storageCalls=0;state.storageReady=true;
+    state.dbQueries.length=0;state.scoped.length=0;state.storageCalls=0;state.storageReady=true;state.documentReadFailure=false;
   });
   afterEach(()=>vi.unstubAllEnvs());
   const get=(path="/hrd/employees?companyId=1")=>fetch(base+"/api"+path);
@@ -229,6 +249,55 @@ describe("canonical gated HRD directory stage-one",()=>{
     const document=await fetch(base+"/api/hrd/employees/38/documents/prepare?companyId=1",{method:"POST"});
     expect([404,405]).toContain(document.status);
     expect(state.storageCalls).toBe(0);
+  });
+
+  it("keeps employee-document detail disabled by default without private-table queries",async()=>{
+    const r=await get("/hrd/employees/38?companyId=1");
+    expect(r.status).toBe(404);
+    expect(state.scoped).toHaveLength(0);
+  });
+  it("returns scoped metadata without OCR payloads, signed URLs or private document content",async()=>{
+    vi.stubEnv("HRD_CANONICAL_DOCUMENT_METADATA_ENABLED","true");
+    const r=await get("/hrd/employees/38?companyId=1");
+    expect(r.status).toBe(200);
+    expect(r.headers.get("cache-control")).toBe("no-store");
+    const data=await r.json() as Record<string,any>;
+    expect(data).toMatchObject({
+      companyId:1,employeeId:38,readOnly:true,
+      coverage:"HRD_DOCUMENT_METADATA_ONLY",recordsLimitedTo:80,
+      profilePresent:false,verifiedProfile:null,canPay:false,
+      statusChangeEnabled:false,photoUploadEnabled:false,
+      ocrEnabled:false,canVerify:false,canPreview:false,
+    });
+    expect(data.documents).toHaveLength(1);
+    expect(data.audit).toHaveLength(1);
+    expect(data.documents[0]).toMatchObject({doc_type:"ktp",status:"prepared"});
+    const raw=JSON.stringify(data);
+    expect(raw).not.toMatch(/extracted_data|verified_data|approved_data|storage_path|signed_url|actor_email|password|secret/i);
+    expect(state.scoped).toHaveLength(4);
+    expect(state.scoped.every(x=>x.companyId===1)).toBe(true);
+    expect(state.scoped[1].sql).toContain("company_id=$1 AND employee_id=$2");
+    expect(state.scoped[2].sql).toContain("company_id=$1 AND employee_id=$2");
+    expect(state.scoped[3].sql).toContain("company_id=$1 AND employee_id=$2");
+    expect(state.scoped.slice(1).every(x=>JSON.stringify(x.values)===JSON.stringify([1,38]))).toBe(true);
+    expect(state.scoped.every(x=>!(/\b(INSERT|UPDATE|DELETE)\b/i).test(x.sql))).toBe(true);
+  });
+  it("refuses invalid employee IDs, cross-company Owner and inactive accounts without private-table reads",async()=>{
+    vi.stubEnv("HRD_CANONICAL_DOCUMENT_METADATA_ENABLED","true");
+    expect((await get("/hrd/employees/0?companyId=1")).status).toBe(400);
+    expect((await get("/hrd/employees/38?companyId=2")).status).toBe(403);
+    state.active=false;
+    expect((await get("/hrd/employees/38?companyId=1")).status).toBe(403);
+    expect(state.scoped).toHaveLength(0);
+  });
+  it("fails closed with redacted 503 when document metadata SQL fails",async()=>{
+    vi.stubEnv("HRD_CANONICAL_DOCUMENT_METADATA_ENABLED","true");
+    state.documentReadFailure=true;
+    const r=await get("/hrd/employees/38?companyId=1");
+    expect(r.status).toBe(503);
+    const body=await r.text();
+    expect(body).not.toContain("SENSITIVE_PRIVATE_DOCUMENT_SQL_ERROR");
+    expect(body).not.toContain("extracted_data");
   });
 
 });
