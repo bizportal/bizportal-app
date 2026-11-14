@@ -21,7 +21,7 @@ describe("DEV OTP never creates schema as a request side effect", () => {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
-      (req as typeof req & { log: { error: () => void } }).log = { error: () => undefined };
+      Object.defineProperty(req, "log", { value: { error: () => undefined }, configurable: true });
       next();
     });
     app.use("/api", otpRouter);
