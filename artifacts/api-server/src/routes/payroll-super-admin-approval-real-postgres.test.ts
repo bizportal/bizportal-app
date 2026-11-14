@@ -77,7 +77,7 @@ describe.skipIf(!enabled)("Super Admin approval, real disposable PostgreSQL and 
     });
     registerPayrollSuperAdminApprovalRoutes(router);
     const app=express();app.use(express.json());
-    app.use((req,_res,next)=>{req.log={error:vi.fn()} as typeof req.log;next();});
+    app.use((req,_res,next)=>{req.log={error:vi.fn()} as unknown as typeof req.log;next();});
     app.use("/api",router);
     server=createServer(app);server.listen(0,"127.0.0.1");await once(server,"listening");
     const a=server.address();if(!a||typeof a==="string")throw Error("NO_TEST_PORT");
