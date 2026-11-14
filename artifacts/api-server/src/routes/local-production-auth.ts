@@ -8,6 +8,7 @@ import {
   getProductionUser,
   initializeProductionSessionSigning,
   isDevelopmentEnvironment,
+  isSignedOtpDevEnabled,
   setProductionSessionCookie,
   type ProductionSession,
 } from "./dev-auth";
@@ -463,7 +464,7 @@ router.post("/auth/email-otp/send", async (
   response: Response,
   next: NextFunction,
 ): Promise<void> => {
-  if (isDevelopmentEnvironment()) {
+  if (isDevelopmentEnvironment() && !isSignedOtpDevEnabled()) {
     next();
     return;
   }
@@ -546,7 +547,7 @@ router.post("/auth/email-otp/verify", async (
   response: Response,
   next: NextFunction,
 ): Promise<void> => {
-  if (isDevelopmentEnvironment()) {
+  if (isDevelopmentEnvironment() && !isSignedOtpDevEnabled()) {
     next();
     return;
   }
