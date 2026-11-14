@@ -571,129 +571,8 @@ async function readStatus(
   };
 }
 
-const GMAIL_ORGANIZER_POLL_MS = 10 * 60 * 1000;
-let gmailOrganizerTickActive = false;
-
-async function runGmailOrganizerTick(): Promise<void> {
-  if (
-    isDevelopmentEnvironment() ||
-    gmailOrganizerTickActive
-  ) {
-    return;
-  }
-
-  gmailOrganizerTickActive = true;
-
-  try {
-    const result = await pool.query<{ key: string }>(
-      `select key
-         from public.app_config
-        where key like 'GMAIL_INVOICE_SOURCE_%_REFRESH_TOKEN'
-          and coalesce(value,'') <> ''
-        order by key`,
-    );
-
-    for (const row of result.rows) {
-      const match = row.key.match(
-        /^GMAIL_INVOICE_SOURCE_(\d+)_REFRESH_TOKEN$/,
-      );
-      const companyId = match
-        ? Number(match[1])
-        : 0;
-
-      if (!Number.isSafeInteger(companyId) || companyId <= 0) {
-        continue;
-      }
-
-      try {
-        const encryptedToken = await getConfig(
-          companyId,
-          "REFRESH_TOKEN",
-        );
-        if (!encryptedToken) continue;
-
-        const accessToken = await refreshAccessToken(
-          await decryptRefreshToken(encryptedToken),
-        );
-        const profile = await gmailProfile(accessToken);
-
-        if (profile.emailAddress !== sourceEmail()) {
-          continue;
-        }
-
-        const syncResult =
-          await syncGmailInvoiceCandidates({
-            companyId,
-            accessToken,
-            sourceEmail: profile.emailAddress,
-            actorEmail: "system:gmail-invoice-sync",
-          });
-
-        const syncedAt = new Date().toISOString();
-
-        await Promise.all([
-          setConfig(
-            companyId,
-            "LAST_SYNC_AT",
-            syncedAt,
-            {
-              description:
-                "Last successful automatic Gmail invoice source sync time",
-              actor: "system:gmail-invoice-sync",
-            },
-          ),
-          setConfig(
-            companyId,
-            "LAST_SYNC_COUNT",
-            String(syncResult.attachmentsSeen),
-            {
-              description:
-                "Invoice attachments processed in latest automatic Gmail sync",
-              actor: "system:gmail-invoice-sync",
-            },
-          ),
-          setConfig(
-            companyId,
-            "LAST_SYNC_STATUS",
-            syncResult.failed > 0
-              ? "partial"
-              : "ok",
-            {
-              description:
-                "Last automatic Gmail invoice source synchronization status",
-              actor: "system:gmail-invoice-sync",
-            },
-          ),
-        ]);
-
-        await provisionGmailOrganizationRules({
-          companyId,
-          accessToken,
-          actorEmail: "system:gmail-organizer",
-          senderScanLimit: 100,
-        });
-      } catch (error) {
-        console.warn(
-          "[gmail-organizer] background pass failed",
-          {
-            companyId,
-            error:
-              error instanceof Error
-                ? error.message
-                : String(error),
-          },
-        );
-      }
-    }
-  } catch (error) {
-    console.warn(
-      "[gmail-organizer] background scan failed",
-      error,
-    );
-  } finally {
-    gmailOrganizerTickActive = false;
-  }
-}
+// Preserve active DEV manual-only Gmail scanning. Do not schedule background
+// OCR or label changes during a canonical source cutover.
 
 router.get(
   "/recon-classification/invoice-sources/gmail/status",
@@ -1668,15 +1547,5 @@ router.post(
     }
   },
 );
-
-if (!isDevelopmentEnvironment()) {
-  setTimeout(() => {
-    void runGmailOrganizerTick();
-  }, 60_000).unref();
-
-  setInterval(() => {
-    void runGmailOrganizerTick();
-  }, GMAIL_ORGANIZER_POLL_MS).unref();
-}
 
 export default router;
