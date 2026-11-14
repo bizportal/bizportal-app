@@ -364,11 +364,11 @@ export default function AdvanceManagementPage() {
                 {loading && (
                   <TableRow><TableCell colSpan={8} className="text-center py-8 text-slate-400 text-sm">Memuat data…</TableCell></TableRow>
                 )}
-                {!loading && advances.length === 0 && (
+                {!loading && !readError && advances.length === 0 && (
                   <TableRow><TableCell colSpan={8} className="text-center py-12 text-slate-400 text-sm">
                     <Wallet className="w-8 h-8 mx-auto mb-2 opacity-30" />
                     <p>Belum ada advance</p>
-                    <Button className="mt-3 text-xs h-8" size="sm" onClick={() => setCreateOpen(true)}>
+                    <Button className="mt-3 text-xs h-8" size="sm" disabled={readOnly} onClick={() => setCreateOpen(true)}>
                       <Plus className="w-3 h-3 mr-1" /> Buat Advance Pertama
                     </Button>
                   </TableCell></TableRow>
@@ -790,11 +790,11 @@ function AdvanceDetailDrawer({ advance, loading, onClose, onRefresh, onListRefre
     Number(adv.responsible_company_id) !== Number(adv.company_id)
   );
 
-  const canApprove   = ["pending_approval", "draft"].includes(adv?.lifecycle_status ?? "");
-  const canDisburse  = ["approved"].includes(adv?.lifecycle_status ?? "");
-  const canSettle    = ["outstanding", "partially_settled", "disbursed"].includes(adv?.lifecycle_status ?? "");
+  const canApprove   = !adv?.readOnly && ["pending_approval", "draft"].includes(adv?.lifecycle_status ?? "");
+  const canDisburse  = !adv?.readOnly && ["approved"].includes(adv?.lifecycle_status ?? "");
+  const canSettle    = !adv?.readOnly && ["outstanding", "partially_settled", "disbursed"].includes(adv?.lifecycle_status ?? "");
   const canRepay     = canSettle;
-  const canVoid      = !["settled", "closed", "void"].includes(adv?.lifecycle_status ?? "");
+  const canVoid      = !adv?.readOnly && !["settled", "closed", "void"].includes(adv?.lifecycle_status ?? "");
 
   const allocTotal = allocLines.reduce((s, l) => s + (Number(l.amount) || 0), 0);
   const allocBalance = Number(stlAmtReceived) - allocTotal;
@@ -868,7 +868,7 @@ function AdvanceDetailDrawer({ advance, loading, onClose, onRefresh, onListRefre
                   {canSettle && <TabsTrigger value="settle" className="text-xs">Settlement</TabsTrigger>}
                   {canRepay && <TabsTrigger value="repay" className="text-xs">Repayment</TabsTrigger>}
                   {canDisburse && <TabsTrigger value="disburse" className="text-xs">Cairkan</TabsTrigger>}
-                  <TabsTrigger value="cicilan" className="text-xs gap-1">
+                  {!adv?.readOnly && <TabsTrigger value="cicilan" className="text-xs gap-1">
                     <CalendarClock className="w-3 h-3" />
                     Cicilan
                     {(adv?.installment_schedule ?? []).length > 0 && (
@@ -876,7 +876,7 @@ function AdvanceDetailDrawer({ advance, loading, onClose, onRefresh, onListRefre
                         {(adv.installment_schedule ?? []).length}
                       </span>
                     )}
-                  </TabsTrigger>
+                  </TabsTrigger>}
                   <TabsTrigger value="history" className="text-xs">Riwayat</TabsTrigger>
                 </TabsList>
 
