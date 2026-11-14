@@ -22,7 +22,9 @@ export async function authenticateAdmin(
     const signedSession = (!isDevelopmentEnvironment() || isSignedOtpDevEnabled())
       ? getProductionSession(request)
       : null;
-    const resolvedUser = devActor ?? (signedSession ? await getProductionUser(signedSession) : null);
+    // Prefer the DB-verified signed identity when both DEV cookies coexist.
+    // A rejected signed identity must never fall back to the legacy actor.
+    const resolvedUser = signedSession ? await getProductionUser(signedSession) : devActor;
 
     if (!resolvedUser) {
       response.status(401).json({ error: "Unauthorized" });

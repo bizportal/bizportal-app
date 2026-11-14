@@ -509,11 +509,7 @@ export function createDevAuthRouter(): Router {
       return;
     }
 
-    const legacyUser = getDevSession(request);
-    if (legacyUser) {
-      response.json({ user: legacyUser });
-      return;
-    }
+    // When OTP is enabled, prefer its verified identity over a legacy cookie.
     if (isSignedOtpDevEnabled()) {
       const signed = getProductionSession(request);
       if (signed) {
@@ -532,18 +528,27 @@ export function createDevAuthRouter(): Router {
         }
       }
     }
+    const legacyUser = getDevSession(request);
+    if (legacyUser) {
+      response.json({ user: legacyUser });
+      return;
+    }
     next();
   });
 
   router.get("/users/me", async (request, response, next) => {
     if (!isDevelopmentEnvironment()) return next();
 
-    let user = getDevSession(request);
-    if (!user && isSignedOtpDevEnabled()) {
+    let user: DevAuthUser | null = null;
+    if (isSignedOtpDevEnabled()) {
       const signed = getProductionSession(request);
       if (signed) {
         try {
           user = await getProductionUser(signed);
+          if (!user) {
+            response.status(403).json({ error: "Forbidden" });
+            return;
+          }
         } catch (error) {
           request.log?.error?.({ error }, "DEV signed OTP profile unavailable");
           response.status(503).json({ error: "Authorization service unavailable" });
@@ -551,6 +556,7 @@ export function createDevAuthRouter(): Router {
         }
       }
     }
+    user ??= getDevSession(request);
     if (!user) return next();
 
     return response.json({

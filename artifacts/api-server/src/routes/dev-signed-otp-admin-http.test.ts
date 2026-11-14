@@ -9,9 +9,9 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@workspace/db", () => ({ pool: { query: mocks.query } }));
 
 import { authenticateAdmin, type AdminRequest } from "./admin-auth";
-import { setProductionSessionCookie } from "./dev-auth";
+import { createDevAuthRouter, setProductionSessionCookie } from "./dev-auth";
 
-const envKeys = ["APP_ENV", "NODE_ENV", "SESSION_SECRET", "BIZPORTAL_SESSION_SECRET", "BIZPORTAL_SIGNED_OTP_ENABLED_DEV"] as const;
+const envKeys = ["APP_ENV", "NODE_ENV", "SESSION_SECRET", "BIZPORTAL_SESSION_SECRET", "BIZPORTAL_SIGNED_OTP_ENABLED_DEV", "DEV_LOGIN_EMAILS", "DEV_LOGIN_ROLE"] as const;
 const original = Object.fromEntries(envKeys.map(k => [k, process.env[k]])) as Record<(typeof envKeys)[number], string | undefined>;
 
 describe("signed OTP HTTP admin middleware under explicit DEV opt-in", () => {
@@ -19,6 +19,8 @@ describe("signed OTP HTTP admin middleware under explicit DEV opt-in", () => {
 
   beforeAll(async () => {
     const app = express();
+    app.use(express.json());
+    app.use(createDevAuthRouter());
     app.get("/protected", authenticateAdmin, (req, res) => {
       const user = (req as AdminRequest).adminUser;
       res.json({ email: user?.email, role: user?.role, companyId: user?.companyId });
@@ -38,6 +40,8 @@ describe("signed OTP HTTP admin middleware under explicit DEV opt-in", () => {
     process.env.SESSION_SECRET = "dev-otp-verified-user-session-secret-32-plus";
     delete process.env.BIZPORTAL_SESSION_SECRET;
     delete process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV;
+    process.env.DEV_LOGIN_EMAILS = "admin@example.com";
+    process.env.DEV_LOGIN_ROLE = "admin";
     mocks.query.mockReset();
     mocks.query.mockResolvedValue({
       rows: [{
@@ -76,14 +80,28 @@ describe("signed OTP HTTP admin middleware under explicit DEV opt-in", () => {
     return issued.split(";")[0];
   }
 
-  async function call(sentCookie?: string): Promise<{status: number; body: Record<string, unknown>}> {
+  async function legacyDevCookie(): Promise<string> {
+    const address = server.address();
+    if (!address || typeof address === "string") throw Error("Missing test port");
+    const response = await fetch("http://127.0.0.1:" + address.port + "/auth/dev-login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "admin@example.com" }),
+    });
+    expect(response.status).toBe(200);
+    const header = response.headers.get("set-cookie") ?? "";
+    expect(header).toContain("bizportal_dev_session=");
+    return header.split(";")[0];
+  }
+
+  async function call(sentCookie?: string, path = "/protected"): Promise<{status: number; body: Record<string, unknown>}> {
     const address = server.address();
     if (!address || typeof address === "string") throw Error("Missing test port");
     const result = await new Promise<{status: number; body: string}>((resolve, reject) => {
       const req = http.get({
         hostname: "127.0.0.1",
         port: address.port,
-        path: "/protected",
+        path,
         headers: sentCookie ? { cookie: sentCookie } : {},
       }, (res) => {
         let body = "";
@@ -107,6 +125,46 @@ describe("signed OTP HTTP admin middleware under explicit DEV opt-in", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ email: "admin@example.com", role: "admin", companyId: 7 });
     expect(mocks.query).toHaveBeenCalledTimes(1);
+  });
+
+  it("prefers DB-verified signed OTP to a simultaneous valid legacy DEV cookie", async () => {
+    const legacy = await legacyDevCookie();
+    const both = legacy + "; " + cookie();
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
+
+    const route = await call(both);
+    expect(route.status).toBe(200);
+    expect(route.body).toEqual({ email: "admin@example.com", role: "admin", companyId: 7 });
+
+    const profile = await call(both, "/auth/user");
+    expect(profile.status).toBe(200);
+    expect(profile.body).toMatchObject({ user: { email: "admin@example.com", role: "admin", companyId: 7 } });
+
+    const me = await call(both, "/users/me");
+    expect(me.status).toBe(200);
+    expect(me.body).toMatchObject({ email: "admin@example.com", role: "admin" });
+    expect(mocks.query).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not fall back to a legacy cookie when the signed DB user is inactive", async () => {
+    const both = await legacyDevCookie() + "; " + cookie();
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
+    mocks.query.mockResolvedValue({ rows: [{ user_data: {
+      email: "admin@example.com", role: "admin", is_active: false,
+      status: "inactive", company_id: 7,
+    } }] });
+    expect((await call(both)).status).toBe(401);
+    expect((await call(both, "/auth/user")).status).toBe(403);
+    expect((await call(both, "/users/me")).status).toBe(403);
+    expect(mocks.query).toHaveBeenCalledTimes(3);
+  });
+
+  it("retains legacy DEV authorization when signed OTP is OFF", async () => {
+    const both = await legacyDevCookie() + "; " + cookie();
+    const route = await call(both);
+    expect(route.status).toBe(200);
+    expect(route.body).toEqual({ email: "admin@example.com", role: "admin", companyId: null });
+    expect(mocks.query).not.toHaveBeenCalled();
   });
 
   it("rejects forged sessions before accessing the database", async () => {
