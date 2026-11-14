@@ -26,6 +26,8 @@ export async function probeHrdPrivateStorageMetadata(): Promise<boolean> {
   try {
     const response = await fetch(`${base}/storage/v1/bucket/${HRD_BUCKET}`,{
       method:"GET",
+      redirect:"error", // Never forward a service credential to a redirect target.
+      cache:"no-store",
       headers:{ apikey:key, Authorization:`Bearer ${key}` },
       signal:AbortSignal.timeout(8000),
     });
