@@ -5,6 +5,14 @@ on:
     paths:
       - "artifacts/api-server/src/routes/bank-reconciliation.ts"
       - "artifacts/api-server/src/__tests__/bank-reconciliation*.test.ts"
+      - "artifacts/api-server/src/lib/reconciliation/canonicalBankMutationId.ts"
+      - "artifacts/api-server/src/lib/reconciliation/canonicalSettlementCorrection.ts"
+      - "artifacts/api-server/src/lib/reconciliation/canonicalSettlementCorrectionCoordinator.ts"
+      - "artifacts/api-server/src/lib/reconciliation/issue292OwnerRuleGate.ts"
+      - "artifacts/api-server/src/lib/reconciliation/issue292FinancePrincipalGate.ts"
+      - "artifacts/api-server/src/__tests__/qris-correction-writer-preconditions.test.ts"
+      - "artifacts/api-server/src/__tests__/qris292-*.test.ts"
+      - "scripts/sql/20261113_guarded_finalized_settlement_membership_compensation.sql"
       - ".github/workflows/reconciliation-ci.yml"
   workflow_dispatch:
 
@@ -30,6 +38,9 @@ jobs:
       - name: API typecheck
         run: pnpm --filter @workspace/api-server run typecheck
       - name: Source integrity regression
-        run: pnpm --filter @workspace/api-server exec vitest run src/__tests__/bank-reconciliation-source-integrity.test.ts src/__tests__/bank-reconciliation-rule-ai.test.ts src/__tests__/bank-reconciliation-button-contract.test.ts src/__tests__/bank-reconciliation-rule-ai-autopost.test.ts src/__tests__/recon-classification-rule-api.test.ts src/__tests__/companies-router-auth-scope.test.ts src/__tests__/bank-reconciliation-qris-date-cast.test.ts src/__tests__/bank-reconciliation-canonical-posting.test.ts src/__tests__/bank-reconciliation-date-serialization.test.ts src/__tests__/bank-reconciliation-qris-group-gross.test.ts src/__tests__/bank-reconciliation-post-contract.test.ts
+        run: pnpm --filter @workspace/api-server exec vitest run src/__tests__/bank-reconciliation-source-integrity.test.ts src/__tests__/bank-reconciliation-rule-ai.test.ts src/__tests__/bank-reconciliation-button-contract.test.ts src/__tests__/bank-reconciliation-rule-ai-autopost.test.ts src/__tests__/recon-classification-rule-api.test.ts src/__tests__/companies-router-auth-scope.test.ts src/__tests__/bank-reconciliation-qris-date-cast.test.ts src/__tests__/bank-reconciliation-canonical-posting.test.ts src/__tests__/bank-reconciliation-date-serialization.test.ts src/__tests__/bank-reconciliation-qris-group-gross.test.ts src/__tests__/bank-reconciliation-post-contract.test.ts src/__tests__/bank-reconciliation-canonical-bigint.test.ts
       - name: API build
         run: pnpm --filter @workspace/api-server run build
+
+      - name: Issue 292 source-only finance preconditions (no database)
+        run: pnpm --filter @workspace/api-server exec vitest run src/__tests__/qris-correction-writer-preconditions.test.ts src/__tests__/qris292-owner-rule-gate.test.ts src/__tests__/qris292-owner-builder-contract.test.ts

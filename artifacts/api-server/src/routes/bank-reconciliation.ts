@@ -1,3 +1,4 @@
+import { normalizeCanonicalBankMutationId } from "../lib/reconciliation/canonicalBankMutationId";
 import { Router, type IRouter, type Request } from "express";
 import { pool } from "@workspace/db";
 import { evaluateReconRules, type ReconRule } from "../lib/reconciliation/reconRuleEngine";
@@ -3259,7 +3260,14 @@ async function approveCanonicalSettlementLink(
   }
 
   const settlementStatus = String(batch.status ?? "").toLowerCase();
-  const linkedMutationId = batch.bank_mutation_id ?? batch.canonical_bank_mutation_id;
+  let linkedMutationId: number | null;
+  try {
+    linkedMutationId = normalizeCanonicalBankMutationId(
+      batch.bank_mutation_id ?? batch.canonical_bank_mutation_id,
+    );
+  } catch {
+    throw new ApprovalError("Canonical settlement bank mutation ID is invalid.", 409, "CANONICAL_SETTLEMENT_ALREADY_USED");
+  }
   const mutationAmount = Number(mutation.amount);
   const settlementAmount = Number(batch.net_amount);
   const amountMatches =
