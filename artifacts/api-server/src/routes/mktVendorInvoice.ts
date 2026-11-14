@@ -9,6 +9,7 @@ import { z } from "zod/v4";
 import { and, asc, eq } from "drizzle-orm";
 import {
   db,
+  withMarketplaceFinanceDevTransaction,
   vendorInvoicesTable,
 } from "@workspace/db";
 import { imagePdfUpload, sanitizeFilename } from "../lib/uploadMiddleware.js";
@@ -92,25 +93,53 @@ async function resolveVendorPo(token: string, res: any) {
   return result.po;
 }
 
+type VerifiedPo = Extract<Awaited<ReturnType<typeof findPoByVendorToken>>, { ok: true }>["po"];
+
+/** Revalidate the opaque token inside the same tenant-bound Finance session
+ * used by canonical reads and writes. No client-provided company is trusted.
+ */
+async function withVendorFinance<T>(
+  token: string, po: VerifiedPo, work: (scopedDb: typeof db) => Promise<T>,
+): Promise<T | null> {
+  if (!po.companyId || !po.vendorId) return null;
+  return withMarketplaceFinanceDevTransaction(po.companyId, async scopedDb => {
+    const current = await findPoByVendorToken(token, scopedDb);
+    if (!current.ok || current.po.id !== po.id ||
+        current.po.companyId !== po.companyId ||
+        current.po.vendorId !== po.vendorId) return null;
+    return work(scopedDb);
+  });
+}
+
+function vendorFinanceUnavailable(error: unknown): boolean {
+  return error instanceof Error && (
+    error.message.startsWith("DEV_FINANCE_") ||
+    error.message.includes("Authorization unavailable")
+  );
+}
+
 // GET /api/mkt/vendor-invoice/:token/invoices — vendor's invoices for this PO
 router.get("/:token/invoices", tokenGetRateLimiter, async (req, res) => {
   try {
     const po = await resolveVendorPo(String(req.params.token ?? ""), res);
     if (!po) return;
-    const invoices = await db.select().from(vendorInvoicesTable)
-      .where(and(
-        eq(vendorInvoicesTable.mktPurchaseOrderId, po.id),
-        eq(vendorInvoicesTable.supplierId, po.vendorId),
-      ))
-      .orderBy(asc(vendorInvoicesTable.id));
-    const views = await Promise.all(invoices.map(async (invoice) => {
-      const detail = await getMarketplaceVendorInvoice(invoice.id);
-      return safeMarketplaceVendorInvoiceView(invoice, detail?.lines ?? []);
-    }));
+    const views = await withVendorFinance(String(req.params.token ?? ""), po, async scopedDb => {
+      const invoices = await scopedDb.select().from(vendorInvoicesTable)
+        .where(and(
+          eq(vendorInvoicesTable.mktPurchaseOrderId, po.id),
+          eq(vendorInvoicesTable.supplierId, po.vendorId),
+        ))
+        .orderBy(asc(vendorInvoicesTable.id));
+      return Promise.all(invoices.map(async invoice => {
+        const detail = await getMarketplaceVendorInvoice(invoice.id, scopedDb);
+        return safeMarketplaceVendorInvoiceView(invoice, detail?.lines ?? []);
+      }));
+    });
+    if (!views) return res.status(404).json({ ok: false, error: "TOKEN_INVALID" });
     return res.json({ ok: true, data: views });
   } catch (err) {
     logger.warn({ err }, "[mktVendorInvoice] list invoices error");
-    return res.status(500).json({ ok: false, error: "Internal server error" });
+    return res.status(vendorFinanceUnavailable(err) ? 503 : 500).json({ ok: false, error: "Internal server error" });
   }
 });
 
@@ -131,8 +160,14 @@ router.post("/:token", tokenPostRateLimiter, upload.single("file"), async (req, 
       return res.status(400).json({ ok: false, error: "INVALID_FILE", message: magic.errorMessage });
     }
 
-    objectPath = await storage.uploadPrivateEntity(file.buffer, file.mimetype);
-    const result = await createMarketplaceVendorInvoice({
+    // Refuse missing/privileged DB credentials before uploading a private file.
+    const token = String(req.params.token ?? "");
+    const ready = await withVendorFinance(token, po, async () => true);
+    if (!ready) return res.status(404).json({ ok: false, error: "TOKEN_INVALID" });
+    const uploadedPath = await storage.uploadPrivateEntity(file.buffer, file.mimetype);
+    objectPath = uploadedPath;
+    const result = await withVendorFinance(token, po, scopedDb =>
+      createMarketplaceVendorInvoice({
       poId: po.id,
       grId: parsed.data.grId,
       vendorInvoiceRef: parsed.data.vendorInvoiceRef,
@@ -144,7 +179,7 @@ router.post("/:token", tokenPostRateLimiter, upload.single("file"), async (req, 
       notes: parsed.data.notes,
       lines: parsed.data.lines,
       attachment: {
-        objectPath,
+        objectPath: uploadedPath,
         fileName: sanitizeFilename(file.originalname),
         contentType: file.mimetype,
         size: file.size,
@@ -157,7 +192,12 @@ router.post("/:token", tokenPostRateLimiter, upload.single("file"), async (req, 
       actorType: "vendor",
       actorId: String(po.vendorId),
       actorName: po.vendorNameSnapshot,
-    });
+    }, scopedDb));
+    if (!result) {
+      await storage.tryDeletePrivateEntity(objectPath);
+      objectPath = null;
+      return res.status(404).json({ ok: false, error: "TOKEN_INVALID" });
+    }
     if (result.ok) {
       if (result.alreadyExists) {
         await storage.tryDeletePrivateEntity(objectPath);
@@ -176,7 +216,7 @@ router.post("/:token", tokenPostRateLimiter, upload.single("file"), async (req, 
   } catch (err) {
     if (objectPath) await storage.tryDeletePrivateEntity(objectPath);
     logger.warn({ err }, "[mktVendorInvoice] create invoice error");
-    return res.status(500).json({ ok: false, error: "Internal server error" });
+    return res.status(vendorFinanceUnavailable(err) ? 503 : 500).json({ ok: false, error: "Internal server error" });
   }
 });
 
@@ -186,14 +226,18 @@ router.get("/:token/invoices/:invoiceId", tokenGetRateLimiter, async (req, res) 
     const po = await resolveVendorPo(String(req.params.token ?? ""), res);
     if (!po) return;
     const invoiceId = Number(req.params.invoiceId);
-    const detail = Number.isInteger(invoiceId) ? await getMarketplaceVendorInvoice(invoiceId) : null;
-    if (!detail || detail.invoice.mktPurchaseOrderId !== po.id || detail.invoice.supplierId !== po.vendorId) {
+    const detail = Number.isInteger(invoiceId)
+      ? await withVendorFinance(String(req.params.token ?? ""), po, scopedDb =>
+          getMarketplaceVendorInvoice(invoiceId, scopedDb))
+      : null;
+    if (!detail || detail.invoice.companyId !== po.companyId ||
+        detail.invoice.mktPurchaseOrderId !== po.id || detail.invoice.supplierId !== po.vendorId) {
       return res.status(404).json({ ok: false, error: "INVOICE_NOT_FOUND" });
     }
     return res.json({ ok: true, data: safeMarketplaceVendorInvoiceView(detail.invoice, detail.lines) });
   } catch (err) {
     logger.warn({ err }, "[mktVendorInvoice] get invoice error");
-    return res.status(500).json({ ok: false, error: "Internal server error" });
+    return res.status(vendorFinanceUnavailable(err) ? 503 : 500).json({ ok: false, error: "Internal server error" });
   }
 });
 
@@ -202,15 +246,20 @@ router.post("/:token/invoices/:invoiceId/submit", tokenPostRateLimiter, validate
     const po = await resolveVendorPo(String(req.params.token ?? ""), res);
     if (!po) return;
     const invoiceId = Number(req.params.invoiceId);
-    const detail = Number.isInteger(invoiceId) ? await getMarketplaceVendorInvoice(invoiceId) : null;
-    if (!detail || detail.invoice.mktPurchaseOrderId !== po.id || detail.invoice.supplierId !== po.vendorId) {
-      return res.status(404).json({ ok: false, error: "INVOICE_NOT_FOUND" });
-    }
-    const result = await submitMarketplaceVendorInvoice(invoiceId, {
-      actorType: "vendor",
-      actorId: String(po.vendorId),
-      actorName: po.vendorNameSnapshot,
-    });
+    const result = Number.isInteger(invoiceId)
+      ? await withVendorFinance(String(req.params.token ?? ""), po, async scopedDb => {
+          const detail = await getMarketplaceVendorInvoice(invoiceId, scopedDb);
+          if (!detail || detail.invoice.companyId !== po.companyId ||
+              detail.invoice.mktPurchaseOrderId !== po.id || detail.invoice.supplierId !== po.vendorId)
+            return null;
+          return submitMarketplaceVendorInvoice(invoiceId, {
+            actorType: "vendor",
+            actorId: String(po.vendorId),
+            actorName: po.vendorNameSnapshot,
+          }, scopedDb);
+        })
+      : null;
+    if (!result) return res.status(404).json({ ok: false, error: "INVOICE_NOT_FOUND" });
     if (result.ok) {
       return res.json({
         ok: true,
@@ -222,7 +271,7 @@ router.post("/:token/invoices/:invoiceId/submit", tokenPostRateLimiter, validate
     return res.status(failureStatus(result.code)).json({ ok: false, error: result.code, message: result.message });
   } catch (err) {
     logger.warn({ err }, "[mktVendorInvoice] submit invoice error");
-    return res.status(500).json({ ok: false, error: "Internal server error" });
+    return res.status(vendorFinanceUnavailable(err) ? 503 : 500).json({ ok: false, error: "Internal server error" });
   }
 });
 
