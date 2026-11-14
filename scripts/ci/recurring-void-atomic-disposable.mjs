@@ -175,7 +175,9 @@ try {
        "SELECT current_user AS role, current_setting('app.ci_void_company',true) AS company");
      assert.equal(identity.rows[0].role,"ci_void_scoped");
      assert.equal(identity.rows[0].company,String(company));
-     const result=await client.query(query,params);
+     const result=typeof query==="function"
+       ? await query(client)
+       : await client.query(query,params);
      await client.query("ROLLBACK");
      return result;
    }catch(e){
@@ -205,7 +207,16 @@ try {
  assert.equal(rawUpdate.rowCount,1);
  assert.equal((await one("SELECT status FROM ci_void.payments WHERE id=202"))[0].status,"confirmed");
  console.log("KNOWN RELEASE BLOCKER: invoker role can bypass function via direct same-tenant table UPDATE (rolled back)");
- console.log("DISPOSABLE_ROLE_RLS_PROTOTYPE_PASS 3 checks; NOT a least-privilege production grant design");
+ // A custom PostgreSQL GUC is caller-controlled when the DB principal can
+ // execute arbitrary SQL. This test deliberately proves the scope is not a
+ // trustworthy tenant identity source for a shared/untrusted runtime role.
+ const spoofed=await scoped(900001,async(client)=>{
+   await client.query("SELECT set_config('app.ci_void_company','900002',true)");
+   return client.query("SELECT count(*)::int AS n FROM ci_void.payments WHERE company_id=900002");
+ });
+ assert.equal(spoofed.rows[0].n,1);
+ console.log("KNOWN RELEASE BLOCKER: runtime role can change custom tenant GUC and read another company");
+ console.log("DISPOSABLE_ROLE_RLS_PROTOTYPE_PASS 4 checks; NOT a least-privilege production grant design");
 } finally {
  await pool.end();
 }
