@@ -4,6 +4,7 @@ import { getProductionSession, getProductionUser } from "./dev-auth";
 import { authorizeHrdCompany } from "./hrd-access";
 import { withHrdCompanyReadOnly } from "./hrd-readonly-db";
 import { getEmployeeResignKasbonPrecheck } from "./hrd-resign-kasbon-precheck";
+import { hrdStorageMetadataPreflightEnabled, probeHrdPrivateStorageMetadata } from "./hrd-storage-readiness";
 
 type HrdReadRequest = Request & {
   hrdCompanyId?: number;
@@ -102,6 +103,29 @@ router.get("/hrd/readiness", async (req: HrdReadRequest, res: Response) => {
     req.log?.error?.({ error, companyId }, "HRD scoped readiness unavailable");
     res.status(503).json({ ready: false, message: "Pembaca direktori HRD belum siap." });
   }
+});
+
+/**
+ * Metadata-only check of the existing private HRD bucket.
+ * The HRD session/account/company middleware above always runs first.
+ * Separate default-OFF flag ensures no storage credentials are used otherwise.
+ */
+router.get("/hrd/storage-readiness", async (req: HrdReadRequest, res: Response) => {
+  if (!hrdStorageMetadataPreflightEnabled()) {
+    res.status(404).json({ message: "Pemeriksaan storage HRD belum diaktifkan." });
+    return;
+  }
+  const role = req.hrdActor?.role;
+  if (role !== "owner" && role !== "super_admin") {
+    res.status(403).json({ message: "Pemeriksaan storage hanya untuk Owner/Super Admin HRD." });
+    return;
+  }
+  const ready = await probeHrdPrivateStorageMetadata();
+  res.status(ready ? 200 : 503).json({
+    ready, companyId:req.hrdCompanyId, storagePrivate:ready,
+    readOnly:true, uploadEnabled:false, ocrEnabled:false,
+    coverage:"HRD_STORAGE_METADATA_ONLY",
+  });
 });
 
 router.get("/hrd/employees", async (req: HrdReadRequest, res: Response) => {
