@@ -158,7 +158,7 @@ describe("existing DEV document template API",()=>{
     expect(html).toContain("text-align:center");
     expect(html).toContain("@page{size:A4");
     expect(html).toContain("cst-logo.png");
-    expect(html).toContain("src=\'/cst-logo.png\'");
+    expect(html).toContain("src=\'https://dev-bizportal.cstlogistic.co.id/cst-logo.png\'");
     expect(html).toContain("grid-template-columns:132px minmax(0,1fr)");
     expect(html).toContain("brand-rule-accent");
     expect(html).toContain("img-src \'self\' https: data:");
