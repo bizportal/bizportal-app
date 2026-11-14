@@ -9,11 +9,14 @@ import {
   setPayrollCompanyScope as setProdCompanyScope,
 } from "./payroll-prod-db";
 import {
-  getPayrollPool as getDevPayrollPool,
   payrollDedicatedEnabled as devDedicatedEnabled,
   payrollScopedQuery as devScopedQuery,
-  setPayrollCompanyScope as setDevCompanyScope,
 } from "./payroll-db";
+import {
+  devApprovalDedicatedEnabled,
+  getDevApprovalPool,
+  setDevApprovalCompanyScope,
+} from "./payroll-dev-approval-db";
 import { isDevelopmentEnvironment } from "./dev-auth";
 import { buildPayrollPreview, type PayrollPreviewItem } from "./payroll-preview";
 import { verifyKasbonReviewLedger } from "./payroll-kasbon-hr-review-guard";
@@ -47,7 +50,7 @@ const actorAllowed = (req: ScopedRequest): boolean =>
 // Payroll login; PROD retains the pre-existing NOLOGIN scoped-role adapter.
 // All approval writes fail closed unless their environment-specific opt-in is true.
 const enabled = (): boolean => isDevelopmentEnvironment()
-  ? devDedicatedEnabled() && process.env.PAYROLL_DEV_SUPER_ADMIN_APPROVAL_ENABLED === "true"
+  ? devApprovalDedicatedEnabled() && process.env.PAYROLL_DEV_SUPER_ADMIN_APPROVAL_ENABLED === "true"
   : payrollProdDedicatedRequired() && process.env.PAYROLL_PROD_SUPER_ADMIN_APPROVAL_ENABLED === "true";
 const approvalReadReady = (): boolean =>
   isDevelopmentEnvironment() ? devDedicatedEnabled() : prodReadOnlyReady();
@@ -56,10 +59,10 @@ const approvalScopedQuery = (companyId: number, sql: string, args: unknown[]) =>
     ? devScopedQuery(companyId, sql, args)
     : prodScopedQuery(companyId, sql, args);
 const approvalPool = () =>
-  isDevelopmentEnvironment() ? getDevPayrollPool() : getProdPayrollPool();
+  isDevelopmentEnvironment() ? getDevApprovalPool() : getProdPayrollPool();
 const setApprovalCompanyScope = (client: PayrollDbClient, companyId: number) =>
   isDevelopmentEnvironment()
-    ? setDevCompanyScope(client, companyId)
+    ? setDevApprovalCompanyScope(client, companyId)
     : setProdCompanyScope(client, companyId);
 
 const itemSQL = `SELECT pi.id, pi.employee_id, pi.base_salary::text,
