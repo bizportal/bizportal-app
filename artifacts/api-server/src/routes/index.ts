@@ -39,6 +39,23 @@ router.use(createDevAuthRouter());
 // remaining API-owned routes.
 router.use(localProductionAuthRouter);
 
+// Canonical DEV-only document-template API, imported from verified legacy implementation.
+// OFF by default; do not activate before signed-session and A4 PDF E2E verification.
+router.use((req, res, next) => {
+  if (!req.path.startsWith("/settings/documents")) return next();
+  if (!isDevelopmentEnvironment() ||
+      process.env.BIZPORTAL_DOCUMENT_TEMPLATES_ENABLED_DEV !== "true") {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  void import("./dev-document-templates").then(({ default: handler }) => {
+    handler(req, res, next);
+  }).catch((error) => {
+    req.log?.error({ error }, "DEV document template router unavailable");
+    if (!res.headersSent) res.status(503).json({ error: "Template API unavailable" });
+  });
+});
+
 router.post("/auth/email-login", (_request, response) => {
   response.status(404).json({ error: "Not found" });
 });
