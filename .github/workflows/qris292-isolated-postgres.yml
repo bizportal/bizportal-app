@@ -1,0 +1,76 @@
+name: QRIS #292 Target Repository Disposable PostgreSQL E2E
+on:
+  pull_request:
+    paths:
+      - "artifacts/api-server/src/routes/bank-reconciliation.ts"
+      - "artifacts/api-server/src/lib/reconciliation/canonicalSettlementCorrection.ts"
+      - "artifacts/api-server/src/lib/reconciliation/canonicalSettlementCorrectionCoordinator.ts"
+      - "artifacts/api-server/src/__tests__/qris292-real-owner-positive.test.ts"
+      - "artifacts/api-server/src/__tests__/qris292-atomic-owner-e2e.test.ts"
+      - "artifacts/api-server/src/__tests__/qris292-atomic-second-approval-failure.test.ts"
+      - "artifacts/api-server/src/__tests__/qris292-finalized-item-guard-negative.test.ts"
+      - "artifacts/api-server/src/__tests__/qris292-finance-principal-negative.test.ts"
+      - "artifacts/api-server/src/__tests__/qris292-prod-guard-migration-isolated.test.ts"
+      - "scripts/sql/20261113_guarded_finalized_settlement_membership_compensation.sql"
+      - "scripts/tests/fixtures/qris*.sql"
+      - ".github/workflows/qris292-isolated-postgres.yml"
+      - "scripts/hostinger-runtime-attestation-readonly.mjs"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  isolated-finance-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: qris292_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: isolated_ci_only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d qris292_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      QRIS292_ISOLATED_PG_URL: postgresql://postgres:isolated_ci_only@127.0.0.1:5432/qris292_test
+      PGPASSWORD: isolated_ci_only
+      NODE_ENV: test
+      APP_ENV: development
+      SUPABASE_DATABASE_URL_DEV: postgresql://ci:ci@127.0.0.1:65432/ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Check read-only Hostinger provenance probe syntax (not a Hostinger attestation)
+        run: node --check scripts/hostinger-runtime-attestation-readonly.mjs
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Load disposable historical-like settlement fixture
+        run: psql -h 127.0.0.1 -U postgres -d qris292_test -v ON_ERROR_STOP=1 -f scripts/tests/fixtures/qris-issue292-isolated-postgres.sql
+      - name: Install unchanged CST-DEV owner group identity
+        run: psql -h 127.0.0.1 -U postgres -d qris292_test -v ON_ERROR_STOP=1 -f scripts/tests/fixtures/qris292-real-owner-group-identity.sql
+      - name: Install unchanged CST-DEV owner batch builders
+        run: psql -h 127.0.0.1 -U postgres -d qris292_test -v ON_ERROR_STOP=1 -f scripts/tests/fixtures/qris292-real-owner-builder-functions.sql
+      - name: Match isolated accounting journal column types
+        run: psql -h 127.0.0.1 -U postgres -d qris292_test -v ON_ERROR_STOP=1 -f scripts/tests/fixtures/qris-issue292-dev-journal-column-shape.sql
+      - name: Install isolated DEV lifecycle guards
+        run: psql -h 127.0.0.1 -U postgres -d qris292_test -v ON_ERROR_STOP=1 -f scripts/tests/fixtures/qris-issue292-dev-lifecycle-guards.sql
+      - name: Install unchanged CST-DEV owner support functions
+        run: psql -h 127.0.0.1 -U postgres -d qris292_test -v ON_ERROR_STOP=1 -f scripts/tests/fixtures/qris292-real-owner-support-functions.sql
+      - name: Extend only disposable schema for owner functions
+        run: psql -h 127.0.0.1 -U postgres -d qris292_test -v ON_ERROR_STOP=1 -f scripts/tests/fixtures/qris292-real-owner-positive-schema.sql
+      - name: Install unchanged CST-DEV approval posting functions
+        run: psql -h 127.0.0.1 -U postgres -d qris292_test -v ON_ERROR_STOP=1 -f scripts/tests/fixtures/qris292-real-owner-posting-functions.sql
+      - name: Test genuine owner batches and full historical reversal, always ROLLBACK
+        run: pnpm --filter @workspace/api-server exec vitest run --no-file-parallelism --maxWorkers=1 src/__tests__/qris292-real-owner-positive.test.ts src/__tests__/qris292-atomic-owner-e2e.test.ts src/__tests__/qris292-atomic-second-approval-failure.test.ts src/__tests__/qris292-finalized-item-guard-negative.test.ts src/__tests__/qris292-finance-principal-negative.test.ts src/__tests__/qris292-prod-guard-migration-isolated.test.ts
