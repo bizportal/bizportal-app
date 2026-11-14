@@ -30,7 +30,7 @@ function nonempty(value: unknown): boolean {
  */
 export function parseKasbonAmount(value: unknown): string {
   const raw = typeof value === "string" ? value : typeof value === "number" && Number.isSafeInteger(value) ? String(value) : "";
-  if (!/^(0|[1-9][0-9]{0,15})(?:\\.[0-9]{1,2})?$/.test(raw)) {
+  if (!/^(0|[1-9][0-9]{0,15})(?:\.[0-9]{1,2})?$/.test(raw)) {
     throw new Error("KASBON_INVALID_AMOUNT");
   }
   return raw;
