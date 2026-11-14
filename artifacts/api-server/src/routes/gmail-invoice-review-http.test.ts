@@ -139,7 +139,8 @@ describe("DEV Gmail candidate review: no live writes and strict company binding"
     mocks.legacy.mockReturnValue({email:"review@example.com",role:"admin",companyId:1});
     const result = await post(body);
     expect(result.status).toBe(200);
-    expect(mocks.review).toHaveBeenCalledExactlyOnceWith({
+    expect(mocks.review).toHaveBeenCalledOnce();
+    expect(mocks.review).toHaveBeenCalledWith({
       companyId:1,candidateId:41,actorEmail:"review@example.com",
       decision:"reject",reason:"Verified invoice review reason",
     });
