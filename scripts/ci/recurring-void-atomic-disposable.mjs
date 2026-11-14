@@ -146,7 +146,8 @@ try {
    CREATE ROLE ci_void_scoped NOLOGIN NOBYPASSRLS;
    GRANT USAGE ON SCHEMA ci_void TO ci_void_scoped;
    GRANT SELECT,UPDATE ON ci_void.payments TO ci_void_scoped;
-   GRANT SELECT,INSERT ON ci_void.journals,ci_void.audits TO ci_void_scoped;
+   GRANT SELECT,INSERT,UPDATE ON ci_void.journals TO ci_void_scoped;
+   GRANT SELECT,INSERT ON ci_void.audits TO ci_void_scoped;
    GRANT SELECT ON ci_void.fail_switch TO ci_void_scoped;
    GRANT USAGE,SELECT ON SEQUENCE ci_void.journals_id_seq TO ci_void_scoped;
    REVOKE ALL ON FUNCTION ci_void.void_payment_v2(integer,integer,text,text) FROM PUBLIC;
