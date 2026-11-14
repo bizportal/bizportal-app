@@ -3,11 +3,11 @@ import express from "express";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 const mock=vi.hoisted(()=>({
-  session:vi.fn(),user:vi.fn(),isDev:vi.fn(),query:vi.fn(),
+  session:vi.fn(),user:vi.fn(),isDev:vi.fn(),query:vi.fn(),roleCheck:vi.fn(),
   getInvoice:vi.fn(),submitInvoice:vi.fn(),createAp:vi.fn(),getAp:vi.fn(),reviewAp:vi.fn(),waitingAp:vi.fn(),handoffAp:vi.fn(),
 }));
 vi.mock("./dev-auth",()=>({getProductionSession:mock.session,getProductionUser:mock.user,isDevelopmentEnvironment:mock.isDev}));
-vi.mock("@workspace/db",()=>({pool:{query:mock.query}}));
+vi.mock("@workspace/db",()=>({pool:{query:(...args:any[]) => String(args[0]).includes("row_security_active") ? mock.roleCheck(...args) : mock.query(...args)}}));
 vi.mock("../lib/services/mktVendorInvoiceService.js",()=>({getMarketplaceVendorInvoice:mock.getInvoice,submitMarketplaceVendorInvoice:mock.submitInvoice,safeMarketplaceVendorInvoiceView:vi.fn(()=>({id:77}))}));
 vi.mock("../lib/services/mktApPreparationService.js",()=>({createApPreparation:mock.createAp,getApPreparation:mock.getAp,reviewApPreparation:mock.reviewAp,markApPreparationWaitingPayment:mock.waitingAp,createMarketplaceAccountingHandoff:mock.handoffAp,safeApView:vi.fn(()=>({id:88}))}));
 import route from "./dev-marketplace-finance-writer";
@@ -17,6 +17,7 @@ afterAll(async()=>{await new Promise<void>((resolve,reject)=>server.close(e=>e?r
 beforeEach(()=>{
   for(const v of Object.values(mock))v.mockReset();
   mock.isDev.mockReturnValue(true);mock.session.mockReturnValue({id:"signed"});mock.user.mockResolvedValue({email:"admin@test.dev",role:"super_admin",companyId:1});mock.query.mockResolvedValue({rows:[{company_id:1}]});
+  mock.roleCheck.mockResolvedValue({rows:[{db_role:"bizportal_marketplace_login_dev",elevated:false,vendor_rls_active:true,ap_rls_active:true,payment_rls_active:true}]});
   mock.getInvoice.mockResolvedValue({invoice:{id:77,mktPurchaseOrderId:12,companyId:1,supplierId:5},lines:[]});
   process.env.APP_ENV="development";
   delete process.env.NODE_ENV;
@@ -83,6 +84,25 @@ describe("DEV-only restored canonical vendor invoice/AP runtime gates",()=>{
    expect(mock.createAp).not.toHaveBeenCalled();
    expect(mock.reviewAp).not.toHaveBeenCalled();
    expect(mock.handoffAp).not.toHaveBeenCalled();
+ });
+ it("rejects privileged postgres database connections even for a verified Super Admin",async()=>{
+   mock.roleCheck.mockResolvedValueOnce({rows:[{
+     db_role:"postgres", elevated:true, vendor_rls_active:false,
+     ap_rls_active:false, payment_rls_active:false,
+   }]});
+   expect((await get("/api/mkt/admin/vendor-invoices/77")).status).toBe(503);
+   expect(mock.getInvoice).not.toHaveBeenCalled();
+   expect(mock.getAp).not.toHaveBeenCalled();
+   expect(mock.submitInvoice).not.toHaveBeenCalled();
+   expect(mock.createAp).not.toHaveBeenCalled();
+ });
+ it("rejects the dedicated role if any finance table is not under RLS",async()=>{
+   mock.roleCheck.mockResolvedValueOnce({rows:[{
+     db_role:"bizportal_marketplace_login_dev", elevated:false, vendor_rls_active:true,
+     ap_rls_active:false, payment_rls_active:true,
+   }]});
+   expect((await get("/api/mkt/admin/vendor-invoices/77")).status).toBe(503);
+   expect(mock.getInvoice).not.toHaveBeenCalled();
  });
  it("requires a signed verified session, not role metadata",async()=>{
    mock.session.mockReturnValue(null);expect((await post("/api/mkt/admin/vendor-invoices/77/match")).status).toBe(401);

@@ -14,6 +14,32 @@ const validId = (s: string): number | null => /^[1-9]\d{0,9}$/.test(s) ? Number(
 
 type VerifiedFinanceActor = { email: string; companyId: number };
 
+/** Fail closed if the canonical finance writer still uses the shared privileged
+ * database pool. This is a readiness guard, not a substitute for tenant RLS
+ * policies or a dedicated connection with authenticated company binding.
+ */
+async function financeDatabaseRoleVerified(): Promise<boolean> {
+  const result = await pool.query<{
+    db_role: string;
+    elevated: boolean;
+    vendor_rls_active: boolean;
+    ap_rls_active: boolean;
+    payment_rls_active: boolean;
+  }>(`select current_user::text as db_role,
+           coalesce((select r.rolsuper or r.rolbypassrls
+                      from pg_catalog.pg_roles r where r.rolname = current_user), true) as elevated,
+           row_security_active('public.vendor_invoices'::regclass) as vendor_rls_active,
+           row_security_active('public.mkt_ap_preparations'::regclass) as ap_rls_active,
+           row_security_active('public.payment_requests'::regclass) as payment_rls_active`);
+  const row = result.rows[0];
+  return Boolean(row
+    && row.db_role === "bizportal_marketplace_login_dev"
+    && row.elevated === false
+    && row.vendor_rls_active === true
+    && row.ap_rls_active === true
+    && row.payment_rls_active === true);
+}
+
 async function authorize(req: Request, res: Response): Promise<VerifiedFinanceActor | null> {
   // Bundled DEV uses NODE_ENV=production; APP_ENV alone chooses the DB target.
   // Never allow this writer on an inferred DEV or the actual PROD application.
@@ -33,6 +59,9 @@ async function authorize(req: Request, res: Response): Promise<VerifiedFinanceAc
     const companyId = user.companyId;
     if (typeof companyId !== "number" || !Number.isSafeInteger(companyId) || companyId <= 0) {
       res.status(403).json({ error: "Company scope not verified" }); return null;
+    }
+    if (!(await financeDatabaseRoleVerified())) {
+      res.status(503).json({ error: "DEV Finance database role/RLS not ready" }); return null;
     }
     return { email: user.email, companyId };
   } catch (error) {
