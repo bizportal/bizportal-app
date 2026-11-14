@@ -78,7 +78,7 @@ describe("DEV OTP never creates schema as a request side effect", () => {
   it("fails closed when the pre-existing DEV OTP table is absent, without DDL", async () => {
     process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
     mocks.query.mockResolvedValue({ rows: [{ present: false }] });
-    expect(await send()).toBe(503);
+    expect(await send()).toBe(202); // generic response avoids account/schema disclosure
     expect(mocks.query).toHaveBeenCalledTimes(1);
     expect(String(mocks.query.mock.calls[0][0])).toContain("to_regclass");
     expect(mocks.mail).not.toHaveBeenCalled();
