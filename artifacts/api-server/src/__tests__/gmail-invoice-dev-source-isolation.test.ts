@@ -20,8 +20,9 @@ describe("official BizPortal DEV Gmail invoice isolation", () => {
     expect(route.match(/GMAIL_DEV_SOURCE_EMAIL_REQUIRED/g)).toHaveLength(2);
   });
   it("does not borrow general OAuth credentials in DEV", () => {
-    expect(route).toContain('isDevelopmentEnvironment() ? dedicated : dedicated || await getRuntimeConfig("GOOGLE_CLIENT_ID")');
-    expect(route).toContain('isDevelopmentEnvironment() ? dedicated : dedicated || await getRuntimeConfig("GOOGLE_CLIENT_SECRET")');
+    expect(route.match(/if \(isDevelopmentEnvironment\(\)\) return dedicated;/g)).toHaveLength(2);
+    expect(route).toContain('return dedicated || await getRuntimeConfig("GOOGLE_CLIENT_ID")');
+    expect(route).toContain('return dedicated || await getRuntimeConfig("GOOGLE_CLIENT_SECRET")');
   });
   it("persists Gmail config with correct environment metadata", () => {
     expect(route).toContain("environment=excluded.environment");
