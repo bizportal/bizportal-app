@@ -99,7 +99,7 @@ THEN RETURN NEW; END IF;
 IF batch_status IN ('posted','reconciled','reversed') THEN RAISE EXCEPTION 'FINALIZED_SETTLEMENT_ITEMS_ARE_IMMUTABLE'; END IF;
 RETURN NEW;
 END $$;
-CREATE TRIGGER trg_guard_finalized_settlement_items BEFORE UPDATE ON sport_center.payment_settlement_items
+CREATE TRIGGER trg_guard_finalized_settlement_items BEFORE UPDATE OR DELETE ON sport_center.payment_settlement_items
 FOR EACH ROW EXECUTE FUNCTION sport_center.guard_finalized_settlement_items();
 INSERT INTO sport_center.payment_settlement_batches
 (id,company_id,status,settlement_journal_id,settlement_date,provider_code,bank_account_id,settlement_rule_version,gross_amount,mdr_amount,net_amount)
