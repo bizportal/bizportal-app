@@ -20,6 +20,8 @@ describe("separate DEV Payroll approval database identity (source-only)", () => 
       credential("db.nzdweipzckfszczzqtuw.supabase.co", "bizportal_payroll_approver_dev"),
       credential("attacker.example.test", "bizportal_payroll_approver_dev"),
       credential("aws-0-ap-southeast-2.pooler.supabase.com", "bizportal_payroll_approver_dev"),
+      credential("aws-0-ap-southeast-2xpoolerxsupabasexcom", "bizportal_payroll_approver_dev." + ref),
+      credential("aws-0-ap-southeast-2.pooler.supabase.com.attacker.example", "bizportal_payroll_approver_dev." + ref),
     ];
     for (const url of denied) {
       vi.stubEnv("PAYROLL_APPROVAL_DATABASE_URL_DEV", url);
