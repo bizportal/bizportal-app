@@ -25,7 +25,9 @@ const validType=(x:unknown):x is DocType=>typeof x==="string" && TYPES.includes(
 const safeColor=(x:unknown)=>typeof x==="string" && /^#[a-f0-9]{6}$/i.test(x)?x:"#1e3a6e";
 const safeLogo=(x:unknown)=>{
   if(typeof x!=="string"||x.length>1024)return "";
-  try {const u=new URL(x,"https://dev-bizportal.cstlogistic.co.id");
+  // Keep bundled official logo same-origin; never resolve it to a legacy DEV hostname.
+  if(/^\/[A-Za-z0-9/_-]+\.(?:png|jpg|jpeg|webp)$/i.test(x))return x;
+  try {const u=new URL(x);
     return u.protocol==="https:"&&!u.username&&!u.password?u.href:"";
   }catch{return "";}
 };
@@ -85,9 +87,12 @@ function preview(type:DocType,template:Record<string,unknown>):string{
     "<!doctype html><html lang='id'><head><meta charset='utf-8'><title>",
     esc(TITLE[type])," - Preview</title><style>",
     "@page{size:A4;margin:15mm}body{font:12px/1.6 Arial,sans-serif;max-width:820px;margin:20px auto;color:#1e293b}",
-    "header{display:flex;align-items:center;gap:18px;padding:16px 0;border-bottom:2px solid ",ink,"}",
-    ".logo{width:75px;height:75px;object-fit:contain}header h2{font-size:17px;color:",ink,";margin:0}",
-    "header p{margin:2px 0;color:#334155;font-weight:500;font-size:12px}",
+    "header{display:grid;grid-template-columns:132px minmax(0,1fr);align-items:center;gap:24px;max-width:650px;margin:0 auto;padding:6px 0 14px}",
+    ".logo{width:132px;height:132px;object-fit:contain}",
+    "header .brand{text-align:center;min-width:0}header h2{font-size:19px;letter-spacing:.01em;line-height:1.18;color:",ink,";margin:0;text-transform:uppercase}",
+    "header p{white-space:pre-line;overflow-wrap:anywhere;margin:6px 0 0;color:#475569;font-weight:500;font-size:11px;line-height:1.5}",
+    ".brand-rule{height:0;border-bottom:3px solid ",ink,";margin-top:3px}",
+    ".brand-rule-accent{height:0;border-bottom:1px solid #0284c7;margin-top:3px}",
     "h1{text-align:center;color:",ink,";font-size:26px;font-weight:800;margin:27px 0 8px}",
     ".note{text-align:center;color:#334155;font-size:12px;font-weight:700;margin-bottom:25px}",
     ".grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:15px 0 25px}",
@@ -96,8 +101,9 @@ function preview(type:DocType,template:Record<string,unknown>):string{
     "th{background:",ink,";color:#fff}footer{margin-top:30px;color:#334155;font-weight:500}",
     "@media print{body{margin:0}.noprint{display:none}}</style></head><body><header>",
     logo?"<img class='logo' src='"+esc(logo)+"' alt='Logo perusahaan'>":"",
-    "<div><h2>",esc(template.companyName),"</h2><p>",esc(template.companyAddress),
+    "<div class='brand'><h2>",esc(template.companyName),"</h2><p>",esc(template.companyAddress),
     "</p><p>",esc(template.companyPhone)," | ",esc(template.companyEmail),"</p></div></header>",
+    "<div class='brand-rule'></div><div class='brand-rule-accent'></div>",
     "<h1>",esc(TITLE[type]),"</h1><p class='note'>CONTOH TATA LETAK — BUKAN DOKUMEN TRANSAKSI</p>",
     "<div class='grid'><section><small>No. Dokumen</small>Diisi oleh modul transaksi</section>",
     "<section><small>Tanggal</small>Diisi oleh modul transaksi</section>",
@@ -238,7 +244,7 @@ router.post("/settings/documents/:type/preview",(req,res)=>{
   const c=res.locals.documentCompany as Company;
   res.setHeader("Content-Type","text/html; charset=utf-8");
   res.setHeader("Cache-Control","no-store");
-  res.setHeader("Content-Security-Policy","default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'");
+  res.setHeader("Content-Security-Policy","default-src 'none'; img-src 'self' https: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'");
   res.send(preview(t,resolve(c,t,data)));
 });
 export default router;
