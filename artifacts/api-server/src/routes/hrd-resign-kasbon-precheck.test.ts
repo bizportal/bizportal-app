@@ -47,6 +47,7 @@ describe("HRD resignation kasbon preflight (not mounted)", () => {
       { ...clearRow(), unverifiedAmount: "-100" },
       { ...clearRow(), unverifiedCount: "1.5" },
       { ...clearRow(), activeReservationAmount: null },
+      { ...clearRow(), unverifiedCount: null },
     ]) {
       const { client } = clientFor(row);
       await expect(getEmployeeResignKasbonPrecheck(client, 1, 2)).rejects.toThrow(/HRD_KASBON_PREFLIGHT_INVALID_/);
