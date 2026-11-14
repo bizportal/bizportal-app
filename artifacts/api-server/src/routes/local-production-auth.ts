@@ -502,7 +502,7 @@ router.post("/auth/email-otp/send", async (
          update public.bizportal_email_otp_codes
             set verified_at = now()
           where email = $1
-            and purpose = $2
+            and purpose = $3
             and verified_at is null
        )
        insert into public.bizportal_email_otp_codes
