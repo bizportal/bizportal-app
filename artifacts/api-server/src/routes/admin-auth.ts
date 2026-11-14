@@ -4,6 +4,7 @@ import {
   getProductionSession,
   getProductionUser,
   isDevelopmentEnvironment,
+  isSignedOtpDevEnabled,
   type DevAuthUser,
 } from "./dev-auth";
 
@@ -17,13 +18,13 @@ export async function authenticateAdmin(
   next: NextFunction,
 ): Promise<void> {
   try {
-    const user = isDevelopmentEnvironment()
-      ? getDevSession(request)
-      : (() => {
-          const session = getProductionSession(request);
-          return session ? getProductionUser(session) : Promise.resolve(null);
-        })();
-    const resolvedUser = await user;
+    const devActor = isDevelopmentEnvironment() ? getDevSession(request) : null;
+    const signedSession = (!isDevelopmentEnvironment() || isSignedOtpDevEnabled())
+      ? getProductionSession(request)
+      : null;
+    // Prefer the DB-verified signed identity when both DEV cookies coexist.
+    // A rejected signed identity must never fall back to the legacy actor.
+    const resolvedUser = signedSession ? await getProductionUser(signedSession) : devActor;
 
     if (!resolvedUser) {
       response.status(401).json({ error: "Unauthorized" });

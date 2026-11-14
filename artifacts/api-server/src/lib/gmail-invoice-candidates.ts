@@ -52,6 +52,40 @@ function isSrtAttachment(fileName: string): boolean {
   return /^srt(?:[\s_.-]|$)/i.test(fileName.trim());
 }
 
+// FK-prefixed files are Faktur Pajak, not stand-alone payable invoices.
+function isSupportingTaxAttachment(fileName: string): boolean {
+  return /^fk(?:[\s_.-]|$)/i.test(fileName.trim());
+}
+
+// A circular accompanying billing is not a payable invoice.
+function isSukmaBillingNotice(fileName: string): boolean {
+  return /^(?:edaran|surat[\s_.-]+edaran)(?:[\s_.-]|$)/i.test(fileName.trim());
+}
+
+// Special-case only the existing Sukma/CST billing format. Other senders
+// keep their existing attachment selection behavior.
+function isSukmaCstBillingEmail(message: GmailInvoiceMessage): boolean {
+  const senderName = (message.senderName ?? "").toLowerCase();
+  const subject = (message.subject ?? "").toLowerCase();
+  return senderName.includes("sukma")
+    && /invoice|tagihan|penagihan/.test(subject)
+    && /cahaya\s+sejati\s+teknologi/.test(subject);
+}
+
+export function invoiceAttachmentsForMessage(message: GmailInvoiceMessage): GmailAttachment[] {
+  const eligible = message.attachments.filter(
+    (attachment) => !isSrtAttachment(attachment.fileName),
+  );
+  if (!isSukmaCstBillingEmail(message)) return eligible;
+  const payablePdfs = eligible.filter(
+    (attachment) => attachment.mimeType.toLowerCase() === "application/pdf"
+      && !isSupportingTaxAttachment(attachment.fileName)
+      && !isSukmaBillingNotice(attachment.fileName),
+  );
+  // An email with FK + EDARAN but no invoice must not create a payable candidate.
+  return payablePdfs.length > 0 ? [payablePdfs[payablePdfs.length - 1]!] : [];
+}
+
 async function upsertShell(args: {
   companyId: number;
   message: GmailInvoiceMessage;
@@ -122,11 +156,13 @@ async function processAttachment(args: {
   message: GmailInvoiceMessage;
   attachment: GmailAttachment;
 }): Promise<"ready" | "manual_review" | "duplicate" | "failed" | "existing"> {
-  const candidate = await upsertShell(args);
+  let candidate = await upsertShell(args);
 
   if (
     candidate.status === "imported" ||
     candidate.status === "duplicate" ||
+    candidate.status === "rejected" ||
+    candidate.status === "supporting" ||
     candidate.extraction_status === "complete"
   ) {
     return "existing";
@@ -145,6 +181,57 @@ async function processAttachment(args: {
     }
 
     const hash = crypto.createHash("sha256").update(bytes).digest("hex");
+
+    // A Gmail attachment ID may change on every scan. Keep failed OCR retries
+    // on the original message + content row, never accumulate new shells.
+    const failedTwin = await pool.query<CandidateRow>(
+      `select * from public.gmail_invoice_candidates
+        where company_id=$1 and gmail_message_id=$2 and attachment_sha256=$3
+          and id<>$4 and status='manual_review' and extraction_status='failed'
+          and vendor_invoice_id is null
+        order by id limit 1`,
+      [args.companyId, args.message.id, hash, candidate.id],
+    );
+    if (failedTwin.rows[0]) {
+      const removedShell = await pool.query<{ id: number }>(
+        `delete from public.gmail_invoice_candidates
+          where id=$1 and company_id=$2 and status='new'
+            and extraction_status='pending' and vendor_invoice_id is null
+          returning id`,
+        [candidate.id, args.companyId],
+      );
+      if (!removedShell.rows[0]) return "existing";
+      candidate = failedTwin.rows[0];
+    }
+
+    // Persist the digest before the OCR provider call. Provider errors and 429
+    // now leave a reusable candidate, without touching imported/posted invoices.
+    await pool.query(
+      `update public.gmail_invoice_candidates
+          set attachment_sha256=$1, updated_at=now()
+        where id=$2 and company_id=$3 and vendor_invoice_id is null
+          and ((status='new' and extraction_status='pending')
+            or (status='manual_review' and extraction_status='failed'))`,
+      [hash, candidate.id, args.companyId],
+    );
+    // Honor a rejected PDF even if Gmail assigns a different attachment ID.
+    const rejectedTwin = await pool.query<{ id: number }>(
+      `select id from public.gmail_invoice_candidates
+        where company_id=$1 and attachment_sha256=$2 and status='rejected' and id<>$3
+        order by id limit 1`,
+      [args.companyId, hash, candidate.id],
+    );
+    if (rejectedTwin.rows[0]) {
+      await pool.query(
+        `update public.gmail_invoice_candidates
+            set attachment_sha256=$1, extraction_status='complete',
+                status='rejected', error_message=$2, updated_at=now()
+          where id=$3 and company_id=$4 and status='new' and vendor_invoice_id is null`,
+        [hash, `Lampiran identik sudah ditolak (kandidat #${rejectedTwin.rows[0].id})`, candidate.id, args.companyId],
+      );
+      return "existing";
+    }
+
     const duplicateByHash = await pool.query<CandidateRow>(
       `select *
          from public.gmail_invoice_candidates
@@ -332,8 +419,7 @@ export async function syncGmailInvoiceCandidates(args: {
   let newWork = 0;
 
   scan: for (const message of messages) {
-    for (const attachment of message.attachments) {
-      if (isSrtAttachment(attachment.fileName)) continue;
+    for (const attachment of invoiceAttachmentsForMessage(message)) {
       counts.attachmentsSeen += 1;
 
       const status = await processAttachment({
@@ -416,6 +502,69 @@ export async function listGmailInvoiceCandidates(
   return result.rows.map(candidateView);
 }
 
+export async function reviewGmailInvoiceCandidate(args: {
+  companyId: number;
+  candidateId: number;
+  actorEmail: string;
+  decision: "reject" | "restore";
+  reason?: string;
+}): Promise<{ id: number; status: string }> {
+  const reason = args.reason?.trim() ?? "";
+  if (args.decision === "reject" && (reason.length < 10 || reason.length > 500)) {
+    throw Object.assign(new Error("Alasan penolakan wajib 10–500 karakter."), { status: 400 });
+  }
+  const isReject = args.decision === "reject";
+  // Atomic status guard: concurrent import cannot be rejected after it links
+  // an AP invoice. Review history is appended, never discarded on restore.
+  const updated = await pool.query<{ id: number; status: string }>(
+    `update public.gmail_invoice_candidates
+        set status = case
+             when $4::boolean then 'rejected'
+             when attachment_file_name ~* '^fk([[:space:]_.-]|$)' then 'supporting'
+             when extraction_status <> 'complete'
+               or (extracted_vendor_name is null and extracted_invoice_number is null and extracted_total is null)
+               then 'new'
+             when extraction_status='complete'
+               and nullif(trim(coalesce(extracted_vendor_name,'')),'') is not null
+               and nullif(trim(coalesce(extracted_invoice_number,'')),'') is not null
+               and coalesce(extracted_total,0) > 0
+               and coalesce(extracted_confidence,0) >= 0.65 then 'ready'
+             else 'manual_review'
+           end,
+            extraction_status = case
+              when not $4::boolean and extracted_vendor_name is null
+                and extracted_invoice_number is null and extracted_total is null then 'pending'
+              else extraction_status end,
+            error_message = case when $4::boolean then $5 else null end,
+            extracted_json = jsonb_set(
+              case when jsonb_typeof(extracted_json)='object' then extracted_json else '{}'::jsonb end,
+              '{source_review_history}',
+              (
+                case when jsonb_typeof(extracted_json->'source_review_history')='array'
+                  then extracted_json->'source_review_history' else '[]'::jsonb end
+                || jsonb_build_array(jsonb_build_object(
+                  'decision',case when $4::boolean then 'rejected' else 'restored' end,
+                  'reason',$5::text,'actor',$3::text,'at',now()
+                ))
+              ),
+              true
+            ),
+            updated_at=now()
+      where id=$1 and company_id=$2 and vendor_invoice_id is null
+        and (
+          ($4::boolean and status in ('new','ready','manual_review','failed','duplicate','supporting'))
+          or (not $4::boolean and status='rejected')
+        )
+      returning id,status`,
+    [args.candidateId, args.companyId, args.actorEmail, isReject, reason],
+  );
+  if (updated.rows[0]) return updated.rows[0];
+  throw Object.assign(
+    new Error("Kandidat tidak ditemukan, sudah diimpor, atau statusnya tidak mengizinkan perubahan."),
+    { status: 409, code: "GMAIL_REVIEW_CONFLICT" },
+  );
+}
+
 export async function importGmailInvoiceCandidate(args: {
   companyId: number;
   candidateId: number;
@@ -444,6 +593,15 @@ export async function importGmailInvoiceCandidate(args: {
 
     // Never import an attachment already classified as a duplicate.
     // Its source row remains visible for audit, but it cannot create an AP invoice.
+    // A rejected candidate cannot become an AP invoice until Finance
+    // explicitly restores it through the guarded review endpoint.
+    if (candidate.status === "rejected") {
+      throw Object.assign(
+        new Error("Kandidat telah ditolak; pulihkan melalui Finance Review sebelum impor."),
+        { status: 409, code: "GMAIL_CANDIDATE_REJECTED" },
+      );
+    }
+
     if (candidate.status === "duplicate") {
       throw Object.assign(
         new Error("Invoice duplikat hanya disimpan di Sumber INV dan tidak dapat diimpor ke INV Vendor."),

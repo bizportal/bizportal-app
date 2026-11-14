@@ -49,7 +49,7 @@ function request(
         resolve({
           status: res.statusCode ?? 0,
           headers: res.headers,
-          body: text ? JSON.parse(text) : null,
+          body: text.startsWith("{") ? JSON.parse(text) : text || null,
         });
       });
     });
@@ -86,6 +86,7 @@ describe("local production email OTP authentication", () => {
     sendEmailMock.mockResolvedValue(undefined);
     queryMock.mockImplementation(async (sql: string) => {
       if (sql.includes("create table") || sql.includes("create index")) return { rows: [] };
+      if (sql.includes("to_regclass")) return { rows: [{ present: true }] };
       if (sql.includes("count(*)::text")) return { rows: [{ count: String(recentRequestCount) }] };
       if (sql.includes("code_hash, attempts")) {
         return {
@@ -190,6 +191,8 @@ describe("local production email OTP authentication", () => {
     const insertCall = queryMock.mock.calls.find(([sql]) => String(sql).includes("with invalidated"));
     expect(insertCall).toBeDefined();
     expect(String(insertCall?.[0])).toContain("values ($1, $2, $3, $4, $5)");
+    expect(String(insertCall?.[0])).toMatch(/where email = \$1\s+and purpose = \$3\s+and verified_at is null/);
+    expect(insertCall?.[1]?.[1]).not.toBe("admin-email-login");
     expect(insertCall?.[1]?.[2]).toBe("admin-email-login");
   });
 
@@ -255,5 +258,55 @@ describe("local production email OTP authentication", () => {
       error: "Email atau kode OTP tidak dapat digunakan.",
     });
     expect(otpAttempts).toBe(1);
+  });
+
+  it("does not grant PROD Super Admin email OTP eligibility", async () => {
+    activeRole = "super_admin";
+    const sent = await request(server, "/auth/email-otp/send", { email: "admin@example.com" });
+    expect(sent.status).toBe(202);
+    expect(sendEmailMock).not.toHaveBeenCalled();
+    const verified = await request(server, "/auth/email-otp/verify", {
+      email: "admin@example.com", code: "123456",
+    });
+    expect(verified.status).toBe(400);
+  });
+
+  it("permits only DEV opt-in signed OTP for an active Super Admin", async () => {
+    const originals = {
+      APP_ENV: process.env.APP_ENV,
+      NODE_ENV: process.env.NODE_ENV,
+      BIZPORTAL_SIGNED_OTP_ENABLED_DEV: process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV,
+    };
+    activeRole = "super_admin";
+    try {
+      process.env.APP_ENV = "development";
+      process.env.NODE_ENV = "development";
+      delete process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV;
+      const disabled = await request(server, "/auth/email-otp/send", { email: "admin@example.com" });
+      expect(disabled.status).toBe(404);
+      expect(sendEmailMock).not.toHaveBeenCalled();
+
+      process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
+      const sent = await request(server, "/auth/email-otp/send", { email: "admin@example.com" });
+      expect(sent.status).toBe(202);
+      expect(sendEmailMock).toHaveBeenCalledTimes(1);
+
+      const verified = await request(server, "/auth/email-otp/verify", {
+        email: "admin@example.com", code: "123456",
+      });
+      expect(verified.status).toBe(200);
+      expect(verified.body).toMatchObject({
+        ok: true, user: { role: "super_admin", companyId: 1 },
+      });
+      const cookie = verified.headers["set-cookie"]?.[0] ?? "";
+      expect(cookie).toContain("bizportal_supabase_session=");
+      expect(cookie).toContain("HttpOnly");
+      expect(cookie).toContain("Secure");
+    } finally {
+      for (const [key, value] of Object.entries(originals)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 });
