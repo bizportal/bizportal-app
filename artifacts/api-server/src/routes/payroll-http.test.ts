@@ -129,6 +129,36 @@ describe("payroll HTTP isolation", () => {
     expect(JSON.stringify(result)).not.toContain("HR review without Super Admin receipt");
   });
 
+  it("does not present timestamp-only historic review as a verified Super Admin approval", async () => {
+    state.actor = { id: "u1", email: "user@example.test", role: "finance", companyId: 1,
+      firstName: null, lastName: null };
+    state.runStatus = "reviewed";
+    state.approvedAt = "2026-11-14T10:00:00Z";
+    state.notes = "Historical review entered before receipt rollout";
+    const res = await fetch(root + "/api/payroll/runs/8?companyId=1");
+    expect(res.status).toBe(200);
+    const result = await res.json() as {run:Record<string,unknown>};
+    expect(result.run).toMatchObject({status:"reviewed",approvalType:null,approvedAt:null});
+    expect(JSON.stringify(result)).not.toContain("Historical review entered");
+  });
+
+  it("rejects malformed approval marker in legacy notes without exposing it", async () => {
+    state.actor = { id: "u1", email: "user@example.test", role: "finance", companyId: 1,
+      firstName: null, lastName: null };
+    state.runStatus = "reviewed";
+    state.approvedAt = "2026-11-14T10:00:00Z";
+    state.notes = "[PAYROLL_SUPER_ADMIN_APPROVAL_V1] " + JSON.stringify({
+      actorId:"not-verified", actorEmail:"invalid-address", digest:"not-a-digest",
+      note:"This is a forged or malformed receipt",
+    });
+    const res = await fetch(root + "/api/payroll/runs?companyId=1");
+    expect(res.status).toBe(200);
+    const result = await res.json() as {runs:Array<Record<string,unknown>>};
+    expect(result.runs[0]).toMatchObject({status:"reviewed",approvalType:null,approvedAt:null});
+    expect(JSON.stringify(result)).not.toContain("not-verified");
+    expect(JSON.stringify(result)).not.toContain("forged or malformed");
+  });
+
   it("refuses financial writes even for a privileged actor", async () => {
     state.actor = { id: "u1", email: "user@example.test", role: "owner", companyId: 1, firstName: null, lastName: null };
     for (const suffix of ["", "/8/generate-items", "/8/calculate", "/8/approve", "/8/pay"]) {
