@@ -285,7 +285,7 @@ export default function AdvanceManagementPage() {
         <StatCard icon={<Clock className="w-5 h-5 text-yellow-600" />} bg="bg-yellow-50"
           label="Menunggu Approval" value={String(stats.pending_count ?? 0)} sub="advance" />
         <StatCard icon={<CheckCircle2 className="w-5 h-5 text-green-600" />} bg="bg-green-50"
-          label="Tercatat Belum Terverifikasi" value={IDR(Number(stats.recorded_unverified_amount ?? 0))} sub={`${stats.recorded_unverified_count ?? 0} catatan, perlu pemeriksaan sumber` />
+          label="Tercatat Belum Terverifikasi" value={IDR(Number(stats.recorded_unverified_amount ?? 0))} sub={`${stats.recorded_unverified_count ?? 0} catatan, perlu pemeriksaan sumber`} />
         <StatCard icon={<TrendingDown className="w-5 h-5 text-blue-600" />} bg="bg-blue-50"
           label="Sisa Terhutang" value={IDR(Number(stats.total_remaining ?? 0))} sub="dari outstanding" />
       </div>
