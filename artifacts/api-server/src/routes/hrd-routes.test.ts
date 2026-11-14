@@ -157,7 +157,7 @@ describe("canonical gated HRD directory stage-one",()=>{
     expect(state.scoped[0].values).toEqual([38,1]);
     expect(state.scoped[1].values).toEqual([1,38]);
     expect(state.scoped.every(x=>x.companyId===1)).toBe(true);
-    expect(state.scoped.some(x=>/\\b(UPDATE|DELETE|INSERT)\\b/i.test(x.sql))).toBe(false);
+    expect(state.scoped.some(x=>/\b(UPDATE|DELETE|INSERT)\b/i.test(x.sql))).toBe(false);
   });
   it("rejects malformed ID, company mismatch and unapproved owner with no HRD data read",async()=>{
     vi.stubEnv("HRD_CANONICAL_RESIGN_PREFLIGHT_ENABLED","true");
