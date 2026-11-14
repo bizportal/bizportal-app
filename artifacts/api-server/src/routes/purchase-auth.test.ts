@@ -91,6 +91,8 @@ function mockUser(role: string) {
         email: "admin@example.com",
         role,
         company_id: 1,
+        is_active: true,
+        status: "active",
       },
     }],
   });
