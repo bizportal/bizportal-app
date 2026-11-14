@@ -70,13 +70,13 @@ export type TokenLookupResult =
  * pass the constant-time re-check" so timing/response shape never leaks
  * which case occurred.
  */
-export async function findPoByVendorToken(token: string): Promise<TokenLookupResult> {
+export async function findPoByVendorToken(token: string, scopedDb: typeof db = db): Promise<TokenLookupResult> {
   if (!token || !TOKEN_HEX_RE.test(token)) {
     return { ok: false, code: "MALFORMED" };
   }
 
   try {
-    const rows = await db
+    const rows = await scopedDb
       .select()
       .from(mktPurchaseOrdersTable)
       .where(eq(mktPurchaseOrdersTable.vendorToken, token))

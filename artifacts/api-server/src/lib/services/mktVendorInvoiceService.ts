@@ -155,6 +155,7 @@ async function getInvoiceWithLines(
 export async function createMarketplaceVendorInvoice(
   input: CreateMarketplaceVendorInvoiceInput,
   actor: ActorInfo,
+  scopedDb: typeof db = db,
 ): Promise<InvoiceServiceResult> {
   const invoiceRef = input.vendorInvoiceRef.trim();
   if (!invoiceRef || invoiceRef.length > 120) {
@@ -174,7 +175,7 @@ export async function createMarketplaceVendorInvoice(
   }
 
   try {
-    const result = await db.transaction(async (tx) => {
+    const result = await scopedDb.transaction(async (tx) => {
       const [po] = await tx.select().from(mktPurchaseOrdersTable)
         .where(eq(mktPurchaseOrdersTable.id, input.poId)).for("update").limit(1);
       if (!po) return { ok: false as const, code: "PO_NOT_FOUND" as const };
@@ -279,6 +280,7 @@ export async function createMarketplaceVendorInvoice(
     });
 
     if (result.ok && !result.alreadyExists) {
+      const publish = () => {
       void logActivity({
         mktPurchaseOrderId: input.poId,
         actorType: actor.actorType,
@@ -295,6 +297,9 @@ export async function createMarketplaceVendorInvoice(
         payloadJson: { invoiceId: result.invoice.id, poId: input.poId, grId: input.grId },
         deduplicationKey: `mkt_vendor_invoice_uploaded:${result.invoice.id}`,
       });
+      };
+      if (scopedDb === db) publish();
+      else onMarketplaceFinanceCommit(scopedDb, publish);
     }
     return result;
   } catch (error: any) {
