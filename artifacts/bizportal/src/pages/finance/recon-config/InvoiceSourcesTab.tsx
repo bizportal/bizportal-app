@@ -779,7 +779,7 @@ export default function InvoiceSourcesTab() {
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                 <div className="rounded-lg border border-slate-700 bg-slate-950/40 p-3">
                   <p className="text-xs uppercase tracking-wide text-slate-500">
-                    Akun Gmail
+                    {status?.connected ? "Akun Gmail Terhubung" : "Mailbox Tujuan (Belum Terhubung)"}
                   </p>
                   <p className="mt-1 text-sm font-semibold text-white">
                     {status?.connectedEmail ||
