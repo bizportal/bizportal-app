@@ -137,6 +137,74 @@ try {
  await expectReject(call(999,900001),"PAYMENT_NOT_IN_COMPANY");
  console.log("PASS missing payment no-op");
  console.log("DISPOSABLE_ATOMIC_PROTOTYPE_PASS 5 checks");
+
+ // Second-stage proof: use a NOLOGIN, NOBYPASSRLS role, never postgres
+ // as the function invoker. The GUC is set transaction-locally.
+ // This still does NOT prove production least privilege, because a
+ // SECURITY INVOKER writer needs underlying table DML grants.
+ await pool.query(`
+   CREATE ROLE ci_void_scoped NOLOGIN NOBYPASSRLS;
+   GRANT USAGE ON SCHEMA ci_void TO ci_void_scoped;
+   GRANT SELECT,UPDATE ON ci_void.payments TO ci_void_scoped;
+   GRANT SELECT,INSERT ON ci_void.journals,ci_void.audits TO ci_void_scoped;
+   GRANT SELECT ON ci_void.fail_switch TO ci_void_scoped;
+   GRANT USAGE,SELECT ON SEQUENCE ci_void.journals_id_seq TO ci_void_scoped;
+   REVOKE ALL ON FUNCTION ci_void.void_payment_v2(integer,integer,text,text) FROM PUBLIC;
+   GRANT EXECUTE ON FUNCTION ci_void.void_payment_v2(integer,integer,text,text) TO ci_void_scoped;
+   ALTER TABLE ci_void.payments ENABLE ROW LEVEL SECURITY;
+   ALTER TABLE ci_void.journals ENABLE ROW LEVEL SECURITY;
+   ALTER TABLE ci_void.audits ENABLE ROW LEVEL SECURITY;
+   CREATE POLICY ci_payments_scope ON ci_void.payments FOR ALL TO ci_void_scoped
+     USING (company_id = NULLIF(current_setting('app.ci_void_company',true),'')::integer)
+     WITH CHECK (company_id = NULLIF(current_setting('app.ci_void_company',true),'')::integer);
+   CREATE POLICY ci_journals_scope ON ci_void.journals FOR ALL TO ci_void_scoped
+     USING (company_id = NULLIF(current_setting('app.ci_void_company',true),'')::integer)
+     WITH CHECK (company_id = NULLIF(current_setting('app.ci_void_company',true),'')::integer);
+   CREATE POLICY ci_audits_scope ON ci_void.audits FOR ALL TO ci_void_scoped
+     USING (company_id = NULLIF(current_setting('app.ci_void_company',true),'')::integer)
+     WITH CHECK (company_id = NULLIF(current_setting('app.ci_void_company',true),'')::integer);
+ `);
+ const scoped=async(company, query,params=[])=>{
+   const client=await pool.connect();
+   try {
+     await client.query("BEGIN");
+     await client.query("SET LOCAL ROLE ci_void_scoped");
+     await client.query("SELECT set_config('app.ci_void_company',$1,true)",[String(company)]);
+     const identity=await client.query(
+       "SELECT current_user AS role, current_setting('app.ci_void_company',true) AS company");
+     assert.equal(identity.rows[0].role,"ci_void_scoped");
+     assert.equal(identity.rows[0].company,String(company));
+     const result=await client.query(query,params);
+     await client.query("ROLLBACK");
+     return result;
+   }catch(e){
+     await client.query("ROLLBACK").catch(()=>{});
+     throw e;
+   }finally{client.release();}
+ };
+ assert.equal((await scoped(900001,"SELECT count(*)::int AS n FROM ci_void.payments WHERE company_id=900002")).rows[0].n,0);
+ await expectReject(
+   scoped(900001,
+     "SELECT ci_void.void_payment_v2($1,$2,'ci-owner','synthetic scoped reversal')",
+     [202,900002]),
+   "PAYMENT_NOT_IN_COMPANY",
+ );
+ console.log("PASS NOLOGIN NOBYPASSRLS invoker rejects cross-tenant payment with transaction-local scope");
+ const roleResult=await scoped(900002,
+   "SELECT ci_void.void_payment_v2($1,$2,'ci-owner','synthetic scoped reversal') AS reversal",
+   [202,900002]);
+ assert.ok(Number.isInteger(roleResult.rows[0].reversal));
+ assert.equal((await one("SELECT status FROM ci_void.payments WHERE id=202"))[0].status,"confirmed");
+ console.log("PASS restricted-role invoker can exercise company-scoped function within rolled-back transaction");
+ // IMPORTANT COUNTEREXAMPLE: table UPDATE grant needed by SECURITY INVOKER
+ // allows an actor with this role to issue raw DML under its company scope.
+ // This proves this role is NOT a safe public/runtime DB principal.
+ const rawUpdate=await scoped(900002,
+   "UPDATE ci_void.payments SET status='rejected' WHERE id=202 AND company_id=900002 RETURNING id");
+ assert.equal(rawUpdate.rowCount,1);
+ assert.equal((await one("SELECT status FROM ci_void.payments WHERE id=202"))[0].status,"confirmed");
+ console.log("KNOWN RELEASE BLOCKER: invoker role can bypass function via direct same-tenant table UPDATE (rolled back)");
+ console.log("DISPOSABLE_ROLE_RLS_PROTOTYPE_PASS 3 checks; NOT a least-privilege production grant design");
 } finally {
  await pool.end();
 }
