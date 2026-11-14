@@ -16,6 +16,8 @@ import accountingSettingsReadParityRouter from "./accounting-settings-read-parit
 import fleetIntelligenceRouter from "./fleet-intelligence";
 import fleetFinanceIntegrationRouter from "./fleet-finance-integration";
 import gmailInvoiceSourceRouter from "./gmail-invoice-source";
+import customerArMatchPreviewRouter from "./customer-ar-match-preview";
+import driverGeofenceRouter from "./driver-geofence";
 import {
   createDevAuthRouter,
   getDevSession,
@@ -68,6 +70,8 @@ router.use(companiesRouter);
 router.use(bankReconciliationRouter);
 router.use(reconClassificationRouter);
 router.use(gmailInvoiceSourceRouter);
+router.use(customerArMatchPreviewRouter);
+router.use(driverGeofenceRouter);
 router.use(accountingRouter);
 router.use(purchaseWorkflowRouter);
 router.use(businessDashboardRouter);
