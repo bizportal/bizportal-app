@@ -75,3 +75,16 @@ an unrelated Git history.
   to reconcile repositories.
 - **Fail closed** when any dependency, runtime provenance, or guard cannot be
   verified. Preserve every existing PASS behavior.
+
+## Automated target-repository inventory (14 Nov)
+
+Run `node scripts/audit-qris292-release-parity.mjs` from repository root.
+Use `--fail-on-blocked` in a future release-preflight pipeline to return
+exit code 2 when dependencies remain absent. The dedicated audit workflow
+checks that the report is internally consistent; **a green inventory workflow
+never means a release is authorized.**
+
+The standalone PostgreSQL `bigint` canonical approval comparison fix has been
+prepared separately in [Draft PR #25](https://github.com/bizportal/bizportal-app/pull/25)
+and its Reconciliation CI and Release Gate passed. It is **not merged** and is
+not a substitute for the full #5738 reversal and owner-builder dependency port.
