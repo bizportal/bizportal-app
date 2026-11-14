@@ -2,6 +2,7 @@ import pg from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { sql } from "drizzle-orm";
 import * as schema from "./schema";
+import { readSecret } from "./gcp-database-secret";
 
 type ScopedDb = typeof import("./index").db;
 type FinanceDatabase = ReturnType<typeof drizzle<typeof schema>>;
@@ -10,6 +11,8 @@ const EXPECTED_PROJECT = "xssrfshdrtdfupgqwfdw";
 const EXPECTED_ROLE = "bizportal_marketplace_finance_login_dev";
 let financePool: pg.Pool | null = null;
 let financeDb: FinanceDatabase | null = null;
+let activeFinanceConnectionUrl: string | null = null;
+let cachedFinanceSecret: { name: string; value: string; expiresAt: number } | null = null;
 
 type PostCommitAction = () => void | Promise<void>;
 const pendingAfterCommit = new WeakMap<object, PostCommitAction[]>();
@@ -21,13 +24,37 @@ export function onMarketplaceFinanceCommit(session: object, action: PostCommitAc
   pending.push(action);
 }
 
-/** Dedicated DEV finance identity. Never fall back to shared postgres or PROD. */
-function getDedicatedFinanceUrl(): string {
+/** Keep Finance credentials separate from the shared postgres/PROD secret.
+ * An explicitly named dedicated GCP Secret Manager secret is supported when
+ * APP_ENV is development; there is never a fallback to the shared DB secret.
+ * The existing GCP service account bootstrap remains the only secret reader.
+ */
+export async function resolveMarketplaceFinanceDevDatabaseUrl(
+  secretReader: (secretName: string) => Promise<string> = readSecret,
+): Promise<string> {
   if (process.env.APP_ENV?.trim().toLowerCase() !== "development" ||
       process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV !== "true") {
     throw new Error("DEV_FINANCE_DISABLED");
   }
-  const raw = process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV?.trim();
+  const direct = process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV?.trim();
+  const secretName = process.env.BIZPORTAL_MARKETPLACE_FINANCE_GCP_SECRET_NAME_DEV?.trim();
+  if (direct && secretName) throw new Error("DEV_FINANCE_CREDENTIAL_SOURCE_AMBIGUOUS");
+  if (!direct && !secretName) throw new Error("DEV_FINANCE_CREDENTIAL_NOT_CONFIGURED");
+  if (secretName && !/^bizportal-marketplace-finance-dev(?:-[a-z0-9-]+)?$/.test(secretName)) {
+    throw new Error("DEV_FINANCE_SECRET_NAME_INVALID");
+  }
+
+  let raw = direct;
+  if (secretName) {
+    if (cachedFinanceSecret && cachedFinanceSecret.name === secretName &&
+        cachedFinanceSecret.expiresAt > Date.now()) {
+      raw = cachedFinanceSecret.value;
+    } else {
+      raw = (await secretReader(secretName)).trim();
+      if (!raw) throw new Error("DEV_FINANCE_SECRET_EMPTY");
+      cachedFinanceSecret = { name: secretName, value: raw, expiresAt: Date.now() + 60_000 };
+    }
+  }
   if (!raw) throw new Error("DEV_FINANCE_CREDENTIAL_NOT_CONFIGURED");
   let url: URL;
   try { url = new URL(raw); } catch { throw new Error("DEV_FINANCE_DATABASE_URL_INVALID"); }
@@ -49,8 +76,13 @@ function getDedicatedFinanceUrl(): string {
   return raw;
 }
 
-function getFinanceDb(): FinanceDatabase {
-  const url = getDedicatedFinanceUrl();
+async function getFinanceDb(): Promise<FinanceDatabase> {
+  const url = await resolveMarketplaceFinanceDevDatabaseUrl();
+  if (financePool && activeFinanceConnectionUrl !== url) {
+    // Rotation requires a controlled service restart; never reuse a cached
+    // authenticated pool after the configured source has changed.
+    throw new Error("DEV_FINANCE_CREDENTIAL_CHANGED_RESTART_REQUIRED");
+  }
   if (!financePool) {
     financePool = new pg.Pool({
       connectionString: url, max: 1,
@@ -58,6 +90,7 @@ function getFinanceDb(): FinanceDatabase {
       query_timeout: 20000, application_name: "bizportal-finance-dev",
     });
     financeDb = drizzle(financePool, { schema });
+    activeFinanceConnectionUrl = url;
   }
   return financeDb!;
 }
@@ -72,7 +105,7 @@ export async function withMarketplaceFinanceDevTransaction<T>(
   if (!Number.isSafeInteger(companyId) || companyId <= 0) {
     throw new Error("DEV_FINANCE_COMPANY_INVALID");
   }
-  const finance = getFinanceDb();
+  const finance = await getFinanceDb();
   const afterCommit: PostCommitAction[] = [];
   const result = await finance.transaction(async (tx) => {
     pendingAfterCommit.set(tx, afterCommit);

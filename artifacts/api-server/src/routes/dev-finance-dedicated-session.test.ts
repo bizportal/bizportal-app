@@ -28,12 +28,13 @@ vi.mock("drizzle-orm/node-postgres", () => ({
   }),
 }));
 
-import { withMarketplaceFinanceDevTransaction, onMarketplaceFinanceCommit } from "@workspace/db";
+import { withMarketplaceFinanceDevTransaction, onMarketplaceFinanceCommit, resolveMarketplaceFinanceDevDatabaseUrl } from "@workspace/db";
 
 const KEYS = [
   "APP_ENV",
   "BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV",
   "BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV",
+  "BIZPORTAL_MARKETPLACE_FINANCE_GCP_SECRET_NAME_DEV",
 ] as const;
 const originals = Object.fromEntries(KEYS.map((key) => [key, process.env[key]]));
 
@@ -86,6 +87,58 @@ describe("dedicated Finance DEV database transaction boundary", () => {
     delete process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV;
     await expect(withMarketplaceFinanceDevTransaction(1, async () => 1))
       .rejects.toThrow("DEV_FINANCE_CREDENTIAL_NOT_CONFIGURED");
+    expect(mock.options).not.toHaveBeenCalled();
+  });
+  it("accepts only an explicitly selected dedicated GCP finance secret", async () => {
+    delete process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV;
+    process.env.BIZPORTAL_MARKETPLACE_FINANCE_GCP_SECRET_NAME_DEV =
+      "bizportal-marketplace-finance-dev-unit";
+    const reader=vi.fn(async()=>
+      "postgresql://bizportal_marketplace_finance_login_dev.xssrfshdrtdfupgqwfdw:synthetic@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres?sslmode=require");
+    const url=await resolveMarketplaceFinanceDevDatabaseUrl(reader);
+    expect(new URL(url).username).toBe("bizportal_marketplace_finance_login_dev.xssrfshdrtdfupgqwfdw");
+    expect(reader).toHaveBeenCalledWith("bizportal-marketplace-finance-dev-unit");
+    expect(mock.options).not.toHaveBeenCalled();
+  });
+  it("fails closed with the real GCP reader when bootstrap credentials are absent", async () => {
+    delete process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV;
+    process.env.BIZPORTAL_MARKETPLACE_FINANCE_GCP_SECRET_NAME_DEV =
+      "bizportal-marketplace-finance-dev-no-bootstrap";
+    const original = process.env.GCP_SECRET_MANAGER_BOOTSTRAP_JSON;
+    try {
+      delete process.env.GCP_SECRET_MANAGER_BOOTSTRAP_JSON;
+      await expect(resolveMarketplaceFinanceDevDatabaseUrl())
+        .rejects.toThrow("GCP_SECRET_MANAGER_BOOTSTRAP_JSON is not configured");
+      expect(mock.options).not.toHaveBeenCalled();
+    } finally {
+      if (original === undefined) delete process.env.GCP_SECRET_MANAGER_BOOTSTRAP_JSON;
+      else process.env.GCP_SECRET_MANAGER_BOOTSTRAP_JSON = original;
+    }
+  });
+  it("rejects use of the generic shared database secret for Finance", async () => {
+    delete process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV;
+    process.env.BIZPORTAL_MARKETPLACE_FINANCE_GCP_SECRET_NAME_DEV =
+      "cst-super-app-development";
+    const reader=vi.fn();
+    await expect(resolveMarketplaceFinanceDevDatabaseUrl(reader))
+      .rejects.toThrow("DEV_FINANCE_SECRET_NAME_INVALID");
+    expect(reader).not.toHaveBeenCalled();
+  });
+  it("rejects ambiguous direct URL and secret sources", async () => {
+    process.env.BIZPORTAL_MARKETPLACE_FINANCE_GCP_SECRET_NAME_DEV =
+      "bizportal-marketplace-finance-dev";
+    const reader=vi.fn();
+    await expect(resolveMarketplaceFinanceDevDatabaseUrl(reader))
+      .rejects.toThrow("DEV_FINANCE_CREDENTIAL_SOURCE_AMBIGUOUS");
+    expect(reader).not.toHaveBeenCalled();
+  });
+  it("does not silently fall back to postgres when Secret Manager fails", async () => {
+    delete process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV;
+    process.env.BIZPORTAL_MARKETPLACE_FINANCE_GCP_SECRET_NAME_DEV =
+      "bizportal-marketplace-finance-dev-unavailable";
+    const reader=vi.fn(async()=>{throw new Error("simulated GCP IAM denial")});
+    await expect(resolveMarketplaceFinanceDevDatabaseUrl(reader))
+      .rejects.toThrow("simulated GCP IAM denial");
     expect(mock.options).not.toHaveBeenCalled();
   });
   it("rejects privileged postgres as a finance credential", async () => {
@@ -150,5 +203,16 @@ describe("dedicated Finance DEV database transaction boundary", () => {
     await expect(withMarketplaceFinanceDevTransaction(1, callback))
       .rejects.toThrow("DEV_FINANCE_ROLE_OR_RLS_UNVERIFIED");
     expect(callback).not.toHaveBeenCalled();
+  });
+  it("fails closed on credential rotation instead of silently reusing an old pool", async () => {
+    // A prior test already initialized the session pool with the synthetic
+    // dedicated identity; changing the credential must require a restart.
+    process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV =
+      "postgresql://bizportal_marketplace_finance_login_dev.xssrfshdrtdfupgqwfdw:synthetic-rotated@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres?sslmode=require";
+    const writer = vi.fn();
+    await expect(withMarketplaceFinanceDevTransaction(1, writer))
+      .rejects.toThrow("DEV_FINANCE_CREDENTIAL_CHANGED_RESTART_REQUIRED");
+    expect(writer).not.toHaveBeenCalled();
+    expect(mock.options).not.toHaveBeenCalled();
   });
 });
