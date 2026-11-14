@@ -32,6 +32,7 @@ const STATE_MAX_AGE_MS = 10 * 60 * 1000;
 
 type GmailSourceStatus = {
   oauthConfigured: boolean;
+  connectionVerifyAvailable: boolean;
   aiConfigured: boolean;
   expectedEmail: string;
   connected: boolean;
@@ -550,6 +551,8 @@ async function readStatus(
     oauthConfigured: Boolean(
       clientId && clientSecret,
     ),
+    connectionVerifyAvailable: isDevelopmentEnvironment()
+      && process.env.BIZPORTAL_GMAIL_PROFILE_VERIFY_ENABLED_DEV === "true",
     aiConfigured: Boolean(aiKey),
     expectedEmail: sourceEmail(),
     connected: Boolean(
@@ -720,6 +723,101 @@ router.get(
       res.status(503).json({
         error:
           "Status sumber invoice Gmail belum tersedia.",
+      });
+    }
+  },
+);
+
+// Canonical DEV-only OAuth profile diagnostic (default OFF). This uses the
+// existing Gmail credentials reader and never lists email or imports invoice.
+router.post(
+  "/recon-classification/invoice-sources/gmail/verify-connection",
+  async (req, res) => {
+    if (!isDevelopmentEnvironment()
+        || process.env.BIZPORTAL_GMAIL_PROFILE_VERIFY_ENABLED_DEV !== "true") {
+      res.status(404).json({ error: "Not found" });
+      return;
+    }
+
+    try {
+      const actor = await requireFinanceAdmin(req);
+      if (!actor) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+
+      // The shared company helper preserves a null companyId for global actors.
+      // The new diagnostic must reject all unscoped non-Super-Admin callers.
+      if (actor.companyId == null
+          && actor.role.trim().toLowerCase() !== "super_admin") {
+        res.status(403).json({
+          code: "COMPANY_SCOPE_MISSING",
+          error: "Hak akses perusahaan tidak terverifikasi.",
+        });
+        return;
+      }
+
+      const companyId = requireCompanyScope(res, actor, req.body?.company_id);
+      if (!companyId) return;
+
+      const expectedEmail = sourceEmail();
+      if (!expectedEmail) {
+        res.status(409).json({
+          code: "GMAIL_DEV_SOURCE_EMAIL_REQUIRED",
+          error: "Alamat sumber Gmail DEV belum dikonfigurasi.",
+        });
+        return;
+      }
+
+      const [encryptedToken, storedEmail] = await Promise.all([
+        getConfig(companyId, "REFRESH_TOKEN"),
+        getConfig(companyId, "EMAIL"),
+      ]);
+      if (!encryptedToken || !storedEmail) {
+        res.status(409).json({
+          code: "GMAIL_NOT_CONNECTED",
+          error: "Token Gmail untuk perusahaan ini belum tersedia.",
+        });
+        return;
+      }
+
+      if (storedEmail.trim().toLowerCase() !== expectedEmail) {
+        res.status(409).json({
+          code: "GMAIL_ACCOUNT_MISMATCH",
+          error: "Identitas Gmail tersimpan tidak cocok dengan sumber DEV.",
+        });
+        return;
+      }
+
+      // Provider verification is explicit and limited to Gmail /users/me/profile.
+      // Refresh tokens are decrypted server-side and never returned to the UI.
+      const accessToken = await refreshAccessToken(
+        await decryptRefreshToken(encryptedToken),
+      );
+      const profile = await gmailProfile(accessToken);
+      if (profile.emailAddress !== expectedEmail) {
+        res.status(409).json({
+          code: "GMAIL_ACCOUNT_MISMATCH",
+          error: "Identitas Gmail provider tidak cocok dengan sumber DEV.",
+        });
+        return;
+      }
+
+      res.json({
+        ok: true,
+        companyId,
+        email: profile.emailAddress,
+        verifiedScope: "gmail_profile_only",
+        verifiedAt: new Date().toISOString(),
+        inboxScanned: false,
+        invoiceImported: false,
+      });
+    } catch {
+      // Never log or return OAuth tokens, client secrets, or provider payloads.
+      req.log.warn("Gmail profile-only verification unavailable");
+      res.status(503).json({
+        code: "GMAIL_VERIFY_UNAVAILABLE",
+        error: "Gmail tidak dapat diverifikasi. Periksa koneksi OAuth DEV.",
       });
     }
   },
