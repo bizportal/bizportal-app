@@ -9,6 +9,7 @@ on:
       - "artifacts/api-server/src/__tests__/qris292-atomic-owner-e2e.test.ts"
       - "artifacts/api-server/src/__tests__/qris292-atomic-second-approval-failure.test.ts"
       - "artifacts/api-server/src/__tests__/qris292-finalized-item-guard-negative.test.ts"
+      - "artifacts/api-server/src/__tests__/qris292-finance-principal-negative.test.ts"
       - "scripts/tests/fixtures/qris*.sql"
       - ".github/workflows/qris292-isolated-postgres.yml"
   workflow_dispatch:
@@ -67,4 +68,4 @@ jobs:
       - name: Install unchanged CST-DEV approval posting functions
         run: psql -h 127.0.0.1 -U postgres -d qris292_test -v ON_ERROR_STOP=1 -f scripts/tests/fixtures/qris292-real-owner-posting-functions.sql
       - name: Test genuine owner batches and full historical reversal, always ROLLBACK
-        run: pnpm --filter @workspace/api-server exec vitest run src/__tests__/qris292-real-owner-positive.test.ts src/__tests__/qris292-atomic-owner-e2e.test.ts src/__tests__/qris292-atomic-second-approval-failure.test.ts src/__tests__/qris292-finalized-item-guard-negative.test.ts
+        run: pnpm --filter @workspace/api-server exec vitest run src/__tests__/qris292-real-owner-positive.test.ts src/__tests__/qris292-atomic-owner-e2e.test.ts src/__tests__/qris292-atomic-second-approval-failure.test.ts src/__tests__/qris292-finalized-item-guard-negative.test.ts src/__tests__/qris292-finance-principal-negative.test.ts
