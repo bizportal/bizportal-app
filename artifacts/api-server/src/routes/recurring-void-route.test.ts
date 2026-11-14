@@ -34,27 +34,26 @@ vi.mock("@workspace/db", () => ({
     }),
   },
 }));
-const moduleMock = () => ({ default: express.Router() });
-vi.mock("./health", moduleMock);
-vi.mock("./companies", moduleMock);
-vi.mock("./hrd-routes", moduleMock);
-vi.mock("./payroll", moduleMock);
-vi.mock("./bank-reconciliation", moduleMock);
-vi.mock("./recon-classification", moduleMock);
-vi.mock("./gmail-invoice-source", moduleMock);
-vi.mock("./accounting", moduleMock);
-vi.mock("./purchase-workflow", moduleMock);
-vi.mock("./business-dashboard", moduleMock);
-vi.mock("./sales-core", moduleMock);
-vi.mock("./admin-realtime", moduleMock);
-vi.mock("./legacy-read-parity", moduleMock);
-vi.mock("./ai-review-read-parity", moduleMock);
-vi.mock("./cash-bank-read-parity", moduleMock);
-vi.mock("./advance-kasbon-readonly", moduleMock);
-vi.mock("./accounting-settings-read-parity", moduleMock);
-vi.mock("./fleet-intelligence", moduleMock);
-vi.mock("./fleet-finance-integration", moduleMock);
-vi.mock("./local-production-auth", moduleMock);
+vi.mock("./health", async () => ({ default: (await import("express")).Router() }));
+vi.mock("./companies", async () => ({ default: (await import("express")).Router() }));
+vi.mock("./hrd-routes", async () => ({ default: (await import("express")).Router() }));
+vi.mock("./payroll", async () => ({ default: (await import("express")).Router() }));
+vi.mock("./bank-reconciliation", async () => ({ default: (await import("express")).Router() }));
+vi.mock("./recon-classification", async () => ({ default: (await import("express")).Router() }));
+vi.mock("./gmail-invoice-source", async () => ({ default: (await import("express")).Router() }));
+vi.mock("./accounting", async () => ({ default: (await import("express")).Router() }));
+vi.mock("./purchase-workflow", async () => ({ default: (await import("express")).Router() }));
+vi.mock("./business-dashboard", async () => ({ default: (await import("express")).Router() }));
+vi.mock("./sales-core", async () => ({ default: (await import("express")).Router() }));
+vi.mock("./admin-realtime", async () => ({ default: (await import("express")).Router() }));
+vi.mock("./legacy-read-parity", async () => ({ default: (await import("express")).Router() }));
+vi.mock("./ai-review-read-parity", async () => ({ default: (await import("express")).Router() }));
+vi.mock("./cash-bank-read-parity", async () => ({ default: (await import("express")).Router() }));
+vi.mock("./advance-kasbon-readonly", async () => ({ default: (await import("express")).Router() }));
+vi.mock("./accounting-settings-read-parity", async () => ({ default: (await import("express")).Router() }));
+vi.mock("./fleet-intelligence", async () => ({ default: (await import("express")).Router() }));
+vi.mock("./fleet-finance-integration", async () => ({ default: (await import("express")).Router() }));
+vi.mock("./local-production-auth", async () => ({ default: (await import("express")).Router() }));
 
 describe("actual recurring payment void HTTP route — fail-closed", () => {
   let server: Server;
