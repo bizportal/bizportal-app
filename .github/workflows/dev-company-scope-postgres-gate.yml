@@ -1,0 +1,48 @@
+name: DEV Company Scope Disposable PostgreSQL Gate
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'artifacts/api-server/src/routes/dev-company-scope-postgres.test.ts'
+      - 'artifacts/api-server/src/routes/sales-core.ts'
+      - 'artifacts/api-server/src/routes/sales-core-company-scope.test.ts'
+      - 'scripts/sql/20261115_bizportal_dev_company_scope_STAGED.sql'
+      - '.github/workflows/dev-company-scope-postgres-gate.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  rls-scope:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres.xssrfshdrtdfupgqwfdw
+          POSTGRES_PASSWORD: ci_only_disposable
+          POSTGRES_DB: payroll_ci
+        ports: ['65432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres.xssrfshdrtdfupgqwfdw -d payroll_ci"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      APP_ENV: development
+      NODE_ENV: test
+      SUPABASE_DATABASE_URL_DEV: postgresql://postgres.xssrfshdrtdfupgqwfdw:ci_only_disposable@127.0.0.1:65432/payroll_ci
+      PAYROLL_PG_E2E_URL: postgresql://postgres.xssrfshdrtdfupgqwfdw:ci_only_disposable@127.0.0.1:65432/payroll_ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Compare active-company policy versus selected-company guard
+        run: pnpm --filter @workspace/api-server exec vitest run src/routes/dev-company-scope-postgres.test.ts --maxWorkers=1 --no-file-parallelism

@@ -1,0 +1,48 @@
+-- STAGED REVIEW ONLY: never apply as part of PR or CI.
+-- CST-DEV current policies for bizportal_dev_runtime on customers and
+-- sales_documents allow rows for ANY active company, not the selected tenant.
+--
+-- PRECONDITIONS before real deployment:
+-- 1. Verify actual Hostinger runtime identity and session middleware.
+-- 2. Server must derive the company from a verified signed session, then set
+--    app.bizportal_company_id with SET LOCAL in the SAME read transaction.
+--    Do not trust a client-provided company_id parameter.
+-- SECURITY LIMITATION: PostgreSQL custom settings (app.bizportal_company_id)
+-- are NOT cryptographically bound to an authenticated actor. Any caller with
+-- arbitrary SQL access on the reader connection can set a different value and
+-- read another allowed tenant. Therefore this staged policy is only viable if
+-- the database credential is server-only, no user-controlled SQL is exposed,
+-- and the backend pins the validated tenant in each read-only transaction.
+-- If an untrusted caller can execute arbitrary SQL, redesign the DB principal
+-- or implement a separately reviewed DB-verifiable identity context first.
+--
+-- 3. Preserve legitimate global Super Admin/Owner behavior via explicit
+--    per-company queries or a separately audited global read capability.
+--    Do not add a client-settable role-bypass custom setting.
+-- 4. Verify real nonprivileged role, missing scope, cross-tenant denial,
+--    active DEV behavior, payroll/HRD/accounting/QRIS compatibility & rollback.
+--
+-- FUTURE CANDIDATE ONLY; commented so cannot alter policies accidentally:
+-- CREATE POLICY bizportal_dev_customer_tenant_guard
+--   ON public.customers AS RESTRICTIVE FOR SELECT
+--   TO bizportal_dev_runtime
+--   USING (company_id = NULLIF(
+--     current_setting('app.bizportal_company_id',true),'')::integer);
+--
+-- CREATE POLICY bizportal_dev_sales_tenant_guard
+--   ON public.sales_documents AS RESTRICTIVE FOR SELECT
+--   TO bizportal_dev_runtime
+--   USING (company_id = NULLIF(
+--     current_setting('app.bizportal_company_id',true),'')::integer);
+--
+-- ROLLBACK ONLY if explicitly authorized:
+-- DROP POLICY IF EXISTS bizportal_dev_customer_tenant_guard ON public.customers;
+-- DROP POLICY IF EXISTS bizportal_dev_sales_tenant_guard ON public.sales_documents;
+--
+-- WARNING: with no trusted scope these policies intentionally yield zero rows.
+-- The current bizportal_dev_runtime is NOLOGIN and could not be SET ROLE via
+-- the available Supabase audit connector. CI proves synthetic RLS only.
+SELECT tablename,policyname,permissive,cmd,roles,qual
+FROM pg_policies
+WHERE schemaname='public' AND tablename IN ('customers','sales_documents')
+ORDER BY tablename,policyname;
