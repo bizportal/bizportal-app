@@ -2,8 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const state=vi.hoisted(()=>({
   calls:[] as Array<{sql:string;values:unknown[]|undefined}>,
-  role:"bizportal_hrd_prod",company:"1",workFailure:false,
-  connected:0,released:0,
+  role:"bizportal_hrd_prod",company:"1",workFailure:false,rollbackFailure:false,
+  connected:0,released:0,discarded:0,
 }));
 vi.mock("@workspace/db",()=>({
   pool:{
@@ -12,6 +12,7 @@ vi.mock("@workspace/db",()=>({
       return {
         query:async(sql:string,values?:unknown[])=>{
           state.calls.push({sql,values});
+          if(sql==="ROLLBACK" && state.rollbackFailure)throw Error("ROLLBACK_TIMED_OUT");
           if(sql.startsWith("SELECT current_user"))return{
             rowCount:1,rows:[{role:state.role,company:state.company}],
           };
@@ -19,7 +20,7 @@ vi.mock("@workspace/db",()=>({
             throw Error("SENSITIVE_DB_FAILURE");
           return{rowCount:0,rows:[]};
         },
-        release:()=>{state.released++},
+        release:(err?:Error)=>{state.released++;if(err)state.discarded++},
       };
     },
   },
@@ -27,8 +28,8 @@ vi.mock("@workspace/db",()=>({
 import { withHrdCompanyReadOnly } from "./hrd-readonly-db";
 describe("HRD read-only transaction custody",()=>{
   beforeEach(()=>{
-    state.calls.length=0;state.connected=0;state.released=0;
-    state.role="bizportal_hrd_prod";state.company="1";state.workFailure=false;
+    state.calls.length=0;state.connected=0;state.released=0;state.discarded=0;
+    state.role="bizportal_hrd_prod";state.company="1";state.workFailure=false;state.rollbackFailure=false;
   });
   const read=()=>withHrdCompanyReadOnly(1,client=>
     client.query("SELECT id FROM public.employees WHERE company_id=$1 LIMIT 1",[1]));
@@ -44,6 +45,7 @@ describe("HRD read-only transaction custody",()=>{
     ]);
     expect(state.calls[2].values).toEqual(["1"]);
     expect(state.connected).toBe(1);expect(state.released).toBe(1);
+    expect(state.discarded).toBe(0);
   });
   it("rejects invalid company without acquiring a pooled connection",async()=>{
     await expect(withHrdCompanyReadOnly(0,async()=>true)).rejects.toThrow("HRD_READONLY_INVALID_COMPANY");
@@ -62,11 +64,26 @@ describe("HRD read-only transaction custody",()=>{
     expect(state.calls.map(v=>v.sql)).toContain("ROLLBACK");
     expect(state.released).toBe(1);
   });
+  it("destroys the pooled client when rollback fails and preserves original exception",async()=>{
+    state.workFailure=true;
+    state.rollbackFailure=true;
+    await expect(read()).rejects.toThrow("SENSITIVE_DB_FAILURE");
+    expect(state.calls.map(v=>v.sql)).toContain("ROLLBACK");
+    expect(state.discarded).toBe(1);
+    expect(state.released).toBe(1);
+  });
+  it("destroys the client after a role mismatch if rollback is uncertain",async()=>{
+    state.role="postgres";
+    state.rollbackFailure=true;
+    await expect(read()).rejects.toThrow("HRD_READONLY_ROLE_SCOPE_MISMATCH");
+    expect(state.discarded).toBe(1);
+  });
   it("rolls back query failures and releases the client",async()=>{
     state.workFailure=true;
     await expect(read()).rejects.toThrow("SENSITIVE_DB_FAILURE");
     expect(state.calls.map(v=>v.sql)).toContain("ROLLBACK");
     expect(state.calls.map(v=>v.sql)).not.toContain("COMMIT");
     expect(state.released).toBe(1);
+    expect(state.discarded).toBe(0);
   });
 });
