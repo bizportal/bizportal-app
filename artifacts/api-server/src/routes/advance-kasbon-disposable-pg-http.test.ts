@@ -9,6 +9,7 @@ import { once } from "node:events";
  * Never execute this test against CST DEV or PROD.
  */
 const enabled = Boolean(process.env.KASBON_DISPOSABLE_PG_URL);
+const disposablePool = vi.hoisted(() => ({ value: null as null | typeof import("@workspace/db")["pool"] }));
 const state = vi.hoisted(() => ({
   session: true, actor: true, role: "finance", companyId: 900001,
 }));
@@ -23,7 +24,8 @@ vi.mock("./dev-auth", () => ({
 vi.mock("./payroll-prod-db", () => ({
   payrollReadOnlyReady: () => true,
   payrollScopedQuery: async (companyId: number, sql: string, values: unknown[]) => {
-    const { pool } = await import("@workspace/db");
+    const pool = disposablePool.value;
+    if (!pool) throw Error("CI_DISPOSABLE_POOL_NOT_INITIALIZED");
     const client = await pool.connect();
     try {
       await client.query("BEGIN READ ONLY");
@@ -63,8 +65,9 @@ describe.skipIf(!enabled)("Kasbon HTTP with REAL disposable PostgreSQL and scope
       throw Error("KASBON_CI_REJECTS_NON_DISPOSABLE_DB");
     }
     process.env.APP_ENV = "production"; // Only to exercise GET-only PROD gate, never an actual PROD connection.
-    process.env.SUPABASE_DATABASE_URL = raw;
-    ({ pool } = await import("@workspace/db"));
+    const { createDedicatedPayrollPool } = await import("@workspace/db");
+    pool = createDedicatedPayrollPool(raw);
+    disposablePool.value = pool;
 
     await pool.query(`CREATE TABLE public.employees (
       id integer PRIMARY KEY, company_id integer NOT NULL,
@@ -115,6 +118,7 @@ describe.skipIf(!enabled)("Kasbon HTTP with REAL disposable PostgreSQL and scope
   afterAll(async () => {
     if (server) await new Promise<void>(resolve => server.close(() => resolve()));
     if (pool) await pool.end(); // Disposable CI container is destroyed after job.
+    disposablePool.value = null;
   });
   const get = (route: string) => fetch(base + route);
 
