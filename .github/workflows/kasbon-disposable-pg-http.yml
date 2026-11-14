@@ -33,7 +33,7 @@ jobs:
       APP_ENV: production
       NODE_ENV: test
       KASBON_DISPOSABLE_PG_URL: postgresql://postgres:ci_only_disposable@127.0.0.1:65432/kasbon_ci
-      SUPABASE_DATABASE_URL: postgresql://postgres:ci_only_disposable@127.0.0.1:65432/kasbon_ci
+      SUPABASE_DATABASE_URL: ""
       SUPABASE_DATABASE_URL_DEV: ""
       PAYROLL_DATABASE_URL_PROD: ""
       FONNTE_TOKEN: ""
