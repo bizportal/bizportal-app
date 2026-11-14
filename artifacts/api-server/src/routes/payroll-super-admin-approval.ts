@@ -1,7 +1,19 @@
 import { PAYROLL_SUPER_ADMIN_APPROVAL_MARKER, payrollSuperAdminApprovalDigest } from "./payroll-super-admin-approval-receipt";
 import type { IRouter, Request, Response } from "express";
 import type { PayrollDbClient } from "@workspace/db";
-import { getPayrollPool, payrollDedicatedEnabled, payrollProdDedicatedRequired, payrollReadOnlyReady, payrollScopedQuery, setPayrollCompanyScope } from "./payroll-prod-db";
+import {
+  getPayrollPool as getProdPayrollPool,
+  payrollProdDedicatedRequired,
+  payrollReadOnlyReady as prodReadOnlyReady,
+  payrollScopedQuery as prodScopedQuery,
+  setPayrollCompanyScope as setProdCompanyScope,
+} from "./payroll-prod-db";
+import {
+  getPayrollPool as getDevPayrollPool,
+  payrollDedicatedEnabled as devDedicatedEnabled,
+  payrollScopedQuery as devScopedQuery,
+  setPayrollCompanyScope as setDevCompanyScope,
+} from "./payroll-db";
 import { isDevelopmentEnvironment } from "./dev-auth";
 import { buildPayrollPreview, type PayrollPreviewItem } from "./payroll-preview";
 import { verifyKasbonReviewLedger } from "./payroll-kasbon-hr-review-guard";
@@ -31,11 +43,24 @@ const actorAllowed = (req: ScopedRequest): boolean =>
   req.payrollActor?.role?.trim().toLowerCase() === "super_admin" &&
   Boolean(String(req.payrollActor?.id ?? "").trim()) &&
   Boolean(String(req.payrollActor?.email ?? "").trim());
+// Route remains UNMOUNTED. DEV uses its existing dedicated, project-pinned
+// Payroll login; PROD retains the pre-existing NOLOGIN scoped-role adapter.
+// All approval writes fail closed unless their environment-specific opt-in is true.
 const enabled = (): boolean => isDevelopmentEnvironment()
-  ? payrollDedicatedEnabled() && process.env.PAYROLL_DEV_SUPER_ADMIN_APPROVAL_ENABLED === "true"
+  ? devDedicatedEnabled() && process.env.PAYROLL_DEV_SUPER_ADMIN_APPROVAL_ENABLED === "true"
   : payrollProdDedicatedRequired() && process.env.PAYROLL_PROD_SUPER_ADMIN_APPROVAL_ENABLED === "true";
 const approvalReadReady = (): boolean =>
-  isDevelopmentEnvironment() ? payrollDedicatedEnabled() : payrollReadOnlyReady();
+  isDevelopmentEnvironment() ? devDedicatedEnabled() : prodReadOnlyReady();
+const approvalScopedQuery = (companyId: number, sql: string, args: unknown[]) =>
+  isDevelopmentEnvironment()
+    ? devScopedQuery(companyId, sql, args)
+    : prodScopedQuery(companyId, sql, args);
+const approvalPool = () =>
+  isDevelopmentEnvironment() ? getDevPayrollPool() : getProdPayrollPool();
+const setApprovalCompanyScope = (client: PayrollDbClient, companyId: number) =>
+  isDevelopmentEnvironment()
+    ? setDevCompanyScope(client, companyId)
+    : setProdCompanyScope(client, companyId);
 
 const itemSQL = `SELECT pi.id, pi.employee_id, pi.base_salary::text,
  pi.allowance::text, pi.gross_salary::text, pi.bpjs_jht_employee::text,
@@ -91,12 +116,12 @@ export function registerPayrollSuperAdminApprovalRoutes(router: IRouter): void {
       const runId=validId(req.params.id),companyId=req.payrollCompanyId;
       if(!runId||!companyId){res.status(400).json({message:"Periode Payroll tidak valid."});return;}
       try{
-        const run=await payrollScopedQuery(companyId,
+        const run=await approvalScopedQuery(companyId,
           "SELECT status,posting_status,accounting_entry_id,payment_entry_id,approved_at,notes FROM public.payroll_runs WHERE company_id=$1 AND id=$2",
           [companyId,runId]);
         if(run.rowCount!==1){res.status(404).json({message:"Periode Payroll tidak ditemukan."});return;}
         const current=run.rows[0];
-        const data=await inspect(async(sql,args)=>payrollScopedQuery(companyId,sql,args),companyId,runId);
+        const data=await inspect(async(sql,args)=>approvalScopedQuery(companyId,sql,args),companyId,runId);
         const cleanDraft=current.status==="draft" && current.posting_status==="pending" &&
           current.accounting_entry_id==null && current.payment_entry_id==null &&
           current.approved_at==null && !String(current.notes??"").includes(PAYROLL_SUPER_ADMIN_APPROVAL_MARKER);
@@ -137,9 +162,9 @@ export function registerPayrollSuperAdminApprovalRoutes(router: IRouter): void {
       const actorEmail=String(req.payrollActor?.email??"").trim().toLowerCase();
       let client:PayrollDbClient|undefined,started=false;
       try{
-        client=await getPayrollPool().connect();
+        client=await approvalPool().connect();
         await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");started=true;
-        await setPayrollCompanyScope(client,companyId);
+        await setApprovalCompanyScope(client,companyId);
         await client.query("SELECT pg_advisory_xact_lock($1::integer,$2::integer)",[companyId,-runId]);
         const run=await client.query(
           "SELECT status,posting_status,accounting_entry_id,payment_entry_id,approved_at,notes FROM public.payroll_runs WHERE company_id=$1 AND id=$2 FOR UPDATE",
