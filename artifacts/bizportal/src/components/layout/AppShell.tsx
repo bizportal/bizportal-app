@@ -360,6 +360,16 @@ export function AppShell({ children, noPadding }: AppShellProps) {
       ],
     },
 
+    // ── 9a. HRD — restore the existing canonical HR hub in sidebar ────────
+    {
+      type: "flat",
+      titleKey: "HRD",
+      href: "/hr",
+      icon: Users,
+      roles: ["admin", "owner", "super_admin"],
+      activePaths: ["/hr"],
+    },
+
     // ── 9d. BIAYA OPERASIONAL ─────────────────────────────────────────
     {
       type: "group",
@@ -607,9 +617,9 @@ export function AppShell({ children, noPadding }: AppShellProps) {
       if (!item.allowedCompanyIds.includes(activeCompany.id)) return false;
     }
 
-    // owner dan admin (built-in) melihat semua
-    if ((dbUser.role as string) === "owner") return true;
-    if ((dbUser.role as string) === "admin") return true;
+    // Privileged built-in roles keep their existing menu even when custom-role
+    // metadata is present in a DEV session.
+    if (["owner", "admin", "super_admin"].includes(dbUser.role as string)) return true;
 
     // Custom role permissions: tampilkan grup jika minimal satu child lolos
     // semua filter (custom-permission + role + company + devOnly).
