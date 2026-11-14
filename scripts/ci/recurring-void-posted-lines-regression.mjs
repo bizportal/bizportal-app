@@ -120,7 +120,46 @@ try {
   );
   assert.equal((await pool.query("SELECT count(*)::int n FROM ci_posted.realistic_headers WHERE reversal_of_id=$1",[header])).rows[0].n,1);
   console.log("PASS candidate reversal unique index requires cleanup and blocks duplicates");
-  console.log("POSTED_LINES_ORDER_REGRESSION_PASS 7 checks");
+  // Reproduce a ledger-level gap: balanced header constraints alone do NOT
+  // validate debit/credit sums over individual journal lines.
+  await pool.query("INSERT INTO ci_posted.realistic_lines(journal_id,line_type,amount) VALUES (1,'debit',60),(1,'credit',100)");
+  const sums=async(id)=>(await pool.query(
+    "SELECT COALESCE(sum(amount) FILTER(WHERE line_type='debit'),0)::numeric AS debit, COALESCE(sum(amount) FILTER(WHERE line_type='credit'),0)::numeric AS credit FROM ci_posted.realistic_lines WHERE journal_id=$1",
+    [id],
+  )).rows[0];
+  const wrong=await sums(1);
+  assert.equal(Number(wrong.debit),60);
+  assert.equal(Number(wrong.credit),100);
+  console.log("PASS real-style column constraints alone permit inconsistent journal line totals");
+  // This candidate gate is only a disposable design proof: the journal may
+  // transition to 'posted' only when both sides are nonzero, equal, and equal
+  // to the respective header side.
+  await pool.query(`
+    CREATE FUNCTION ci_posted.check_postable(p_id integer)
+    RETURNS boolean LANGUAGE sql STABLE AS $verify$
+      SELECT EXISTS (
+        SELECT 1
+        FROM ci_posted.realistic_headers h
+        JOIN (
+          SELECT journal_id,
+            COALESCE(sum(amount) FILTER(WHERE line_type='debit'),0) AS dr,
+            COALESCE(sum(amount) FILTER(WHERE line_type='credit'),0) AS cr
+          FROM ci_posted.realistic_lines
+          GROUP BY journal_id
+        ) l ON l.journal_id=h.id
+        WHERE h.id=p_id AND h.status='draft'
+          AND l.dr>0 AND l.cr>0 AND l.dr=l.cr
+          AND l.dr=h.debit_amount
+          AND l.cr=h.credit_revenue_amount+h.credit_ppn_amount
+      )
+    $verify$;
+  `);
+  assert.equal((await pool.query("SELECT ci_posted.check_postable(1) AS ok")).rows[0].ok,false);
+  await pool.query("INSERT INTO ci_posted.realistic_lines(journal_id,line_type,amount) VALUES (1,'debit',40)");
+  assert.equal((await pool.query("SELECT ci_posted.check_postable(1) AS ok")).rows[0].ok,true);
+  await pool.query("UPDATE ci_posted.realistic_headers SET status='posted' WHERE id=1");
+  console.log("PASS candidate pre-posting gate rejects mismatch and accepts reconciled lines");
+  console.log("POSTED_LINES_ORDER_REGRESSION_PASS 9 checks");
 } finally {
   await pool.end();
 }
