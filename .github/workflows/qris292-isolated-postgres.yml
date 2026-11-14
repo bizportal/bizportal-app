@@ -14,6 +14,7 @@ on:
       - "scripts/sql/20261113_guarded_finalized_settlement_membership_compensation.sql"
       - "scripts/tests/fixtures/qris*.sql"
       - ".github/workflows/qris292-isolated-postgres.yml"
+      - "scripts/hostinger-runtime-attestation-readonly.mjs"
   workflow_dispatch:
 permissions:
   contents: read
@@ -51,6 +52,8 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - name: Check read-only Hostinger provenance probe syntax (not a Hostinger attestation)
+        run: node --check scripts/hostinger-runtime-attestation-readonly.mjs
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       - name: Load disposable historical-like settlement fixture
