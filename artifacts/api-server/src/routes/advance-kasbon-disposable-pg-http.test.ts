@@ -92,9 +92,9 @@ describe.skipIf(!enabled)("Kasbon HTTP with REAL disposable PostgreSQL and scope
     await pool.query("GRANT SELECT ON public.employees, public.cash_advances TO ci_kasbon_reader");
     await pool.query("ALTER TABLE public.employees ENABLE ROW LEVEL SECURITY");
     await pool.query("ALTER TABLE public.cash_advances ENABLE ROW LEVEL SECURITY");
-    await pool.query(`CREATE POLICY ci_employees_scope ON public.employees TO ci_kasbon_reader FOR SELECT
+    await pool.query(`CREATE POLICY ci_employees_scope ON public.employees FOR SELECT TO ci_kasbon_reader
       USING (company_id = NULLIF(current_setting('app.payroll_company_id',true),'')::integer)`);
-    await pool.query(`CREATE POLICY ci_advances_scope ON public.cash_advances TO ci_kasbon_reader FOR SELECT
+    await pool.query(`CREATE POLICY ci_advances_scope ON public.cash_advances FOR SELECT TO ci_kasbon_reader
       USING (company_id = NULLIF(current_setting('app.payroll_company_id',true),'')::integer AND type='kasbon')`);
 
     const { default: router } = await import("./advance-kasbon-readonly");
