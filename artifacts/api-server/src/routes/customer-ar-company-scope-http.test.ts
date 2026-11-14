@@ -5,12 +5,23 @@ import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 
 const { access, queries } = vi.hoisted(() => ({
-  access: { actor: null as null | { id: string; email: string; role: string; companyId: number | null }, dev: true },
+  access: {
+    actor: null as null | { id: string; email: string; role: string; companyId: number | null },
+    dev: true,
+    otpEnabled: false,
+    signedSession: false,
+  },
   queries: vi.fn(async () => ({ rows: [] })),
 }));
 
 vi.mock("@workspace/db", () => ({ pool: { query: queries } }));
-vi.mock("./dev-auth", () => ({ isDevelopmentEnvironment: () => access.dev }));
+vi.mock("./dev-auth", () => ({
+  isDevelopmentEnvironment: () => access.dev,
+  isSignedOtpDevEnabled: () => access.otpEnabled,
+  getProductionSession: () => access.signedSession
+    ? { id: "signed-test", email: "verified@example.invalid", expiresAt: Date.now() + 60_000 }
+    : null,
+}));
 vi.mock("./admin-auth", () => ({
   authenticateAdmin: (req: any, res: any, next: () => void) => {
     if (!access.actor) return res.status(401).json({ error: "Unauthorized" });
@@ -45,6 +56,8 @@ afterAll(async () => {
 beforeEach(() => {
   access.dev = true;
   access.actor = null;
+  access.otpEnabled = false;
+  access.signedSession = false;
   queries.mockClear();
 });
 
@@ -85,6 +98,37 @@ describe("DEV Customer AR HTTP tenant isolation", () => {
     const result = await check(2);
     expect(result.status).toBe(200);
     expect(result.body.companyId).toBe(2);
+    expect(queries).toHaveBeenCalledTimes(2);
+  });
+
+  it("blocks legacy DEV-only cookie for cross-company AR when signed OTP is on", async () => {
+    access.otpEnabled = true;
+    access.actor = { id: "a", email: "test@invalid.example", role: "super_admin", companyId: 1 };
+    const result = await check(2);
+    expect(result.status).toBe(403);
+    expect(result.body.code).toBe("SIGNED_GLOBAL_ADMIN_REQUIRED");
+    access.actor = { id: "b", email: "test@invalid.example", role: "owner", companyId: null };
+    const global = await check(1);
+    expect(global.status).toBe(403);
+    expect(global.body.code).toBe("SIGNED_GLOBAL_ADMIN_REQUIRED");
+    expect(queries).not.toHaveBeenCalled();
+  });
+
+  it("allows verified OTP global reader and same-company legacy reader without posting", async () => {
+    access.otpEnabled = true;
+    access.actor = { id: "a", email: "test@invalid.example", role: "owner", companyId: null };
+    access.signedSession = true;
+    const verified = await check(2);
+    expect(verified.status).toBe(200);
+    expect(verified.body.autoApproveEnabled).toBe(false);
+    expect(verified.body.autoPostEnabled).toBe(false);
+    expect(queries).toHaveBeenCalledTimes(2);
+
+    queries.mockClear();
+    access.signedSession = false;
+    access.actor = { id: "b", email: "test@invalid.example", role: "owner", companyId: 1 };
+    const scoped = await check(1);
+    expect(scoped.status).toBe(200);
     expect(queries).toHaveBeenCalledTimes(2);
   });
 
