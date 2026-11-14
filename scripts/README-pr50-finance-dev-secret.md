@@ -44,10 +44,28 @@ service restart. No fallback to `SUPABASE_DATABASE_URL_DEV` or
    Secret Accessor permissions for the intended isolated server identity.
    Confirm the server has the existing GCP bootstrap credentials.
 3. From an isolated **DEV-only** candidate, perform a single, direct,
-   TLS-protected read-only login with the Finance role. Verify
-   `current_user`, `session_user`, and `row_security_active` against
-   CST-DEV. Do not run this test through the privileged connection's
-   `SET ROLE` shortcut.
+   TLS-protected read-only login with the Finance role. Use the checked-in
+   `scripts/dev-finance-direct-readonly-probe.sh` (separate process, not
+   the active service) after installing the secret and approved GCP IAM.
+   For example, with a shell whose authorized GCP bootstrap is already
+   configured, execute:
+
+   ```bash
+   APP_ENV=development \
+   PR50_FINANCE_READONLY_PROBE=true \
+   BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV=true \
+   BIZPORTAL_MARKETPLACE_FINANCE_GCP_SECRET_NAME_DEV=bizportal-marketplace-finance-dev \
+   bash scripts/dev-finance-direct-readonly-probe.sh
+   ```
+
+   The tool verifies `current_user`, `session_user`, real TLS from
+   `pg_stat_ssl`, `row_security_active` on 11 Finance tables and
+   read-only tenant-1/tenant-3 probes. Missing credentials and an unbound
+   company fail closed, with no financial writes or secret output.
+   A successful direct probe prints `FINANCE_DIRECT_TLS_RLS_READONLY_PASS=true`.
+   The script temporarily compiles into the existing `lib/db` workspace,
+   then removes its compilation artifact. It **does not** use privileged
+   `SET ROLE` and never enables the active service.
 4. Verify signed Super Admin OTP, trusted company binding and negative
    cross-tenant requests. Feature flags remain OFF on the live service.
 5. Only then exercise the existing canonical Vendor Invoice → 3-way match
