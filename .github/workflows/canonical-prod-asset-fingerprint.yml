@@ -1,0 +1,63 @@
+name: Canonical PROD Asset Fingerprint Audit
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/canonical-prod-asset-fingerprint.yml"
+permissions:
+  contents: read
+jobs:
+  fingerprint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      APP_ENV: development
+      NODE_ENV: test
+      NODE_OPTIONS: --max-old-space-size=4096
+      SUPABASE_DATABASE_URL: ""
+      SUPABASE_DATABASE_URL_DEV: ""
+      PAYROLL_DATABASE_URL_PROD: ""
+      GCP_SECRET_MANAGER_BOOTSTRAP_JSON: ""
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Pin source to audited canonical main
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "b0d869eec8cf294e73840bcbd88718d3e20f3068"
+          test "$(git diff --name-only HEAD^ HEAD)" = ".github/workflows/canonical-prod-asset-fingerprint.yml"
+          echo "SOURCE_SHA=$(git rev-parse HEAD^)" >> "$GITHUB_ENV"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Produce canonical build
+        run: pnpm run build
+      - name: Output asset identity without accessing PROD
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s dist/public/index.html
+          test -s dist/index.mjs
+          node --input-type=module - <<'JS'
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          const root='dist/public';
+          const html=fs.readFileSync(root+'/index.html','utf8');
+          const paths=[...html.matchAll(/(?:src|href)=["'](\/assets\/[^"']+\.(?:js|css))["']/g)].map(m=>m[1]);
+          if (paths.length < 2) throw new Error('BUILD_ASSET_LIST_MISSING');
+          console.log('CANONICAL_SOURCE_SHA='+process.env.SOURCE_SHA);
+          for (const name of paths) {
+            const buf=fs.readFileSync(root+name);
+            console.log('ASSET '+name+' sha256='+crypto.createHash('sha256').update(buf).digest('hex')+' bytes='+buf.length);
+          }
+          console.log('INDEX_SHA256='+crypto.createHash('sha256').update(html).digest('hex'));
+          JS
