@@ -3,7 +3,7 @@ import { payrollReadOnlyReady, payrollScopedQuery } from "./payroll-prod-db";
 
 type ScopedPayrollRequest = Request & {
   payrollCompanyId?: number;
-  payrollActor?: { role: string };
+  payrollActor?: { role: string; companyId: number | null };
 };
 
 /**
@@ -29,6 +29,13 @@ export function registerPayrollSetupReadinessRoutes(router: IRouter): void {
       return;
     }
     const companyId = req.payrollCompanyId;
+    // Unlike Super Admin, an Owner's aggregate payroll counts may only be
+    // read for the company recorded on that verified server-side account.
+    // This is defense-in-depth beyond the shared Payroll authorization adapter.
+    if (role === "owner" && req.payrollActor?.companyId !== companyId) {
+      res.status(403).json({ message: "Kesiapan Payroll perusahaan ini tidak diizinkan." });
+      return;
+    }
     const rawYear = req.query.year;
     const rawMonth = req.query.month;
     const year = typeof rawYear === "string" && /^20[0-9]{2}$/.test(rawYear) ? Number(rawYear) : NaN;
