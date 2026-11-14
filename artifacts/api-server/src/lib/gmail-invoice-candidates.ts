@@ -52,6 +52,40 @@ function isSrtAttachment(fileName: string): boolean {
   return /^srt(?:[\s_.-]|$)/i.test(fileName.trim());
 }
 
+// FK-prefixed files are Faktur Pajak, not stand-alone payable invoices.
+function isSupportingTaxAttachment(fileName: string): boolean {
+  return /^fk(?:[\s_.-]|$)/i.test(fileName.trim());
+}
+
+// A circular accompanying billing is not a payable invoice.
+function isSukmaBillingNotice(fileName: string): boolean {
+  return /^(?:edaran|surat[\s_.-]+edaran)(?:[\s_.-]|$)/i.test(fileName.trim());
+}
+
+// Special-case only the existing Sukma/CST billing format. Other senders
+// keep their existing attachment selection behavior.
+function isSukmaCstBillingEmail(message: GmailInvoiceMessage): boolean {
+  const senderName = (message.senderName ?? "").toLowerCase();
+  const subject = (message.subject ?? "").toLowerCase();
+  return senderName.includes("sukma")
+    && /invoice|tagihan|penagihan/.test(subject)
+    && /cahaya\s+sejati\s+teknologi/.test(subject);
+}
+
+export function invoiceAttachmentsForMessage(message: GmailInvoiceMessage): GmailAttachment[] {
+  const eligible = message.attachments.filter(
+    (attachment) => !isSrtAttachment(attachment.fileName),
+  );
+  if (!isSukmaCstBillingEmail(message)) return eligible;
+  const payablePdfs = eligible.filter(
+    (attachment) => attachment.mimeType.toLowerCase() === "application/pdf"
+      && !isSupportingTaxAttachment(attachment.fileName)
+      && !isSukmaBillingNotice(attachment.fileName),
+  );
+  // An email with FK + EDARAN but no invoice must not create a payable candidate.
+  return payablePdfs.length > 0 ? [payablePdfs[payablePdfs.length - 1]!] : [];
+}
+
 async function upsertShell(args: {
   companyId: number;
   message: GmailInvoiceMessage;
@@ -332,8 +366,7 @@ export async function syncGmailInvoiceCandidates(args: {
   let newWork = 0;
 
   scan: for (const message of messages) {
-    for (const attachment of message.attachments) {
-      if (isSrtAttachment(attachment.fileName)) continue;
+    for (const attachment of invoiceAttachmentsForMessage(message)) {
       counts.attachmentsSeen += 1;
 
       const status = await processAttachment({
