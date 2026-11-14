@@ -4,6 +4,7 @@ import {
   getProductionSession,
   getProductionUser,
   isDevelopmentEnvironment,
+  isSignedOtpDevEnabled,
   type DevAuthUser,
 } from "./dev-auth";
 
@@ -17,13 +18,11 @@ export async function authenticateAdmin(
   next: NextFunction,
 ): Promise<void> {
   try {
-    const user = isDevelopmentEnvironment()
-      ? getDevSession(request)
-      : (() => {
-          const session = getProductionSession(request);
-          return session ? getProductionUser(session) : Promise.resolve(null);
-        })();
-    const resolvedUser = await user;
+    const devActor = isDevelopmentEnvironment() ? getDevSession(request) : null;
+    const signedSession = (!isDevelopmentEnvironment() || isSignedOtpDevEnabled())
+      ? getProductionSession(request)
+      : null;
+    const resolvedUser = devActor ?? (signedSession ? await getProductionUser(signedSession) : null);
 
     if (!resolvedUser) {
       response.status(401).json({ error: "Unauthorized" });
