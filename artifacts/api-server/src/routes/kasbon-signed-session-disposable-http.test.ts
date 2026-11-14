@@ -148,7 +148,7 @@ describe.skipIf(!enabled)("signed production session + Kasbon HTTP and disposabl
   });
   beforeEach(async()=>{
     if(!shared.client)throw Error("CI_POOL_UNAVAILABLE");
-    await shared.client.query("UPDATE public.users SET is_active=true,role='admin'");
+    await shared.client.query("UPDATE public.users SET is_active=true,role='admin',status='active'");
   });
 
   it("creates signed login cookies and returns only scoped tenant rows",async()=>{
@@ -179,6 +179,14 @@ describe.skipIf(!enabled)("signed production session + Kasbon HTTP and disposabl
   });
   it("revokes an existing signed session when the account is deactivated",async()=>{
     await shared.client!.query("UPDATE public.users SET is_active=false WHERE email=$1",[alice]);
+    expect((await request("/api/advances?companyId=900001",aliceCookie)).status).toBe(403);
+  });
+  it("revokes an existing signed session when account status becomes inactive",async()=>{
+    await shared.client!.query("UPDATE public.users SET status='resigned' WHERE email=$1",[alice]);
+    expect((await request("/api/advances?companyId=900001",aliceCookie)).status).toBe(403);
+  });
+  it("fails closed when account activation field is missing",async()=>{
+    await shared.client!.query("UPDATE public.users SET is_active=NULL WHERE email=$1",[alice]);
     expect((await request("/api/advances?companyId=900001",aliceCookie)).status).toBe(403);
   });
   it("ensures writer endpoint remains unavailable",async()=>{
