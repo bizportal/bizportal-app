@@ -7,6 +7,15 @@
 -- 2. Server must derive the company from a verified signed session, then set
 --    app.bizportal_company_id with SET LOCAL in the SAME read transaction.
 --    Do not trust a client-provided company_id parameter.
+-- SECURITY LIMITATION: PostgreSQL custom settings (app.bizportal_company_id)
+-- are NOT cryptographically bound to an authenticated actor. Any caller with
+-- arbitrary SQL access on the reader connection can set a different value and
+-- read another allowed tenant. Therefore this staged policy is only viable if
+-- the database credential is server-only, no user-controlled SQL is exposed,
+-- and the backend pins the validated tenant in each read-only transaction.
+-- If an untrusted caller can execute arbitrary SQL, redesign the DB principal
+-- or implement a separately reviewed DB-verifiable identity context first.
+--
 -- 3. Preserve legitimate global Super Admin/Owner behavior via explicit
 --    per-company queries or a separately audited global read capability.
 --    Do not add a client-settable role-bypass custom setting.

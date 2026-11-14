@@ -83,6 +83,33 @@ describe.skipIf(!enabled)("DEV selected-company RLS policy proof",()=>{
       expect(await read("2",t," WHERE company_id=1")).toBe(0);
     }
   });
+  it("proves an unrestricted SQL caller can change an unsigned company GUC",async()=>{
+    // A custom PostgreSQL GUC is NOT identity proof. If the DB credential or
+    // arbitrary SQL is exposed to a caller, that caller can switch tenants.
+    await addGuards();
+    const c=await pool.connect();
+    try{
+      await c.query("BEGIN READ ONLY");
+      await c.query("SET LOCAL ROLE "+role);
+      await c.query("SELECT set_config('app.bizportal_company_id',$1,true)",["1"]);
+      const denied=await c.query(
+        "SELECT count(*)::int AS total FROM "+tables[0]+" WHERE company_id=2",
+      );
+      expect(Number(denied.rows[0]?.total)).toBe(0);
+      // The SAME restricted role can set a different custom GUC. This is why
+      // runtime must never expose direct SQL/connection credentials to users.
+      await c.query("SELECT set_config('app.bizportal_company_id',$1,true)",["2"]);
+      const exposed=await c.query(
+        "SELECT count(*)::int AS total FROM "+tables[0]+" WHERE company_id=2",
+      );
+      expect(Number(exposed.rows[0]?.total)).toBe(1);
+      await c.query("ROLLBACK");
+    }catch(error){
+      await c.query("ROLLBACK").catch(()=>undefined);
+      throw error;
+    }finally{c.release();}
+  });
+
   it("retains read-only privileges and denies database UPDATE",async()=>{
     await addGuards();
     const c=await pool.connect();
