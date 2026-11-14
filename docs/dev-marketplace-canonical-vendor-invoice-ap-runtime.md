@@ -37,3 +37,13 @@ Leave both OFF on all PROD and unverified runtimes. Never set them before the ap
 
 ## Rollback
 Set both `BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV` and `BIZPORTAL_MARKETPLACE_VENDOR_INVOICE_ENABLED_DEV` to false and restart **DEV only**. Existing read routes and RFQ/PO flow remain untouched. Never delete previously posted financial records as part of rollback.
+
+## Accounting handoff (new, explicitly gated, DEV only)
+The existing canonical AP service exposes `POST /api/mkt/admin/ap-preparations/:id/accounting-handoff` only when:
+- Existing `BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV=true`, plus the **separate** `BIZPORTAL_MARKETPLACE_ACCOUNTING_HANDOFF_ENABLED_DEV=true` flag.
+- A verified signed `super_admin` session exists; no empty company / mismatched supplier/PO/GR / unmatched invoice.
+- AP has already passed `finance_review` and reached `waiting_payment`.
+
+The call creates **one** `payment_requests` row with status **draft**, `paid_amount=0`, and **one** `mkt_accounting_handoffs` record using the existing unique AP/idempotency keys, in a single transaction. Replays return the same IDs. No journal, COA mapping, approval, external payment, settlement, or posting occurs. Accounting retains sole ownership of payment approval and execution.
+
+**Not yet DEV E2E certified:** the active BizPortal service remains separate from this official candidate, and there is no company-scoped Marketplace PO on DEV. Keep both enablement flags OFF on active services; only a fresh isolated company-scoped transaction may certify 3-way match through AP and Accounting. This source-only PR must not silently switch Nginx or touch PROD.

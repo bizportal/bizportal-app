@@ -138,4 +138,35 @@ for (const [path, action] of [
     } catch(error) {req.log?.error({error},"Marketplace AP action failed");res.status(503).json({error:"AP action unavailable"});}
   });
 }
+// Explicit, separately gated handoff. This only creates a DRAFT Accounting
+// payment request and a durable idempotency record; never pays/posts a journal.
+router.post("/mkt/admin/ap-preparations/:id/accounting-handoff", async (req,res) => {
+  const actor = await authorize(req,res);
+  if (!actor) return;
+  if (process.env.BIZPORTAL_MARKETPLACE_ACCOUNTING_HANDOFF_ENABLED_DEV !== "true") {
+    res.status(404).json({ error: "Not found" }); return;
+  }
+  const id = validId(String(req.params.id ?? ""));
+  if (!id) { res.status(400).json({ error: "Invalid AP ID" }); return; }
+  if (req.body && Object.keys(req.body).length) {
+    res.status(422).json({ error: "INVALID_BODY" }); return;
+  }
+  try {
+    const ap = await verifiedAp(id);
+    if (!ap) { res.status(404).json({ error: "AP not found" }); return; }
+    const result = await (await apService()).createMarketplaceAccountingHandoff(id, { actorId: actor, actorName: actor });
+    if (!result.ok) {
+      res.status(result.code === "NOT_FOUND" ? 404 : 409).json({ ok: false, error: result.code }); return;
+    }
+    res.status(result.alreadyExists ? 200 : 201).json({
+      ok: true, alreadyExists: result.alreadyExists,
+      paymentRequestId: result.paymentRequestId, handoffId: result.handoffId,
+      paymentStatus: "draft", journalPosted: false,
+    });
+  } catch (error) {
+    req.log?.error({error},"Marketplace Accounting handoff failed");
+    res.status(503).json({error:"Accounting handoff unavailable"});
+  }
+});
+
 export default router;

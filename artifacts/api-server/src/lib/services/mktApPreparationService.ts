@@ -1,11 +1,15 @@
 import {
   db,
   mktApPreparationsTable,
+  mktAccountingHandoffsTable,
+  paymentRequestsTable,
   mktPoGoodsReceiptsTable,
+  mktPoShipmentsTable,
   mktPurchaseOrdersTable,
   vendorInvoicesTable,
 } from "@workspace/db";
 import { and, asc, eq } from "drizzle-orm";
+import { createHash } from "node:crypto";
 import { logActivity } from "../activityLog.js";
 import { enqueueNotification } from "./marketplaceNotificationQueueService.js";
 
@@ -163,8 +167,9 @@ export async function createApPreparation(
     if (!po || !gr || gr.shipmentId == null) {
       return { ok: false as const, code: "MISSING_REFERENCE" as const };
     }
-    if (po.vendorId !== invoice.supplierId || po.companyId !== invoice.companyId) {
-      return { ok: false as const, code: "MISSING_REFERENCE" as const, message: "Referensi invoice tidak konsisten dengan PO" };
+    if (!po.companyId || !invoice.companyId ||
+        po.vendorId !== invoice.supplierId || po.companyId !== invoice.companyId) {
+      return { ok: false as const, code: "MISSING_REFERENCE" as const, message: "Referensi invoice tidak konsisten dengan PO atau company" };
     }
 
     const [inserted] = await tx
@@ -266,6 +271,124 @@ export function markApPreparationWaitingPayment(
   actor: { actorId?: string | null; actorName?: string | null },
 ): Promise<ApPreparationResult> {
   return transitionAp(id, "waiting_payment", actor);
+}
+
+/** Persist the AP→Accounting boundary once, without approval, payment, or GL posting.
+ * This intentionally leaves Accounting's existing review/payment writer in charge.
+ */
+export async function createMarketplaceAccountingHandoff(
+  id: number,
+  actor: { actorId?: string | null; actorName?: string | null },
+): Promise<
+  | { ok: true; alreadyExists: boolean; paymentRequestId: number; handoffId: number }
+  | { ok: false; code: ApPreparationFailureCode }
+> {
+  return db.transaction(async (tx) => {
+    const [ap] = await tx.select().from(mktApPreparationsTable)
+      .where(eq(mktApPreparationsTable.id, id)).for("update").limit(1);
+    if (!ap) return { ok: false as const, code: "NOT_FOUND" as const };
+    if (!ap.companyId || !ap.supplierId || !ap.mktPurchaseOrderId ||
+        !ap.mktGoodsReceiptId || !ap.vendorInvoiceId)
+      return { ok: false as const, code: "MISSING_REFERENCE" as const };
+    if (ap.status !== "waiting_payment")
+      return { ok: false as const, code: "INVALID_STATUS" as const };
+
+    const [existing] = await tx.select().from(mktAccountingHandoffsTable)
+      .where(eq(mktAccountingHandoffsTable.apPreparationId, id)).limit(1);
+    if (existing) {
+      return {
+        ok: true as const, alreadyExists: true,
+        paymentRequestId: existing.paymentRequestId, handoffId: existing.id,
+      };
+    }
+
+    const [invoice] = await tx.select().from(vendorInvoicesTable)
+      .where(eq(vendorInvoicesTable.id, ap.vendorInvoiceId)).limit(1);
+    const [po] = await tx.select().from(mktPurchaseOrdersTable)
+      .where(eq(mktPurchaseOrdersTable.id, ap.mktPurchaseOrderId)).limit(1);
+    const [gr] = await tx.select().from(mktPoGoodsReceiptsTable)
+      .where(eq(mktPoGoodsReceiptsTable.id, ap.mktGoodsReceiptId)).limit(1);
+    if (!invoice || !po || !gr || !gr.shipmentId ||
+        !po.companyId || po.companyId !== ap.companyId ||
+        invoice.companyId !== ap.companyId ||
+        invoice.supplierId !== ap.supplierId ||
+        po.vendorId !== ap.supplierId ||
+        invoice.mktPurchaseOrderId !== po.id ||
+        invoice.mktGoodsReceiptId !== gr.id ||
+        invoice.status !== "ready_for_ap" || invoice.threeWayMatchStatus !== "passed" ||
+        gr.inspectionStatus !== "passed")
+      return { ok: false as const, code: "MISSING_REFERENCE" as const };
+    const [shipment] = await tx.select().from(mktPoShipmentsTable)
+      .where(eq(mktPoShipmentsTable.id, gr.shipmentId)).limit(1);
+    if (!shipment || shipment.poId !== po.id || shipment.shipmentStatus !== "delivered")
+      return { ok: false as const, code: "MISSING_REFERENCE" as const };
+
+    const handoffKey = `mkt-ap:${ap.id}`;
+    const payload = {
+      apPreparationId: ap.id,
+      vendorInvoiceId: ap.vendorInvoiceId,
+      purchaseOrderId: ap.mktPurchaseOrderId,
+      goodsReceiptId: ap.mktGoodsReceiptId,
+      companyId: ap.companyId,
+      supplierId: ap.supplierId,
+      currency: ap.currencySnapshot,
+      amount: ap.grandTotalSnapshot,
+      approvalState: "finance_review",
+      paymentLifecycleState: "waiting_payment",
+      accountingPaymentStatus: "draft",
+    };
+    const payloadFingerprint = createHash("sha256")
+      .update(JSON.stringify(payload)).digest("hex");
+    const [request] = await tx.insert(paymentRequestsTable).values({
+      payReqNumber: `MKT-PR-${ap.id}`,
+      companyId: ap.companyId,
+      supplierId: ap.supplierId,
+      supplierName: ap.supplierName,
+      status: "draft",
+      totalAmount: ap.grandTotalSnapshot,
+      paidAmount: "0.00",
+      currency: ap.currencySnapshot,
+      requestedBy: actor.actorId ?? null,
+      sourceType: "marketplace_ap",
+      sourceId: ap.id,
+      mktApPreparationId: ap.id,
+      idempotencyKey: handoffKey,
+      payloadFingerprint,
+      mktLifecycleStatus: "waiting_payment",
+      mktFinanceReviewedBy: ap.financeReviewedBy,
+      mktFinanceReviewedAt: ap.financeReviewedAt,
+    }).returning();
+    const [handoff] = await tx.insert(mktAccountingHandoffsTable).values({
+      handoffKey,
+      correlationReference: `MKT-AP-${ap.id}`,
+      payloadFingerprint,
+      apPreparationId: ap.id,
+      vendorInvoiceId: ap.vendorInvoiceId,
+      mktPurchaseOrderId: ap.mktPurchaseOrderId,
+      mktGoodsReceiptId: ap.mktGoodsReceiptId,
+      paymentRequestId: request.id,
+      companyId: ap.companyId,
+      supplierId: ap.supplierId,
+      currency: ap.currencySnapshot,
+      amount: ap.grandTotalSnapshot,
+      approvalState: "finance_review",
+      paymentLifecycleState: "waiting_payment",
+      status: "accepted",
+      accountingStatus: "draft_not_posted",
+      payload,
+      requestedBy: actor.actorId ?? null,
+    }).returning();
+    await tx.update(mktApPreparationsTable).set({
+      paymentRequestId: request.id,
+      paymentHandoffAt: new Date(),
+      paymentHandoffBy: actor.actorId ?? null,
+      updatedAt: new Date(),
+    }).where(eq(mktApPreparationsTable.id, ap.id));
+    return {
+      ok: true as const, alreadyExists: false,
+      paymentRequestId: request.id, handoffId: handoff.id,
+    };
+  });
 }
 
 export async function getApPreparation(id: number): Promise<ApRow | null> {
