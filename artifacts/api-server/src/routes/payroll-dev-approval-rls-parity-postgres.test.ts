@@ -67,6 +67,7 @@ describe.skipIf(!enabled)("DEV Payroll HR-review policy versus strict receipt ca
     if(pool){
       await pool.query("DROP TABLE IF EXISTS "+table+" CASCADE");
       await pool.query("DROP FUNCTION IF EXISTS public.ci_payroll_review_reopen_guard()");
+      await pool.query("REVOKE USAGE ON SCHEMA public FROM ci_payroll_policy_probe");
       await pool.query("DROP ROLE IF EXISTS ci_payroll_policy_probe");
       await pool.end();
     }
