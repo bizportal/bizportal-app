@@ -58,6 +58,7 @@ export interface CreateMarketplaceVendorInvoiceInput {
 type FailureCode =
   | "PO_NOT_FOUND"
   | "PO_CANCELLED"
+  | "COMPANY_SCOPE_INVALID"
   | "GR_NOT_FOUND"
   | "GR_NOT_FOR_PO"
   | "DUPLICATE_INVOICE"
@@ -180,6 +181,9 @@ export async function createMarketplaceVendorInvoice(
       if (po.vendorId !== input.supplierId) {
         return { ok: false as const, code: "PO_NOT_FOUND" as const };
       }
+      if (!po.companyId || (input.companyId != null && input.companyId !== po.companyId)) {
+        return { ok: false as const, code: "COMPANY_SCOPE_INVALID" as const };
+      }
 
       const [gr] = await tx.select().from(mktPoGoodsReceiptsTable)
         .where(eq(mktPoGoodsReceiptsTable.id, input.grId)).for("update").limit(1);
@@ -239,7 +243,7 @@ export async function createMarketplaceVendorInvoice(
       const [inserted] = await tx.insert(vendorInvoicesTable).values({
         invoiceNumber: newInvoiceNumber(),
         vendorInvoiceRef: invoiceRef,
-        companyId: input.companyId ?? po.companyId ?? null,
+        companyId: po.companyId,
         supplierId: input.supplierId,
         supplierName: input.supplierName,
         mktPurchaseOrderId: po.id,
@@ -392,6 +396,13 @@ export async function submitMarketplaceVendorInvoice(
     if (!invoice) return { ok: false as const, code: "PO_NOT_FOUND" as const, message: "Invoice tidak ditemukan" };
     if (!invoice.mktPurchaseOrderId || !invoice.mktGoodsReceiptId) {
       return { ok: false as const, code: "GR_NOT_FOUND" as const, message: "Invoice wajib memiliki PO dan Goods Receipt" };
+    }
+    const [poScope] = await tx.select().from(mktPurchaseOrdersTable)
+      .where(eq(mktPurchaseOrdersTable.id, invoice.mktPurchaseOrderId)).limit(1);
+    if (!poScope?.companyId || !invoice.companyId ||
+        poScope.companyId !== invoice.companyId ||
+        poScope.vendorId !== invoice.supplierId) {
+      return { ok: false as const, code: "COMPANY_SCOPE_INVALID" as const };
     }
     if (invoice.status === "ready_for_ap") {
       const existing = await getInvoiceWithLines(invoice.id, tx);

@@ -73,7 +73,7 @@ function tokenStatus(code: string): number {
 
 function failureStatus(code: string): number {
   if (["PO_NOT_FOUND", "GR_NOT_FOUND", "GR_NOT_FOR_PO"].includes(code)) return 404;
-  if (["DUPLICATE_INVOICE", "INVALID_STATUS", "SHIPMENT_NOT_DELIVERED", "RECEIPT_NOT_ACCEPTED"].includes(code)) return 409;
+  if (["COMPANY_SCOPE_INVALID", "DUPLICATE_INVOICE", "INVALID_STATUS", "SHIPMENT_NOT_DELIVERED", "RECEIPT_NOT_ACCEPTED"].includes(code)) return 409;
   if (["NO_LINES", "INVALID_LINE", "INVALID_TOTAL", "INVALID_CURRENCY", "INVALID_DATE", "INVALID_REFERENCE"].includes(code)) return 422;
   return 400;
 }

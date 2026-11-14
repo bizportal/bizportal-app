@@ -163,8 +163,9 @@ export async function createApPreparation(
     if (!po || !gr || gr.shipmentId == null) {
       return { ok: false as const, code: "MISSING_REFERENCE" as const };
     }
-    if (po.vendorId !== invoice.supplierId || po.companyId !== invoice.companyId) {
-      return { ok: false as const, code: "MISSING_REFERENCE" as const, message: "Referensi invoice tidak konsisten dengan PO" };
+    if (!po.companyId || !invoice.companyId ||
+        po.vendorId !== invoice.supplierId || po.companyId !== invoice.companyId) {
+      return { ok: false as const, code: "MISSING_REFERENCE" as const, message: "Referensi invoice tidak konsisten dengan PO atau company" };
     }
 
     const [inserted] = await tx
