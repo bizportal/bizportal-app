@@ -6,7 +6,7 @@ import { once } from "node:events";
 const state=vi.hoisted(()=>({
   enabled:true, session:true, actor:true, active:true, role:"owner",
   companyId:1 as number|null, userId:"google_103728868378401731050",
-  dbRole:"owner", dbCompanyId:1, readerError:false,
+  dbRole:"owner", dbCompanyId:1, readerError:false, precheckError:false,
   dbQueries:[] as Array<{sql:string; values:unknown[]}>,
   scoped:[] as Array<{companyId:number; sql:string; values:unknown[]}>,
 }));
@@ -31,6 +31,14 @@ vi.mock("./hrd-readonly-db",()=>({
     if(state.readerError)throw Error("secret-password-not-for-response");
     return fn({query:async(sql:string,values:unknown[])=>{
       state.scoped.push({companyId,sql,values});
+      if(sql.includes("employee_resign_kasbon_precheck(")){
+        if(state.precheckError)throw Error("SENSITIVE_PREFLIGHT_DB_ERROR");
+        return{rowCount:1,rows:[{
+          unverifiedCount:"2",unverifiedAmount:"16000000.00",
+          verifiedUnsettledCount:"0",verifiedUnsettledAmount:"0.00",
+          activeReservations:"0",activeReservationAmount:"0.00",
+        }]};
+      }
       if(sql.includes("SELECT id FROM"))return{rowCount:1,rows:[{id:38}]};
       const rows=companyId===1?[{
         id:38,company_id:1,first_name:"Andi",last_name:"Wangsamas",
@@ -54,9 +62,10 @@ describe("canonical gated HRD directory stage-one",()=>{
   beforeEach(()=>{
     vi.stubEnv("APP_ENV","production");
     vi.stubEnv("HRD_CANONICAL_READONLY_ENABLED","true");
+    vi.stubEnv("HRD_CANONICAL_RESIGN_PREFLIGHT_ENABLED","");
     state.enabled=true;state.session=true;state.actor=true;state.active=true;
     state.role="owner";state.companyId=1;state.dbRole="owner";state.dbCompanyId=1;
-    state.userId="google_103728868378401731050";state.readerError=false;
+    state.userId="google_103728868378401731050";state.readerError=false;state.precheckError=false;
     state.dbQueries.length=0;state.scoped.length=0;
   });
   afterEach(()=>vi.unstubAllEnvs());
@@ -126,4 +135,44 @@ describe("canonical gated HRD directory stage-one",()=>{
     expect(response.status).toBe(503);
     expect(await response.text()).not.toContain("secret-password-not-for-response");
   });
+  it("resign precheck stays dormant without separate release flag",async()=>{
+    const r=await get("/hrd/employees/38/resign-kasbon-precheck?companyId=1");
+    expect(r.status).toBe(404);
+    expect(state.scoped).toHaveLength(0);
+  });
+  it("returns historical unverified kasbon without allowing resign or payroll write",async()=>{
+    vi.stubEnv("HRD_CANONICAL_RESIGN_PREFLIGHT_ENABLED","true");
+    const r=await get("/hrd/employees/38/resign-kasbon-precheck?companyId=1");
+    expect(r.status).toBe(200);
+    const data=await r.json() as Record<string,any>;
+    expect(data).toMatchObject({
+      companyId:1,employeeId:38,employeeStatus:"active",
+      unverifiedCount:2,unverifiedAmount:"16000000.00",
+      verifiedUnsettledCount:0,activeReservations:0,
+      hasUnresolved:true,canDeactivate:false,
+      checkReadOnly:true,kasbonUnchanged:true,canPay:false,
+      canPostJournal:false,canChangeStatus:false,
+    });
+    expect(state.scoped).toHaveLength(2);
+    expect(state.scoped[0].values).toEqual([38,1]);
+    expect(state.scoped[1].values).toEqual([1,38]);
+    expect(state.scoped.every(x=>x.companyId===1)).toBe(true);
+    expect(state.scoped.some(x=>/\b(UPDATE|DELETE|INSERT)\b/i.test(x.sql))).toBe(false);
+  });
+  it("rejects malformed ID, company mismatch and unapproved owner with no HRD data read",async()=>{
+    vi.stubEnv("HRD_CANONICAL_RESIGN_PREFLIGHT_ENABLED","true");
+    expect((await get("/hrd/employees/0/resign-kasbon-precheck?companyId=1")).status).toBe(400);
+    expect((await get("/hrd/employees/38/resign-kasbon-precheck?companyId=2")).status).toBe(403);
+    state.userId="generic-owner";
+    expect((await get("/hrd/employees/38/resign-kasbon-precheck?companyId=1")).status).toBe(403);
+    expect(state.scoped).toHaveLength(0);
+  });
+  it("returns no sensitive DB details when resign precheck is unavailable",async()=>{
+    vi.stubEnv("HRD_CANONICAL_RESIGN_PREFLIGHT_ENABLED","true");
+    state.precheckError=true;
+    const r=await get("/hrd/employees/38/resign-kasbon-precheck?companyId=1");
+    expect(r.status).toBe(503);
+    expect(await r.text()).not.toContain("SENSITIVE_PREFLIGHT_DB_ERROR");
+  });
+
 });
