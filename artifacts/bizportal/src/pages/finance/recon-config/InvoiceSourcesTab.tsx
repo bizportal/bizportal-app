@@ -216,6 +216,7 @@ async function readJson<T>(
 export default function InvoiceSourcesTab() {
   const {
     activeCompanyId,
+    activeCompany,
     isConsolidated,
   } = useCompany();
 
@@ -667,6 +668,12 @@ export default function InvoiceSourcesTab() {
                 Gmail tanpa mengirim atau menghapus
                 email.
               </p>
+              <p className="mt-2 text-xs text-slate-400" data-testid="gmail-invoice-active-company">
+                Perusahaan aktif: <span className="font-semibold text-slate-200">
+                  {isConsolidated ? "Semua Perusahaan" : activeCompany?.companyName || "Belum dipilih"}
+                </span>
+                {companyId ? ` (ID ${companyId})` : ""}
+              </p>
             </div>
 
             {status?.connected ? (
@@ -695,7 +702,7 @@ export default function InvoiceSourcesTab() {
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                 <div className="rounded-lg border border-slate-700 bg-slate-950/40 p-3">
                   <p className="text-xs uppercase tracking-wide text-slate-500">
-                    Akun Gmail
+                    {status?.connected ? "Akun Gmail Terhubung" : "Mailbox Tujuan (Belum Terhubung)"}
                   </p>
                   <p className="mt-1 text-sm font-semibold text-white">
                     {status?.connectedEmail ||
@@ -734,6 +741,16 @@ export default function InvoiceSourcesTab() {
                   </p>
                 </div>
               </div>
+
+              {status && companyId && !status.connected && (
+                <div data-testid="gmail-invoice-company-not-connected"
+                  className="rounded-lg border border-slate-700 bg-slate-950/40 p-3 text-sm text-slate-300">
+                  Belum ada koneksi Gmail untuk perusahaan aktif (ID {companyId}).
+                  Mailbox yang ditampilkan adalah tujuan koneksi, bukan bukti Gmail
+                  telah terhubung ke perusahaan ini. Pilih perusahaan yang benar
+                  sebelum melakukan Connect Gmail.
+                </div>
+              )}
 
               {status && !status.expectedEmail?.trim() && (
                 <div className="rounded-lg border border-amber-700/50 bg-amber-950/20 p-4 text-sm text-amber-200">
