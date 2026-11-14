@@ -156,11 +156,13 @@ async function processAttachment(args: {
   message: GmailInvoiceMessage;
   attachment: GmailAttachment;
 }): Promise<"ready" | "manual_review" | "duplicate" | "failed" | "existing"> {
-  const candidate = await upsertShell(args);
+  let candidate = await upsertShell(args);
 
   if (
     candidate.status === "imported" ||
     candidate.status === "duplicate" ||
+    candidate.status === "rejected" ||
+    candidate.status === "supporting" ||
     candidate.extraction_status === "complete"
   ) {
     return "existing";
@@ -179,6 +181,57 @@ async function processAttachment(args: {
     }
 
     const hash = crypto.createHash("sha256").update(bytes).digest("hex");
+
+    // A Gmail attachment ID may change on every scan. Keep failed OCR retries
+    // on the original message + content row, never accumulate new shells.
+    const failedTwin = await pool.query<CandidateRow>(
+      `select * from public.gmail_invoice_candidates
+        where company_id=$1 and gmail_message_id=$2 and attachment_sha256=$3
+          and id<>$4 and status='manual_review' and extraction_status='failed'
+          and vendor_invoice_id is null
+        order by id limit 1`,
+      [args.companyId, args.message.id, hash, candidate.id],
+    );
+    if (failedTwin.rows[0]) {
+      const removedShell = await pool.query<{ id: number }>(
+        `delete from public.gmail_invoice_candidates
+          where id=$1 and company_id=$2 and status='new'
+            and extraction_status='pending' and vendor_invoice_id is null
+          returning id`,
+        [candidate.id, args.companyId],
+      );
+      if (!removedShell.rows[0]) return "existing";
+      candidate = failedTwin.rows[0];
+    }
+
+    // Persist the digest before the OCR provider call. Provider errors and 429
+    // now leave a reusable candidate, without touching imported/posted invoices.
+    await pool.query(
+      `update public.gmail_invoice_candidates
+          set attachment_sha256=$1, updated_at=now()
+        where id=$2 and company_id=$3 and vendor_invoice_id is null
+          and ((status='new' and extraction_status='pending')
+            or (status='manual_review' and extraction_status='failed'))`,
+      [hash, candidate.id, args.companyId],
+    );
+    // Honor a rejected PDF even if Gmail assigns a different attachment ID.
+    const rejectedTwin = await pool.query<{ id: number }>(
+      `select id from public.gmail_invoice_candidates
+        where company_id=$1 and attachment_sha256=$2 and status='rejected' and id<>$3
+        order by id limit 1`,
+      [args.companyId, hash, candidate.id],
+    );
+    if (rejectedTwin.rows[0]) {
+      await pool.query(
+        `update public.gmail_invoice_candidates
+            set attachment_sha256=$1, extraction_status='complete',
+                status='rejected', error_message=$2, updated_at=now()
+          where id=$3 and company_id=$4 and status='new' and vendor_invoice_id is null`,
+        [hash, `Lampiran identik sudah ditolak (kandidat #${rejectedTwin.rows[0].id})`, candidate.id, args.companyId],
+      );
+      return "existing";
+    }
+
     const duplicateByHash = await pool.query<CandidateRow>(
       `select *
          from public.gmail_invoice_candidates
@@ -540,6 +593,15 @@ export async function importGmailInvoiceCandidate(args: {
 
     // Never import an attachment already classified as a duplicate.
     // Its source row remains visible for audit, but it cannot create an AP invoice.
+    // A rejected candidate cannot become an AP invoice until Finance
+    // explicitly restores it through the guarded review endpoint.
+    if (candidate.status === "rejected") {
+      throw Object.assign(
+        new Error("Kandidat telah ditolak; pulihkan melalui Finance Review sebelum impor."),
+        { status: 409, code: "GMAIL_CANDIDATE_REJECTED" },
+      );
+    }
+
     if (candidate.status === "duplicate") {
       throw Object.assign(
         new Error("Invoice duplikat hanya disimpan di Sumber INV dan tidak dapat diimpor ke INV Vendor."),

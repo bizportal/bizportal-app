@@ -92,12 +92,14 @@ function sourceEmail(): string {
 
 async function googleClientId(): Promise<string> {
   const dedicated = await getRuntimeConfig("GMAIL_GOOGLE_CLIENT_ID");
-  return isDevelopmentEnvironment() ? dedicated : dedicated || await getRuntimeConfig("GOOGLE_CLIENT_ID");
+  if (isDevelopmentEnvironment()) return dedicated;
+  return dedicated || await getRuntimeConfig("GOOGLE_CLIENT_ID");
 }
 
 async function googleClientSecret(): Promise<string> {
   const dedicated = await getRuntimeConfig("GMAIL_GOOGLE_CLIENT_SECRET");
-  return isDevelopmentEnvironment() ? dedicated : dedicated || await getRuntimeConfig("GOOGLE_CLIENT_SECRET");
+  if (isDevelopmentEnvironment()) return dedicated;
+  return dedicated || await getRuntimeConfig("GOOGLE_CLIENT_SECRET");
 }
 
 function safeReturnPath(value: unknown): string {
@@ -143,13 +145,12 @@ async function getActor(
   request: Request,
 ): Promise<DevAuthUser | null> {
   if (isDevelopmentEnvironment()) {
-    const legacyActor = getDevSession(request);
-    if (legacyActor) return legacyActor;
-    // Canonical signed OTP DEV bridge returns null unless explicitly enabled.
-    const signedDevSession = getProductionSession(request);
-    return signedDevSession ? getProductionUser(signedDevSession) : null;
+    const legacyDevActor = getDevSession(request);
+    if (legacyDevActor) return legacyDevActor;
   }
 
+  // The canonical signed-cookie reader is default-OFF in DEV and resolves
+  // only explicitly opted-in, signature-verified sessions.
   const session = getProductionSession(request);
   if (!session) return null;
   return getProductionUser(session);

@@ -24,6 +24,8 @@ import {
   RefreshCw,
   ShieldCheck,
   Unlink,
+  XCircle,
+  RotateCcw,
 } from "lucide-react";
 
 type GmailSourceStatus = {
@@ -35,6 +37,8 @@ type GmailSourceStatus = {
   lastSyncAt: string | null;
   lastSyncCount: number;
   lastSyncStatus: string | null;
+  autoSyncEnabled: boolean;
+  autoSyncIntervalMinutes: number;
   redirectUri: string;
   scope: string;
   organizerRuleCount: number;
@@ -166,6 +170,14 @@ function statusBadge(status: string) {
     );
   }
 
+  if (normalized === "supporting") {
+    return <Badge className="border-sky-700 bg-sky-950/40 text-sky-300">Faktur Pendukung</Badge>;
+  }
+
+  if (normalized === "rejected") {
+    return <Badge className="border-red-700 bg-red-950/40 text-red-300">Ditolak</Badge>;
+  }
+
   if (normalized === "duplicate") {
     return (
       <Badge className="border-amber-700 bg-amber-950/40 text-amber-300">
@@ -220,12 +232,17 @@ export default function InvoiceSourcesTab() {
     isConsolidated,
   } = useCompany();
 
+  // Review mutation UI is opt-in; server flag independently controls API access.
+  const gmailReviewReady = import.meta.env.VITE_BIZPORTAL_GMAIL_REVIEW_ENABLED_DEV === "true";
   const [status, setStatus] =
     useState<GmailSourceStatus | null>(null);
   const [candidates, setCandidates] =
     useState<GmailCandidate[]>([]);
   const [candidateFilter, setCandidateFilter] =
-    useState<"ready" | "review" | "duplicate" | "imported" | "all">("ready");
+    useState<"ready" | "review" | "duplicate" | "supporting" | "imported" | "rejected" | "all">("ready");
+  const [rejectCandidateId, setRejectCandidateId] = useState<number | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
+  const [rejectError, setRejectError] = useState<string | null>(null);
   const [organizationRules, setOrganizationRules] =
     useState<GmailOrganizationRule[]>([]);
   const [loading, setLoading] = useState(false);
@@ -259,7 +276,7 @@ export default function InvoiceSourcesTab() {
         message:
           organizer === "partial"
             ? "Gmail berhasil dihubungkan, tetapi sebagian auto-label perlu diperiksa."
-            : "Gmail berhasil dihubungkan. Auto-label aktif dan Sync Now siap membaca attachment invoice.",
+            : "Gmail berhasil dihubungkan. Sinkronisasi invoice hanya berjalan ketika Sync Now diklik.",
       };
     }
 
@@ -456,6 +473,38 @@ export default function InvoiceSourcesTab() {
     }
   };
 
+  const reviewCandidate = async (candidateId: number, decision: "reject" | "restore", reason = "") => {
+    if (!companyId || !gmailReviewReady) return;
+    setAction(`review:${candidateId}`);
+    setError(null);
+    setNotice(null);
+    try {
+      const response = await fetch(
+        `/api/recon-classification/invoice-sources/gmail/candidates/${candidateId}/review`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ company_id: companyId, decision, reason }),
+        },
+      );
+      await readJson<{ ok: boolean }>(response);
+      setRejectCandidateId(null);
+      setRejectReason("");
+      setRejectError(null);
+      setNotice(decision === "reject"
+        ? "Kandidat ditolak dan tidak akan diimpor saat Sync Now berikutnya. Email asli tetap tersimpan."
+        : "Kandidat dipulihkan untuk ditinjau ulang.");
+      await loadData();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Gagal menyimpan keputusan.";
+      setRejectError(message);
+      setError(message);
+    } finally {
+      setAction(null);
+    }
+  };
+
   const importCandidate = async (
     candidate: GmailCandidate,
   ) => {
@@ -619,6 +668,34 @@ export default function InvoiceSourcesTab() {
 
   return (
     <div className="space-y-4">
+      {rejectCandidateId !== null && gmailReviewReady && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div role="dialog" aria-modal="true" aria-label="Tolak kandidat Gmail" className="w-full max-w-md rounded-lg border border-slate-700 bg-slate-950 p-5 text-slate-200 shadow-xl">
+            <h3 className="text-base font-semibold text-white">Tolak kandidat invoice Gmail?</h3>
+            <p className="mt-2 text-sm text-slate-400">Email dan lampiran asli tetap tersimpan. Setelah ditolak, kandidat tidak akan dibuat menjadi draft pada Sync Now berikutnya.</p>
+            {rejectError && <p role="alert" className="mt-3 rounded border border-red-800 bg-red-950/40 p-2 text-sm text-red-300">{rejectError}</p>}
+            <label htmlFor="gmail-reject-reason" className="mt-4 block text-sm">Alasan penolakan (minimal 10 karakter)</label>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {["Duplikat dokumen sumber", "Faktur pajak pendukung, bukan invoice", "Informasi invoice tidak valid"].map((reason) => (
+                <Button key={reason} type="button" size="sm" variant="outline" disabled={action !== null}
+                  onClick={() => { setRejectReason(reason); setRejectError(null); }}>
+                  {reason}
+                </Button>
+              ))}
+            </div>
+            <textarea id="gmail-reject-reason" rows={3} maxLength={500} value={rejectReason} onChange={(event) => setRejectReason(event.target.value)}
+              className="mt-2 w-full rounded border border-slate-600 bg-slate-900 p-2 text-sm text-white"
+              placeholder="Contoh: Duplikat atau dokumen tidak valid" />
+            <div className="mt-4 flex justify-end gap-2">
+              <Button type="button" variant="outline" disabled={action !== null} onClick={() => { setRejectCandidateId(null); setRejectReason(""); setRejectError(null); }}>Batal</Button>
+              <Button type="button" variant="destructive" disabled={action !== null || !gmailReviewReady || rejectReason.trim().length < 10}
+                onClick={() => void reviewCandidate(rejectCandidateId, "reject", rejectReason)}>
+                {action === `review:${rejectCandidateId}` ? "Menyimpan..." : "Ya, Tolak"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
       {callbackResult && (
         <div
           className={
@@ -702,7 +779,7 @@ export default function InvoiceSourcesTab() {
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                 <div className="rounded-lg border border-slate-700 bg-slate-950/40 p-3">
                   <p className="text-xs uppercase tracking-wide text-slate-500">
-                    {status?.connected ? "Akun Gmail Terhubung" : "Mailbox Tujuan (Belum Terhubung)"}
+                    Akun Gmail
                   </p>
                   <p className="mt-1 text-sm font-semibold text-white">
                     {status?.connectedEmail ||
@@ -760,7 +837,7 @@ export default function InvoiceSourcesTab() {
                 </div>
               )}
 
-              {!status?.oauthConfigured && (
+              {status !== null && !status.oauthConfigured && (
                 <div className="rounded-lg border border-amber-700/50 bg-amber-950/20 p-4 text-sm text-amber-200">
                   Google OAuth belum terbaca oleh
                   server BizPortal. Sistem sekarang
@@ -824,6 +901,10 @@ export default function InvoiceSourcesTab() {
                       )}
                       Sync Now
                     </Button>
+
+                    <span className="self-center text-xs text-slate-400">
+                      Mode manual — tidak ada sinkronisasi terjadwal. Klik Sync Now untuk memeriksa email baru.
+                    </span>
 
                     <Button
                       variant="outline"
@@ -901,10 +982,10 @@ export default function InvoiceSourcesTab() {
             <div>
               <CardTitle className="flex items-center gap-2 text-base text-white">
                 <Mail className="h-4 w-4 text-orange-400" />
-                Pengelompokan Gmail Otomatis
+                Pengelompokan Gmail (Manual)
               </CardTitle>
               <p className="mt-1 text-sm text-slate-400">
-                Email dikelompokkan berdasarkan nama pengirim. Email lama dibackfill dan email baru dari pengirim yang sama otomatis masuk ke label yang sesuai, tanpa dipindahkan dari Inbox.
+                Pengelompokan sender dan backfill dijalankan saat Anda menekan Terapkan Label. Sinkronisasi invoice Gmail tetap hanya melalui tombol Sync Now.
               </p>
             </div>
             <Badge
@@ -975,14 +1056,14 @@ export default function InvoiceSourcesTab() {
               ) : (
                 <RefreshCw className="h-4 w-4" />
               )}
-              Terapkan Auto Label
+              Terapkan Label
             </Button>
           </div>
 
           <p className="text-xs leading-5 text-slate-500">
             Contoh: email dari Hostinger akan masuk ke label
             <span className="font-semibold text-slate-300"> Hostinger</span>.
-            BizPortal juga membuat label untuk pengirim lain yang ditemukan. Pengirim baru akan dideteksi otomatis secara berkala.
+            Label baru hanya dibuat untuk pengirim yang benar-benar ditemukan saat tindakan manual dijalankan. Tidak ada pemindaian terjadwal.
           </p>
         </CardContent>
       </Card>
@@ -1017,7 +1098,9 @@ export default function InvoiceSourcesTab() {
               ["ready", "Siap Diproses"],
               ["review", "Perlu Review"],
               ["duplicate", "Duplikat"],
+              ["supporting", "Faktur Pendukung"],
               ["imported", "Sudah Diimpor"],
+              ["rejected", "Ditolak"],
               ["all", "Semua"],
             ] as const).map(([value, label]) => (
               <Button
@@ -1171,6 +1254,7 @@ export default function InvoiceSourcesTab() {
                           </td>
 
                           <td className="whitespace-nowrap px-3 py-3 text-right">
+                            <div className="flex items-center justify-end gap-2">
                             {candidate.vendorInvoiceId ? (
                               <Button
                                 size="sm"
@@ -1208,14 +1292,23 @@ export default function InvoiceSourcesTab() {
                                 )}
                                 Buat Draft
                               </Button>
-                            ) : (
-                              <span className="text-xs text-slate-500">
-                                {candidate.status ===
-                                "manual_review"
-                                  ? "Review OCR"
-                                  : "—"}
-                              </span>
+                            ) : candidate.status === "rejected" ? (
+                              <Button type="button" size="sm" variant="outline" disabled={action !== null || !gmailReviewReady}
+                                className="gap-1.5 border-slate-600" onClick={() => void reviewCandidate(candidate.id, "restore")}>
+                                <RotateCcw className="h-3.5 w-3.5" />Pulihkan
+                              </Button>
+                            ) : candidate.status === "manual_review" ? (
+                              <span className="text-xs text-slate-500">Review OCR</span>
+                            ) : null}
+                            {!candidate.vendorInvoiceId && ["new", "ready", "manual_review", "failed", "duplicate", "supporting"].includes(candidate.status) && (
+                              <Button type="button" size="sm" variant="outline"
+                                className="gap-1.5 border-red-800 text-red-400 hover:text-red-300"
+                                disabled={action !== null || !gmailReviewReady}
+                                onClick={() => { setRejectCandidateId(candidate.id); setRejectReason(""); setRejectError(null); }}>
+                                <XCircle className="h-3.5 w-3.5" />Tolak
+                              </Button>
                             )}
+                            </div>
                           </td>
                         </tr>
                       );
