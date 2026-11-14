@@ -82,6 +82,24 @@ describe.skipIf(!enabled)("Payroll DEV additive receipt guard compatibility",()=
   });
   expect(counts).toEqual([0,1,0]);
  });
+ it("models legacy HR review without approved_at write capability",async()=>{
+  // Synthetic database only: do not alter the CST-DEV grants during this test.
+  await pool.query("REVOKE UPDATE(approved_at) ON "+table+" FROM "+role);
+  try {
+   const hr=await scoped(1,c=>c.query(
+    "UPDATE "+table+" SET status='reviewed',notes='HR verified inputs' WHERE id=1 RETURNING status,approved_at",
+   ));
+   expect(hr.rows[0]).toMatchObject({status:"reviewed",approved_at:null});
+   await expect(scoped(1,c=>c.query(
+    "UPDATE "+table+" SET status='reviewed',approved_at=now(),notes=$1 WHERE id=1 RETURNING id",
+    [marker+" "+JSON.stringify({actorId:"forged",actorEmail:"forged@example.test",digest:"a".repeat(64),note:"synthetic forged approval"})],
+   ))).rejects.toThrow();
+   const row=await pool.query("SELECT status,approved_at,notes FROM "+table+" WHERE id=1");
+   expect(row.rows[0]).toMatchObject({status:"draft",approved_at:null,notes:null});
+  } finally {
+   await pool.query("GRANT UPDATE(approved_at) ON "+table+" TO "+role);
+  }
+ });
  it("preserves column-scoped UPDATE and denies blanket table UPDATE",async()=>{
   const r=await scoped(1,c=>c.query("SELECT has_table_privilege(current_user,$1,'UPDATE') AS table_write,has_column_privilege(current_user,$1,'status','UPDATE') AS status_write,has_column_privilege(current_user,$1,'approved_at','UPDATE') AS approved_write",[table]));
   expect(r.rows[0]).toMatchObject({table_write:false,status_write:true,approved_write:true});
