@@ -40,6 +40,8 @@ type GmailSourceStatus = {
   lastSyncAt: string | null;
   lastSyncCount: number;
   lastSyncStatus: string | null;
+  autoSyncEnabled: boolean;
+  autoSyncIntervalMinutes: number;
   redirectUri: string;
   scope: string;
   organizerRuleCount: number;
@@ -561,6 +563,8 @@ async function readStatus(
     lastSyncCount:
       Number(lastSyncCount ?? 0) || 0,
     lastSyncStatus: lastSyncStatus || null,
+    autoSyncEnabled: false,
+    autoSyncIntervalMinutes: 0,
     redirectUri: getRedirectUri(request),
     scope: OAUTH_SCOPE,
     organizerRuleCount: organizationRules.filter(
