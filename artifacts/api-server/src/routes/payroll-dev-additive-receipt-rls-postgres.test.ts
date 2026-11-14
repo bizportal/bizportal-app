@@ -40,7 +40,7 @@ describe.skipIf(!enabled)("Payroll DEV additive receipt guard compatibility",()=
    " USING ("+company+" AND status='draft' AND posting_status='pending' AND accounting_entry_id IS NULL AND payment_entry_id IS NULL)"+
    " WITH CHECK ("+company+" AND status='reviewed' AND posting_status='pending' AND accounting_entry_id IS NULL AND payment_entry_id IS NULL)");
   // AND semantics for restrictive policies prevents a second permissive path.
-  await pool.query("CREATE POLICY ci_receipt_gate AS RESTRICTIVE ON "+table+" FOR UPDATE TO "+role+
+  await pool.query("CREATE POLICY ci_receipt_gate ON "+table+" AS RESTRICTIVE FOR UPDATE TO "+role+
    " USING (approved_at IS NULL) WITH CHECK ("+
    "(approved_at IS NULL AND coalesce(notes,'') NOT LIKE '%[PAYROLL_SUPER_ADMIN_APPROVAL_V1]%')"+
    " OR (approved_at IS NOT NULL AND coalesce(notes,'') LIKE '%[PAYROLL_SUPER_ADMIN_APPROVAL_V1]%'))");
