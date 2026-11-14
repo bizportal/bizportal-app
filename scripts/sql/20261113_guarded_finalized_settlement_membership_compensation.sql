@@ -18,7 +18,11 @@ BEGIN
     FROM sport_center.payment_settlement_batches
    WHERE id=v_settlement_id;
 
+  -- Issue #292 only: never open a generic compensation exception for
+  -- other historical settlements. Original journal #7207 is immutable.
   IF TG_OP='UPDATE'
+     AND v_settlement_id=5738
+     AND v_original_journal_id=7207
      AND current_setting('sport_center.allow_finalized_membership_reversal',true)
          = 'owner-audited-compensation-v1'
      AND v_status='reversed'
