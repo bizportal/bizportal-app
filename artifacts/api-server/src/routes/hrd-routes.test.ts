@@ -6,7 +6,8 @@ import { once } from "node:events";
 const state=vi.hoisted(()=>({
   enabled:true, session:true, actor:true, active:true, role:"owner",
   companyId:1 as number|null, userId:"google_103728868378401731050",
-  dbRole:"owner", dbCompanyId:1, readerError:false,
+  dbRole:"owner", dbCompanyId:1, readerError:false, precheckError:false,
+  storageReady:true, storageCalls:0,
   dbQueries:[] as Array<{sql:string; values:unknown[]}>,
   scoped:[] as Array<{companyId:number; sql:string; values:unknown[]}>,
 }));
@@ -31,6 +32,14 @@ vi.mock("./hrd-readonly-db",()=>({
     if(state.readerError)throw Error("secret-password-not-for-response");
     return fn({query:async(sql:string,values:unknown[])=>{
       state.scoped.push({companyId,sql,values});
+      if(sql.includes("employee_resign_kasbon_precheck(")){
+        if(state.precheckError)throw Error("SENSITIVE_PREFLIGHT_DB_ERROR");
+        return{rowCount:1,rows:[{
+          unverifiedCount:"2",unverifiedAmount:"16000000.00",
+          verifiedUnsettledCount:"0",verifiedUnsettledAmount:"0.00",
+          activeReservations:"0",activeReservationAmount:"0.00",
+        }]};
+      }
       if(sql.includes("SELECT id FROM"))return{rowCount:1,rows:[{id:38}]};
       const rows=companyId===1?[{
         id:38,company_id:1,first_name:"Andi",last_name:"Wangsamas",
@@ -39,6 +48,12 @@ vi.mock("./hrd-readonly-db",()=>({
       return{rowCount:rows.length,rows};
     }});
   },
+}));
+vi.mock("./hrd-storage-readiness",()=>({
+  hrdStorageMetadataPreflightEnabled:()=>process.env.APP_ENV==="production" &&
+    process.env.HRD_CANONICAL_READONLY_ENABLED==="true" &&
+    process.env.HRD_CANONICAL_STORAGE_PREFLIGHT_ENABLED==="true",
+  probeHrdPrivateStorageMetadata:async()=>{state.storageCalls++;return state.storageReady;},
 }));
 import router from "./hrd-routes";
 
@@ -54,10 +69,12 @@ describe("canonical gated HRD directory stage-one",()=>{
   beforeEach(()=>{
     vi.stubEnv("APP_ENV","production");
     vi.stubEnv("HRD_CANONICAL_READONLY_ENABLED","true");
+    vi.stubEnv("HRD_CANONICAL_RESIGN_PREFLIGHT_ENABLED","");
+    vi.stubEnv("HRD_CANONICAL_STORAGE_PREFLIGHT_ENABLED","");
     state.enabled=true;state.session=true;state.actor=true;state.active=true;
     state.role="owner";state.companyId=1;state.dbRole="owner";state.dbCompanyId=1;
-    state.userId="google_103728868378401731050";state.readerError=false;
-    state.dbQueries.length=0;state.scoped.length=0;
+    state.userId="google_103728868378401731050";state.readerError=false;state.precheckError=false;
+    state.dbQueries.length=0;state.scoped.length=0;state.storageCalls=0;state.storageReady=true;
   });
   afterEach(()=>vi.unstubAllEnvs());
   const get=(path="/hrd/employees?companyId=1")=>fetch(base+"/api"+path);
@@ -126,4 +143,92 @@ describe("canonical gated HRD directory stage-one",()=>{
     expect(response.status).toBe(503);
     expect(await response.text()).not.toContain("secret-password-not-for-response");
   });
+  it("resign precheck stays dormant without separate release flag",async()=>{
+    const r=await get("/hrd/employees/38/resign-kasbon-precheck?companyId=1");
+    expect(r.status).toBe(404);
+    expect(state.scoped).toHaveLength(0);
+  });
+  it("returns historical unverified kasbon without allowing resign or payroll write",async()=>{
+    vi.stubEnv("HRD_CANONICAL_RESIGN_PREFLIGHT_ENABLED","true");
+    const r=await get("/hrd/employees/38/resign-kasbon-precheck?companyId=1");
+    expect(r.status).toBe(200);
+    const data=await r.json() as Record<string,any>;
+    expect(data).toMatchObject({
+      companyId:1,employeeId:38,employeeStatus:"active",
+      unverifiedCount:2,unverifiedAmount:"16000000.00",
+      verifiedUnsettledCount:0,activeReservations:0,
+      hasUnresolved:true,canDeactivate:false,
+      checkReadOnly:true,kasbonUnchanged:true,canPay:false,
+      canPostJournal:false,canChangeStatus:false,
+    });
+    expect(state.scoped).toHaveLength(2);
+    expect(state.scoped[0].values).toEqual([38,1]);
+    expect(state.scoped[1].values).toEqual([1,38]);
+    expect(state.scoped.every(x=>x.companyId===1)).toBe(true);
+    expect(state.scoped.some(x=>/\b(UPDATE|DELETE|INSERT)\b/i.test(x.sql))).toBe(false);
+  });
+  it("rejects malformed ID, company mismatch and unapproved owner with no HRD data read",async()=>{
+    vi.stubEnv("HRD_CANONICAL_RESIGN_PREFLIGHT_ENABLED","true");
+    expect((await get("/hrd/employees/0/resign-kasbon-precheck?companyId=1")).status).toBe(400);
+    expect((await get("/hrd/employees/38/resign-kasbon-precheck?companyId=2")).status).toBe(403);
+    state.userId="generic-owner";
+    expect((await get("/hrd/employees/38/resign-kasbon-precheck?companyId=1")).status).toBe(403);
+    expect(state.scoped).toHaveLength(0);
+  });
+  it("returns no sensitive DB details when resign precheck is unavailable",async()=>{
+    vi.stubEnv("HRD_CANONICAL_RESIGN_PREFLIGHT_ENABLED","true");
+    state.precheckError=true;
+    const r=await get("/hrd/employees/38/resign-kasbon-precheck?companyId=1");
+    expect(r.status).toBe(503);
+    expect(await r.text()).not.toContain("SENSITIVE_PREFLIGHT_DB_ERROR");
+  });
+
+  it("keeps private storage metadata preflight disabled by default",async()=>{
+    const r=await get("/hrd/storage-readiness?companyId=1");
+    expect(r.status).toBe(404);
+    expect(state.storageCalls).toBe(0);
+    expect(state.scoped).toHaveLength(0);
+  });
+  it("requires verified active HRD account and company before storage metadata probe",async()=>{
+    vi.stubEnv("HRD_CANONICAL_STORAGE_PREFLIGHT_ENABLED","true");
+    state.session=false;
+    expect((await get("/hrd/storage-readiness?companyId=1")).status).toBe(401);
+    state.session=true;state.active=false;
+    expect((await get("/hrd/storage-readiness?companyId=1")).status).toBe(403);
+    state.active=true;state.userId="wrong-owner";
+    expect((await get("/hrd/storage-readiness?companyId=1")).status).toBe(403);
+    state.userId="google_103728868378401731050";
+    expect((await get("/hrd/storage-readiness?companyId=2")).status).toBe(403);
+    expect(state.storageCalls).toBe(0);
+  });
+  it("returns safe private bucket readiness only and never exposes credentials or employee records",async()=>{
+    vi.stubEnv("HRD_CANONICAL_STORAGE_PREFLIGHT_ENABLED","true");
+    const r=await get("/hrd/storage-readiness?companyId=1");
+    expect(r.status).toBe(200);
+    expect(r.headers.get("cache-control")).toBe("no-store");
+    expect(await r.json()).toMatchObject({
+      companyId:1,ready:true,storagePrivate:true,readOnly:true,
+      uploadEnabled:false,ocrEnabled:false,coverage:"HRD_STORAGE_METADATA_ONLY",
+    });
+    expect(state.storageCalls).toBe(1);
+    expect(state.scoped).toHaveLength(0);
+  });
+  it("returns 503 without secrets when private bucket metadata is invalid",async()=>{
+    vi.stubEnv("HRD_CANONICAL_STORAGE_PREFLIGHT_ENABLED","true");
+    state.storageReady=false;
+    const r=await get("/hrd/storage-readiness?companyId=1");
+    expect(r.status).toBe(503);
+    const t=await r.text();
+    expect(t).toContain('"ready":false');
+    expect(t).not.toMatch(/secret|password|credential|storage_path|signed_url/i);
+  });
+  it("never mounts storage upload, OCR or write actions",async()=>{
+    vi.stubEnv("HRD_CANONICAL_STORAGE_PREFLIGHT_ENABLED","true");
+    const r=await fetch(base+"/api/hrd/storage-readiness?companyId=1",{method:"POST"});
+    expect([404,405]).toContain(r.status);
+    const document=await fetch(base+"/api/hrd/employees/38/documents/prepare?companyId=1",{method:"POST"});
+    expect([404,405]).toContain(document.status);
+    expect(state.storageCalls).toBe(0);
+  });
+
 });
