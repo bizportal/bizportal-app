@@ -165,6 +165,20 @@ export function registerPayrollSuperAdminApprovalRoutes(router: IRouter): void {
         client=await approvalPool().connect();
         await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");started=true;
         await setApprovalCompanyScope(client,companyId);
+        // The legacy DEV Payroll login also supports unsigned HR review.
+        // Never authorize Super Admin approval through that shared login, even
+        // if the feature flag is enabled by mistake. A separately provisioned,
+        // narrowly scoped writer must be verified inside this transaction.
+        if (isDevelopmentEnvironment()) {
+          const identity=await client.query(
+            "SELECT current_user AS role, current_setting('app.payroll_company_id',true) AS company",
+          );
+          if(identity.rowCount!==1 ||
+            identity.rows[0]?.role!=="bizportal_payroll_approver_dev" ||
+            identity.rows[0]?.company!==String(companyId)) {
+            throw Error("PAYROLL_DEV_APPROVAL_WRITER_ROLE_NOT_VERIFIED");
+          }
+        }
         await client.query("SELECT pg_advisory_xact_lock($1::integer,$2::integer)",[companyId,-runId]);
         const run=await client.query(
           "SELECT status,posting_status,accounting_entry_id,payment_entry_id,approved_at,notes FROM public.payroll_runs WHERE company_id=$1 AND id=$2 FOR UPDATE",
