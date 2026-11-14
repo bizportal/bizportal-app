@@ -161,7 +161,7 @@ describe("existing DEV document template API",()=>{
     expect(html).toContain("src=\'https://dev-bizportal.cstlogistic.co.id/cst-logo.png\'");
     expect(html).toContain("grid-template-columns:132px minmax(0,1fr)");
     expect(html).toContain("brand-rule-accent");
-    expect(html).toContain("img-src \'self\' https: data:");
+    expect(r.headers.get("content-security-policy")).toContain("img-src \'self\' https: data:");
     expect(html).toContain("GEDUNG SPORT CENTER");
     expect(html).toContain("BUKAN DOKUMEN TRANSAKSI");
     expect(mocked.query.mock.calls.some(c=>String(c[0]).includes("insert"))).toBe(false);
