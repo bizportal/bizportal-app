@@ -1,4 +1,10 @@
-import type { PoolClient } from "pg";
+/** Minimal structural query contract; do not require uninstalled @types/pg. */
+export type HrdKasbonQueryClient = {
+  query: (sql: string, params: number[]) => Promise<{
+    rowCount: number | null;
+    rows: Record<string, unknown>[];
+  }>;
+};
 
 /** Read-only, scoped HRD preflight: never mutate employee, kasbon or payroll rows. */
 export type HrdResignKasbonPrecheck = {
@@ -29,7 +35,7 @@ function nonnegativeAmount(raw: unknown): string {
 
 /** Requires the DB function and transaction-scoped app.hrd_company_id; no endpoint mounted here. */
 export async function getEmployeeResignKasbonPrecheck(
-  client: Pick<PoolClient, "query">, companyId: number, employeeId: number,
+  client: HrdKasbonQueryClient, companyId: number, employeeId: number,
 ): Promise<HrdResignKasbonPrecheck> {
   if (!Number.isSafeInteger(companyId) || companyId <= 0 ||
       !Number.isSafeInteger(employeeId) || employeeId <= 0) {
