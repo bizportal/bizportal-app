@@ -26,6 +26,26 @@ Tanggal pemeriksaan: 14 November 2026 (WIB). Dokumen ini adalah **inventaris dan
 
 Status di atas menyatakan **bukti yang tersedia saat audit**, bukan klaim semua fitur berjalan di Hostinger.
 
+## Hasil perbandingan pohon kode Git (14 November 2026)
+
+Perbandingan berdasarkan **path + Git blob SHA**, pada cakupan `artifacts/`, `lib/`, `scripts/`, dan `.github/workflows/`; ini tidak berarti seluruh file perlu dipindahkan:
+
+| Sumber yang dibandingkan dengan canonical `develop` | Identik | Sama path, SHA berbeda | Hanya ada di sumber |
+| --- | ---: | ---: | ---: |
+| `Travelintrips/CST-BIZPORTAL` `develop` | 636 | 83 | 91 |
+| `Travelintrips/bizportal-hostinger-mirror` `fix/dev-accounting-payment-guard` | 697 | 66 | 238 |
+
+**Peringatan:** cabang mirror adalah feature branch dan berisi banyak file Payroll/Accounting yang belum disetujui. Angka di atas bukan daftar file yang aman disalin ke `main`. Filter secrets dan audit dependency tetap wajib. Jangan menyamakan SHA/file yang berbeda dengan fitur yang pasti lebih baru.
+
+### Gelombang kode yang telah disalin secara terpisah
+
+- [Canonical PR #13](https://github.com/bizportal/bizportal-app/pull/13): API template dokumen dari mirror (3 file); `BIZPORTAL_DOCUMENT_TEMPLATES_ENABLED_DEV` OFF secara default, menunggu pengujian authenticated PDF/DB.
+- [Canonical PR #14](https://github.com/bizportal/bizportal-app/pull/14): Customer AR match preview read-only dari CST-BIZPORTAL (5 file); `BIZPORTAL_CUSTOMER_AR_PREVIEW_ENABLED_DEV` OFF secara default; memperbaiki guard perusahaan kosong pada DEV. Tes CI harus ditinjau dan runtime E2E tetap diperlukan.
+- [Canonical PR #5](https://github.com/bizportal/bizportal-app/pull/5): Vendor Invoice/AP, 55 file dalam draft, tidak digabung bersama OTP/Customer AR.
+- [Canonical PR #6](https://github.com/bizportal/bizportal-app/pull/6): header editor Corporate Elegance, terpisah dari renderer cetak aktif.
+
+Semua PR di atas merupakan **usulan perubahan** dan bukan bukti bahwa Hostinger mengambil commit baru. Kedua repository lama dibiarkan utuh untuk audit/rollback.
+
 ## Fakta deployment yang perlu dipertahankan sebelum cutover
 
 Audit VPS DEV sebelumnya menunjukkan:
