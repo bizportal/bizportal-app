@@ -62,6 +62,9 @@ type LifecycleStatus = typeof LIFECYCLE_STATUSES[number]["value"];
 type AllocationType  = typeof ALLOCATION_TYPES[number]["value"];
 
 interface Advance {
+  readOnly?: boolean;
+  verified_disbursement?: boolean;
+  requires_source_review?: boolean;
   id: number;
   advance_number: string;
   advance_type: AdvanceType;
