@@ -106,7 +106,21 @@ try {
   )).rows;
   assert.equal(reversalRows.length,2);
   console.log("PASS documents duplicate reversal accepted without a unique reversal_of_id invariant");
-  console.log("POSTED_LINES_ORDER_REGRESSION_PASS 6 checks");
+  // Candidate unique partial index is tested ONLY on CI disposable tables.
+  // Existing duplicates must be reconciled before any real-world index rollout.
+  await assert.rejects(
+    pool.query("CREATE UNIQUE INDEX ci_only_one_reversal ON ci_posted.realistic_headers(reversal_of_id) WHERE is_reversal=true AND reversal_of_id IS NOT NULL"),
+    e=>e.code==="23505",
+  );
+  await pool.query("DELETE FROM ci_posted.realistic_headers WHERE id=$1",[reversalRows[1].id]);
+  await pool.query("CREATE UNIQUE INDEX ci_only_one_reversal ON ci_posted.realistic_headers(reversal_of_id) WHERE is_reversal=true AND reversal_of_id IS NOT NULL");
+  await assert.rejects(
+    pool.query("INSERT INTO ci_posted.realistic_headers(debit_amount,credit_revenue_amount,status,is_reversal,reversal_of_id) VALUES(100,100,'draft',true,$1)",[header]),
+    e=>e.code==="23505",
+  );
+  assert.equal((await pool.query("SELECT count(*)::int n FROM ci_posted.realistic_headers WHERE reversal_of_id=$1",[header])).rows[0].n,1);
+  console.log("PASS candidate reversal unique index requires cleanup and blocks duplicates");
+  console.log("POSTED_LINES_ORDER_REGRESSION_PASS 7 checks");
 } finally {
   await pool.end();
 }
