@@ -96,6 +96,26 @@ function isActivePrivilegedUser(user: RawUser | null): user is RawUser {
   );
 }
 
+/** Keep PROD email OTP roles unchanged; DEV Super Admin is opt-in and signed only.
+ * Vendor Invoice/AP requires super_admin and must not be unlocked via legacy
+ * DEV email-only sessions or by widening production password/WhatsApp login.
+ */
+function isEmailOtpRoleAllowed(role: string): boolean {
+  const normalized = role.trim().toLowerCase();
+  return normalized === "admin"
+    || normalized === "owner"
+    || (normalized === "super_admin" && isSignedOtpDevEnabled());
+}
+
+function isEmailOtpEligibleUser(user: RawUser | null): user is RawUser {
+  return Boolean(
+    user
+    && isEmailOtpRoleAllowed(user.role)
+    && user.isActive
+    && (user.status === null || user.status.trim().toLowerCase() === "active"),
+  );
+}
+
 async function getPrivilegedProductionUserFromRequest(request: Request): Promise<RawUser | null> {
   const session = getProductionSession(request);
   if (!session) return null;
@@ -499,7 +519,7 @@ router.post("/auth/email-otp/send", async (
     }
 
     const user = await findUserByEmail(email);
-    if (!isActivePrivilegedUser(user)) {
+    if (!isEmailOtpEligibleUser(user)) {
       await pool.query(
         `insert into public.bizportal_email_otp_codes
           (email, request_ip, purpose, expires_at)
@@ -619,7 +639,7 @@ router.post("/auth/email-otp/verify", async (
     }
 
     const user = await findUserByEmail(email);
-    if (!isActivePrivilegedUser(user)) {
+    if (!isEmailOtpEligibleUser(user)) {
       await pool.query(
         "update public.bizportal_email_otp_codes set verified_at = now() where id = $1 and verified_at is null",
         [otp.id],
@@ -646,7 +666,7 @@ router.post("/auth/email-otp/verify", async (
     const localUser = await getProductionUser(session);
     if (
       !localUser
-      || !["admin", "owner"].includes(localUser.role.trim().toLowerCase())
+      || !isEmailOtpRoleAllowed(localUser.role)
     ) {
       response.status(400).json({ error: "Email atau kode OTP tidak dapat digunakan." });
       return;
