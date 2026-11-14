@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const state=vi.hoisted(()=>({
   calls:[] as Array<{sql:string;values:unknown[]|undefined}>,
-  role:"bizportal_hrd_prod",company:"1",workFailure:false,rollbackFailure:false,
+  role:"bizportal_hrd_prod",company:"1",workFailure:false,rollbackFailure:false,beginFailure:false,
   connected:0,released:0,discarded:0,
 }));
 vi.mock("@workspace/db",()=>({
@@ -13,6 +13,7 @@ vi.mock("@workspace/db",()=>({
         query:async(sql:string,values?:unknown[])=>{
           state.calls.push({sql,values});
           if(sql==="ROLLBACK" && state.rollbackFailure)throw Error("ROLLBACK_TIMED_OUT");
+          if(sql==="BEGIN READ ONLY" && state.beginFailure)throw Error("BEGIN_TIMED_OUT");
           if(sql.startsWith("SELECT current_user"))return{
             rowCount:1,rows:[{role:state.role,company:state.company}],
           };
@@ -29,7 +30,7 @@ import { withHrdCompanyReadOnly } from "./hrd-readonly-db";
 describe("HRD read-only transaction custody",()=>{
   beforeEach(()=>{
     state.calls.length=0;state.connected=0;state.released=0;state.discarded=0;
-    state.role="bizportal_hrd_prod";state.company="1";state.workFailure=false;state.rollbackFailure=false;
+    state.role="bizportal_hrd_prod";state.company="1";state.workFailure=false;state.rollbackFailure=false;state.beginFailure=false;
   });
   const read=()=>withHrdCompanyReadOnly(1,client=>
     client.query("SELECT id FROM public.employees WHERE company_id=$1 LIMIT 1",[1]));
@@ -63,6 +64,13 @@ describe("HRD read-only transaction custody",()=>{
     await expect(read()).rejects.toThrow("HRD_READONLY_ROLE_SCOPE_MISMATCH");
     expect(state.calls.map(v=>v.sql)).toContain("ROLLBACK");
     expect(state.released).toBe(1);
+  });
+  it("discards a connection if BEGIN times out with unknown transaction state",async()=>{
+    state.beginFailure=true;
+    await expect(read()).rejects.toThrow("BEGIN_TIMED_OUT");
+    expect(state.discarded).toBe(1);
+    expect(state.released).toBe(1);
+    expect(state.calls.map(v=>v.sql)).toEqual(["BEGIN READ ONLY"]);
   });
   it("destroys the pooled client when rollback fails and preserves original exception",async()=>{
     state.workFailure=true;
