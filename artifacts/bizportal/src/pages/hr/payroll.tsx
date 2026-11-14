@@ -160,7 +160,7 @@ export default function PayrollWorkspace() {
   const displayStatus = (run: PayrollRun) => run.status !== "reviewed"
     ? statusLabels[run.status] || run.status
     : run.approvalType === "super_admin"
-      ? "Ditinjau · Bukti Super Admin tercatat"
+      ? "Ditinjau · Receipt tercatat (identitas belum diverifikasi)"
       : "Ditinjau · Tanpa bukti Super Admin";
   const editableFields = [
     ["baseSalary", "Gaji Pokok"], ["allowance", "Tunjangan"],
