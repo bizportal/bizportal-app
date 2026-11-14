@@ -14,6 +14,8 @@ type PayrollRun = {
   month: number;
   year: number;
   status: string;
+  approvalType?: "super_admin" | null;
+  approvedAt?: string | null;
   postingStatus?: string;
   integrityError?: string | null;
 };
@@ -54,7 +56,7 @@ export default function PayrollWorkspace() {
   const companyId = !isConsolidated && Number.isSafeInteger(Number(activeCompanyId)) && Number(activeCompanyId) > 0
     ? Number(activeCompanyId) : null;
   const [runs, setRuns] = useState<PayrollRun[]>([]);
-  const [statusFilter, setStatusFilter] = useState<"all" | "draft" | "approved" | "paid">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "draft" | "reviewed" | "approved" | "paid">("all");
   const [canCreateDraft, setCanCreateDraft] = useState(false);
   const [canGenerate, setCanGenerate] = useState(false);
   const [canEditItems, setCanEditItems] = useState(false);
@@ -149,11 +151,17 @@ export default function PayrollWorkspace() {
   const statusCounts = {
     all: runs.length,
     draft: runs.filter((run) => run.status === "draft").length,
+    reviewed: runs.filter((run) => run.status === "reviewed").length,
     approved: runs.filter((run) => run.status === "approved").length,
     paid: runs.filter((run) => run.status === "paid").length,
   };
   const visibleRuns = statusFilter === "all" ? runs : runs.filter((run) => run.status === statusFilter);
-  const statusLabels: Record<string, string> = { draft: "Draft", approved: "Disetujui", paid: "Dibayar", calculated: "Dihitung" };
+  const statusLabels: Record<string, string> = { draft: "Draft", reviewed: "Ditinjau", approved: "Disetujui", paid: "Dibayar", calculated: "Dihitung" };
+  const displayStatus = (run: PayrollRun) => run.status !== "reviewed"
+    ? statusLabels[run.status] || run.status
+    : run.approvalType === "super_admin"
+      ? "Ditinjau · Bukti Super Admin tercatat"
+      : "Ditinjau · Tanpa bukti Super Admin";
   const editableFields = [
     ["baseSalary", "Gaji Pokok"], ["allowance", "Tunjangan"],
     ["bpjsJhtEmployee", "BPJS JHT"], ["bpjsKesEmployee", "BPJS Kesehatan"],
@@ -252,7 +260,7 @@ export default function PayrollWorkspace() {
             <Tabs value={statusFilter} onValueChange={(value) => setStatusFilter(value as typeof statusFilter)}>
               <TabsList className="flex h-auto w-full flex-wrap justify-start gap-1">
                 {([
-                  ["all", "Semua"], ["draft", "Draft"], ["approved", "Disetujui"], ["paid", "Dibayar"],
+                  ["all", "Semua"], ["draft", "Draft"], ["reviewed", "Ditinjau"], ["approved", "Disetujui"], ["paid", "Dibayar"],
                 ] as const).map(([value, label]) =>
                   <TabsTrigger key={value} value={value} className="gap-2">
                     {label} <span className="rounded-full bg-muted px-2 py-0.5 text-xs">{statusCounts[value]}</span>
@@ -272,7 +280,7 @@ export default function PayrollWorkspace() {
               {visibleRuns.map((run) => <button key={run.id} type="button" onClick={() => setSelectedId(run.id)}
                 className={`flex w-full items-center justify-between rounded-md border p-3 text-left text-sm ${run.id === selectedId ? "border-primary bg-primary/10" : "hover:bg-muted"}`}>
                 <span>{String(run.month).padStart(2, "0")}/{run.year} <span className="text-muted-foreground">#{run.id}</span></span>
-                <Badge variant="secondary">{statusLabels[run.status] || run.status}</Badge>
+                <Badge variant="secondary">{displayStatus(run)}</Badge>
               </button>)}
             </CardContent>
           </Card>
@@ -281,7 +289,7 @@ export default function PayrollWorkspace() {
               {!detail || detail.run.id !== selectedId ? <p className="text-sm text-muted-foreground">Pilih periode untuk melihat perhitungan.</p> : <>
                 {detail.integrityError && <div role="alert" className="flex gap-2 rounded-md border border-red-500/40 p-3 text-sm text-red-500"><AlertTriangle className="h-4 w-4 shrink-0" />{detail.integrityError}</div>}
                 <div className="flex flex-wrap gap-2">
-                  <Badge>{statusLabels[detail.run.status] || detail.run.status}</Badge>
+                  <Badge>{displayStatus(detail.run)}</Badge>
                   <Badge variant="outline">Posting: {detail.run.postingStatus || "pending"}</Badge>
                 </div>
                 <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
