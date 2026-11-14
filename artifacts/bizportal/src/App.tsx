@@ -47,6 +47,7 @@ function writeRoleCache(role: string | null) {
 
 function roleToPath(role?: string | null) {
   switch (role) {
+    case "super_admin":
     case "admin":
       return "/dashboard";
     case "ecommerce":

@@ -55,6 +55,9 @@ jobs:
       - name: BizPortal tests
         run: pnpm --filter @workspace/bizportal test
 
+      - name: Verify Super Admin landing and preserve auth guard
+        run: node --test scripts/dev/superadmin-login-landing.test.mjs
+
       - name: Typecheck
         run: pnpm run typecheck
 
