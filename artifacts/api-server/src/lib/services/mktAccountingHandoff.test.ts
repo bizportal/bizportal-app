@@ -5,6 +5,7 @@ const mock=vi.hoisted(()=>({
   inserts:[] as Array<{table:string,value:Record<string,unknown>}>,
   updates:[] as Array<{table:string,value:Record<string,unknown>}>,
   locks:[] as string[],
+  scopedTx:null as any,
 }));
 vi.mock("@workspace/db",()=>{
   const keys=[
@@ -39,12 +40,14 @@ vi.mock("@workspace/db",()=>{
       }),
     }),
   };
+  mock.scopedTx=tx;
   return {db:{transaction:vi.fn(async(fn:(tx:unknown)=>unknown)=>fn(tx))},...tables};
 });
 vi.mock("drizzle-orm",()=>({and:vi.fn(),eq:vi.fn(),asc:vi.fn()}));
 vi.mock("../activityLog.js",()=>({logActivity:vi.fn()}));
 vi.mock("./marketplaceNotificationQueueService.js",()=>({enqueueNotification:vi.fn()}));
 import {createMarketplaceAccountingHandoff} from "./mktApPreparationService.js";
+import { db } from "@workspace/db";
 const ap={
   id:88,status:"waiting_payment",companyId:1,supplierId:5,
   mktPurchaseOrderId:12,mktGoodsReceiptId:9,vendorInvoiceId:77,
@@ -53,6 +56,7 @@ const ap={
 };
 beforeEach(()=>{
   mock.rows.clear();mock.inserts.length=0;mock.updates.length=0;mock.locks.length=0;
+  vi.mocked(db.transaction).mockClear();
   mock.rows.set("mktApPreparationsTable",[ap]);
   mock.rows.set("mktAccountingHandoffsTable",[]);
   mock.rows.set("vendorInvoicesTable",[{
@@ -64,6 +68,14 @@ beforeEach(()=>{
   mock.rows.set("mktPoShipmentsTable",[{id:3,poId:12,shipmentStatus:"delivered"}]);
 });
 describe("canonical AP to Accounting draft-only handoff",()=>{
+  it("uses the injected scoped transaction instead of the shared privileged pool",async()=>{
+    const scopedDb={transaction:vi.fn(async (work:(tx:any)=>Promise<any>)=>work(mock.scopedTx))} as any;
+    const result=await createMarketplaceAccountingHandoff(88,{actorId:"dev-super-admin"},scopedDb);
+    expect(result).toMatchObject({ok:true,alreadyExists:false,paymentRequestId:41,handoffId:9});
+    expect(scopedDb.transaction).toHaveBeenCalledOnce();
+    expect(db.transaction).not.toHaveBeenCalled();
+    expect(mock.inserts.map(x=>x.table)).toEqual(["paymentRequestsTable","mktAccountingHandoffsTable"]);
+  });
   it("refuses any AP not yet waiting_payment before writes",async()=>{
     mock.rows.set("mktApPreparationsTable",[{...ap,status:"finance_review"}]);
     expect(await createMarketplaceAccountingHandoff(88,{}))

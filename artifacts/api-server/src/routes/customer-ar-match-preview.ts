@@ -53,7 +53,7 @@ router.get("/sales/customer-invoices/auto-match-preview", async (request, respon
     response.status(403).json({ error: "Perusahaan di luar hak akses.", code: "COMPANY_SCOPE_MISMATCH" });
     return;
   }
-  if (actor?.companyId == null && !isPrivileged && !isDevelopmentEnvironment()) {
+  if (actor?.companyId == null && !isPrivileged) {
     response.status(403).json({ error: "Hak akses perusahaan tidak terverifikasi.", code: "COMPANY_SCOPE_MISSING" });
     return;
   }

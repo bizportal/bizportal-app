@@ -1,5 +1,6 @@
 import {
   db,
+  onMarketplaceFinanceCommit,
   mktApPreparationsTable,
   mktAccountingHandoffsTable,
   paymentRequestsTable,
@@ -116,8 +117,9 @@ function queueApNotification(preparation: ApRow, eventType: string): void {
 export async function createApPreparation(
   invoiceId: number,
   actor: { actorId?: string | null; actorName?: string | null },
+  scopedDb: typeof db = db,
 ): Promise<ApPreparationResult> {
-  const result = await db.transaction(async (tx) => {
+  const result = await scopedDb.transaction(async (tx) => {
     const [invoice] = await tx
       .select()
       .from(vendorInvoicesTable)
@@ -203,8 +205,12 @@ export async function createApPreparation(
   });
 
   if (result.ok && !result.alreadyExists) {
-    await auditApTransition(result.preparation, actor, "mkt_ap_preparation_created", "ready_for_ap");
-    queueApNotification(result.preparation, "mkt_ap_preparation_created");
+    const publish = async () => {
+      await auditApTransition(result.preparation, actor, "mkt_ap_preparation_created", "ready_for_ap");
+      queueApNotification(result.preparation, "mkt_ap_preparation_created");
+    };
+    if (scopedDb === db) await publish();
+    else onMarketplaceFinanceCommit(scopedDb, publish);
   }
   return result;
 }
@@ -213,8 +219,9 @@ async function transitionAp(
   id: number,
   target: "finance_review" | "waiting_payment",
   actor: { actorId?: string | null; actorName?: string | null },
+  scopedDb: typeof db = db,
 ): Promise<ApPreparationResult> {
-  const result = await db.transaction(async (tx) => {
+  const result = await scopedDb.transaction(async (tx) => {
     const current = await getPreparation(id, tx);
     if (!current) return { ok: false as const, code: "NOT_FOUND" as const };
     if (isAtOrBeyond(current.status, target)) {
@@ -245,16 +252,20 @@ async function transitionAp(
   });
 
   if (result.ok && !result.alreadyExists) {
-    await auditApTransition(
-      result.preparation,
-      actor,
-      target === "finance_review" ? "mkt_ap_finance_reviewed" : "mkt_ap_waiting_payment",
-      target === "finance_review" ? "ap_preparation" : "finance_review",
-    );
-    queueApNotification(
-      result.preparation,
-      target === "finance_review" ? "mkt_ap_finance_reviewed" : "mkt_ap_waiting_payment",
-    );
+    const publish = async () => {
+      await auditApTransition(
+        result.preparation,
+        actor,
+        target === "finance_review" ? "mkt_ap_finance_reviewed" : "mkt_ap_waiting_payment",
+        target === "finance_review" ? "ap_preparation" : "finance_review",
+      );
+      queueApNotification(
+        result.preparation,
+        target === "finance_review" ? "mkt_ap_finance_reviewed" : "mkt_ap_waiting_payment",
+      );
+    };
+    if (scopedDb === db) await publish();
+    else onMarketplaceFinanceCommit(scopedDb, publish);
   }
   return result;
 }
@@ -262,15 +273,17 @@ async function transitionAp(
 export function reviewApPreparation(
   id: number,
   actor: { actorId?: string | null; actorName?: string | null },
+  scopedDb: typeof db = db,
 ): Promise<ApPreparationResult> {
-  return transitionAp(id, "finance_review", actor);
+  return transitionAp(id, "finance_review", actor, scopedDb);
 }
 
 export function markApPreparationWaitingPayment(
   id: number,
   actor: { actorId?: string | null; actorName?: string | null },
+  scopedDb: typeof db = db,
 ): Promise<ApPreparationResult> {
-  return transitionAp(id, "waiting_payment", actor);
+  return transitionAp(id, "waiting_payment", actor, scopedDb);
 }
 
 /** Persist the AP→Accounting boundary once, without approval, payment, or GL posting.
@@ -279,11 +292,12 @@ export function markApPreparationWaitingPayment(
 export async function createMarketplaceAccountingHandoff(
   id: number,
   actor: { actorId?: string | null; actorName?: string | null },
+  scopedDb: typeof db = db,
 ): Promise<
   | { ok: true; alreadyExists: boolean; paymentRequestId: number; handoffId: number }
   | { ok: false; code: ApPreparationFailureCode }
 > {
-  return db.transaction(async (tx) => {
+  return scopedDb.transaction(async (tx) => {
     const [ap] = await tx.select().from(mktApPreparationsTable)
       .where(eq(mktApPreparationsTable.id, id)).for("update").limit(1);
     if (!ap) return { ok: false as const, code: "NOT_FOUND" as const };
@@ -391,8 +405,8 @@ export async function createMarketplaceAccountingHandoff(
   });
 }
 
-export async function getApPreparation(id: number): Promise<ApRow | null> {
-  return getPreparation(id);
+export async function getApPreparation(id: number, scopedDb: typeof db = db): Promise<ApRow | null> {
+  return getPreparation(id, scopedDb);
 }
 
 export async function listApPreparations(companyId?: number | null): Promise<ApRow[]> {

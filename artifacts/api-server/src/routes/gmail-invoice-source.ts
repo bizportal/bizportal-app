@@ -11,6 +11,7 @@ import {
 import {
   importGmailInvoiceCandidate,
   listGmailInvoiceCandidates,
+  reviewGmailInvoiceCandidate,
   syncGmailInvoiceCandidates,
 } from "../lib/gmail-invoice-candidates";
 import { getRuntimeConfig } from "../lib/gmail-invoice-runtime";
@@ -39,6 +40,8 @@ type GmailSourceStatus = {
   lastSyncAt: string | null;
   lastSyncCount: number;
   lastSyncStatus: string | null;
+  autoSyncEnabled: boolean;
+  autoSyncIntervalMinutes: number;
   redirectUri: string;
   scope: string;
   organizerRuleCount: number;
@@ -89,12 +92,14 @@ function sourceEmail(): string {
 
 async function googleClientId(): Promise<string> {
   const dedicated = await getRuntimeConfig("GMAIL_GOOGLE_CLIENT_ID");
-  return isDevelopmentEnvironment() ? dedicated : dedicated || await getRuntimeConfig("GOOGLE_CLIENT_ID");
+  if (isDevelopmentEnvironment()) return dedicated;
+  return dedicated || await getRuntimeConfig("GOOGLE_CLIENT_ID");
 }
 
 async function googleClientSecret(): Promise<string> {
   const dedicated = await getRuntimeConfig("GMAIL_GOOGLE_CLIENT_SECRET");
-  return isDevelopmentEnvironment() ? dedicated : dedicated || await getRuntimeConfig("GOOGLE_CLIENT_SECRET");
+  if (isDevelopmentEnvironment()) return dedicated;
+  return dedicated || await getRuntimeConfig("GOOGLE_CLIENT_SECRET");
 }
 
 function safeReturnPath(value: unknown): string {
@@ -140,9 +145,12 @@ async function getActor(
   request: Request,
 ): Promise<DevAuthUser | null> {
   if (isDevelopmentEnvironment()) {
-    return getDevSession(request);
+    const legacyDevActor = getDevSession(request);
+    if (legacyDevActor) return legacyDevActor;
   }
 
+  // The canonical signed-cookie reader is default-OFF in DEV and resolves
+  // only explicitly opted-in, signature-verified sessions.
   const session = getProductionSession(request);
   if (!session) return null;
   return getProductionUser(session);
@@ -556,6 +564,8 @@ async function readStatus(
     lastSyncCount:
       Number(lastSyncCount ?? 0) || 0,
     lastSyncStatus: lastSyncStatus || null,
+    autoSyncEnabled: false,
+    autoSyncIntervalMinutes: 0,
     redirectUri: getRedirectUri(request),
     scope: OAUTH_SCOPE,
     organizerRuleCount: organizationRules.filter(
@@ -566,129 +576,8 @@ async function readStatus(
   };
 }
 
-const GMAIL_ORGANIZER_POLL_MS = 10 * 60 * 1000;
-let gmailOrganizerTickActive = false;
-
-async function runGmailOrganizerTick(): Promise<void> {
-  if (
-    isDevelopmentEnvironment() ||
-    gmailOrganizerTickActive
-  ) {
-    return;
-  }
-
-  gmailOrganizerTickActive = true;
-
-  try {
-    const result = await pool.query<{ key: string }>(
-      `select key
-         from public.app_config
-        where key like 'GMAIL_INVOICE_SOURCE_%_REFRESH_TOKEN'
-          and coalesce(value,'') <> ''
-        order by key`,
-    );
-
-    for (const row of result.rows) {
-      const match = row.key.match(
-        /^GMAIL_INVOICE_SOURCE_(\d+)_REFRESH_TOKEN$/,
-      );
-      const companyId = match
-        ? Number(match[1])
-        : 0;
-
-      if (!Number.isSafeInteger(companyId) || companyId <= 0) {
-        continue;
-      }
-
-      try {
-        const encryptedToken = await getConfig(
-          companyId,
-          "REFRESH_TOKEN",
-        );
-        if (!encryptedToken) continue;
-
-        const accessToken = await refreshAccessToken(
-          await decryptRefreshToken(encryptedToken),
-        );
-        const profile = await gmailProfile(accessToken);
-
-        if (profile.emailAddress !== sourceEmail()) {
-          continue;
-        }
-
-        const syncResult =
-          await syncGmailInvoiceCandidates({
-            companyId,
-            accessToken,
-            sourceEmail: profile.emailAddress,
-            actorEmail: "system:gmail-invoice-sync",
-          });
-
-        const syncedAt = new Date().toISOString();
-
-        await Promise.all([
-          setConfig(
-            companyId,
-            "LAST_SYNC_AT",
-            syncedAt,
-            {
-              description:
-                "Last successful automatic Gmail invoice source sync time",
-              actor: "system:gmail-invoice-sync",
-            },
-          ),
-          setConfig(
-            companyId,
-            "LAST_SYNC_COUNT",
-            String(syncResult.attachmentsSeen),
-            {
-              description:
-                "Invoice attachments processed in latest automatic Gmail sync",
-              actor: "system:gmail-invoice-sync",
-            },
-          ),
-          setConfig(
-            companyId,
-            "LAST_SYNC_STATUS",
-            syncResult.failed > 0
-              ? "partial"
-              : "ok",
-            {
-              description:
-                "Last automatic Gmail invoice source synchronization status",
-              actor: "system:gmail-invoice-sync",
-            },
-          ),
-        ]);
-
-        await provisionGmailOrganizationRules({
-          companyId,
-          accessToken,
-          actorEmail: "system:gmail-organizer",
-          senderScanLimit: 100,
-        });
-      } catch (error) {
-        console.warn(
-          "[gmail-organizer] background pass failed",
-          {
-            companyId,
-            error:
-              error instanceof Error
-                ? error.message
-                : String(error),
-          },
-        );
-      }
-    }
-  } catch (error) {
-    console.warn(
-      "[gmail-organizer] background scan failed",
-      error,
-    );
-  } finally {
-    gmailOrganizerTickActive = false;
-  }
-}
+// Preserve active DEV manual-only Gmail scanning. Do not schedule background
+// OCR or label changes during a canonical source cutover.
 
 router.get(
   "/recon-classification/invoice-sources/gmail/status",
@@ -720,6 +609,144 @@ router.get(
     }
   },
 );
+
+// Provisional Match INV discovery: read-only evidence, never a payable or an
+// approvable bank-reconciliation match. Actual approval requires a posted VI.
+router.get(
+  "/recon-classification/invoice-sources/gmail/match-proposals",
+  async (req, res) => {
+    // DEV-only provisional preview; never posts a payable invoice or bank match.
+    if (!isDevelopmentEnvironment()
+        || process.env.BIZPORTAL_GMAIL_MATCH_PROPOSALS_ENABLED_DEV !== "true") {
+      res.status(404).json({ error: "Not found" });
+      return;
+    }
+    try {
+      const actor = await requireFinanceAdmin(req);
+      if (!actor) { res.status(401).json({ error: "Unauthorized" }); return; }
+      // The shared helper allows null company IDs on legacy routes.
+      // This new preview must fail closed for unscoped non-privileged actors.
+      const privileged = ["owner", "super_admin"].includes(actor.role.toLowerCase());
+      if (actor.companyId == null && !privileged) {
+        res.status(403).json({
+          error: "Hak akses perusahaan tidak terverifikasi.",
+          code: "COMPANY_SCOPE_MISSING",
+        });
+        return;
+      }
+      const companyId = requireCompanyScope(res, actor, req.query.company_id);
+      if (!companyId) return;
+      const mutationId = parsePositiveInt(req.query.mutation_id);
+      if (!mutationId) {
+        res.status(400).json({ error: "mutation_id wajib diisi" });
+        return;
+      }
+      const mutation = await pool.query<{ amount: string; description: string | null }>(
+        `select amount, description from public.bank_mutations
+          where id=$1 and company_id=$2 and direction='OUT' and amount <> 0 limit 1`,
+        [mutationId, companyId],
+      );
+      if (!mutation.rows[0]) {
+        res.status(404).json({ error: "Mutasi pembayaran vendor tidak ditemukan." });
+        return;
+      }
+      const amount = Math.abs(Number(mutation.rows[0].amount));
+      if (!Number.isFinite(amount) || amount <= 0) {
+        res.status(400).json({ error: "Nominal mutasi tidak valid." });
+        return;
+      }
+      const result = await pool.query<{
+        id: number; extracted_vendor_name: string | null;
+        extracted_invoice_number: string | null; extracted_total: string;
+        attachment_file_name: string; source_email: string; extracted_json: unknown;
+      }>(
+        `select s.id, s.extracted_vendor_name, s.extracted_invoice_number,
+                s.extracted_total, s.attachment_file_name, s.source_email, s.extracted_json
+           from public.gmail_invoice_candidates s
+          where s.company_id=$1
+            and s.status='ready' and s.extraction_status='complete'
+            and s.vendor_invoice_id is null
+            and coalesce(s.extracted_total,0) > 0
+            and nullif(trim(s.extracted_vendor_name),'') is not null
+            and nullif(trim(s.extracted_invoice_number),'') is not null
+            and s.attachment_file_name !~* '^srt([[:space:]_.-]|$)'
+            and s.attachment_file_name !~* '(^|[/_])FK[_-]'
+            and exists (
+              select 1
+                from regexp_match(s.attachment_file_name,
+                  'Per[. _-]*Posting(JUL|AUG|SEP|OCT|NOV|DEC)26|Per[. _-]*Posting(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(2[7-9]|[3-9][0-9])',
+                  'i') as detected
+            )
+            and not exists (
+              select 1 from public.vendor_invoices vi
+               where vi.company_id=s.company_id
+                 and lower(coalesce(vi.vendor_invoice_ref,''))=lower(coalesce(s.extracted_invoice_number,''))
+                 and coalesce(s.extracted_invoice_number,'') <> ''
+            )
+          order by s.received_at desc nulls last, s.id desc limit 200`,
+        [companyId],
+      );
+      res.json({
+        mutationId,
+        provisional: true,
+        approvable: false,
+        requires: "Finance Review, verified primary Vendor Invoice, posting and normal Match INV controls",
+        candidates: result.rows.flatMap((row) => {
+          const data = row.extracted_json && typeof row.extracted_json === "object"
+            ? row.extracted_json as Record<string, unknown> : {};
+          const lines = Array.isArray(data.line_items) ? data.line_items : [];
+          const breakdown: Array<{ label: string; dpp: number; rate: number; pph: number }> = [];
+          // Only explicit PPh labels may provide a proposed withholding amount.
+          // The generic OCR "tax" field is VAT and must NOT be treated as PPh.
+          for (const value of lines) {
+            if (!value || typeof value !== "object") continue;
+            const line = value as Record<string, unknown>;
+            const label = String(line.description ?? "");
+            const rate = /konsesi.*pph.*23.*15\s*%/i.test(label) ? 0.15
+              : /pemakaian\s+(?:listrik|air).*pph.*4.*2.*10\s*%/i.test(label) ? 0.10 : null;
+            const total = Number(line.total);
+            const vat = Number(line.tax);
+            if (rate === null || !Number.isFinite(total) || !Number.isFinite(vat)
+              || total <= vat || vat < 0) continue;
+            const dpp = total - vat;
+            breakdown.push({ label, dpp, rate, pph: Math.round(dpp * rate * 100) / 100 });
+          }
+          const pphAmount = breakdown.length && breakdown.length === lines.length
+            ? Math.round(breakdown.reduce((sum, item) => sum + item.pph, 0) * 100) / 100
+            : null;
+          const grossAmount = Number(row.extracted_total);
+          const estimatedNetAmount = pphAmount == null ? null
+            : Math.round((grossAmount - pphAmount) * 100) / 100;
+          const matchesGross = Math.abs(grossAmount - amount) < 0.01;
+          const matchesNet = estimatedNetAmount !== null && Math.abs(estimatedNetAmount - amount) < 0.01;
+          if (!matchesGross && !matchesNet) return [];
+          return [{
+            sourceCandidateId: row.id,
+            source: "gmail_invoice_candidates",
+            vendorName: row.extracted_vendor_name,
+            reference: row.extracted_invoice_number,
+            grossAmount,
+            pphAmount,
+            pphBreakdown: breakdown,
+            pphStatus: pphAmount == null ? "needs_finance_review" : "estimated_from_invoice_labels",
+            estimatedNetAmount,
+            matchBasis: matchesNet ? "net_after_pph" : "gross",
+            attachmentFileName: row.attachment_file_name,
+            sourceEmail: row.source_email,
+            reason: pphAmount === null
+              ? "Nominal bruto cocok; PPh perlu Finance Review."
+              : "PPh dihitung dari label tarif invoice; jenis objek pajak dan seluruh nilai menunggu Finance Review.",
+          }];
+        }).slice(0, 25),
+      });
+    } catch (error) {
+      req.log.error({ error }, "Failed to discover Gmail source invoice proposals");
+      res.status(503).json({ error: "Kandidat sementara Sumber INV belum dapat dimuat." });
+    }
+  },
+);
+
+
 
 router.get(
   "/recon-classification/invoice-sources/gmail/candidates",
@@ -1328,6 +1355,60 @@ router.post(
 );
 
 router.post(
+  "/recon-classification/invoice-sources/gmail/candidates/:id/review",
+  async (req, res) => {
+    // This status mutation is isolated from read-only previews and disabled by
+    // default, including in DEV. No PROD path can enable the route.
+    if (!isDevelopmentEnvironment()
+        || process.env.BIZPORTAL_GMAIL_REVIEW_ENABLED_DEV !== "true") {
+      res.status(404).json({ error: "Not found" });
+      return;
+    }
+    try {
+      const actor = await requireFinanceAdmin(req);
+      if (!actor) { res.status(401).json({ error: "Unauthorized" }); return; }
+      // Candidate state changes require an explicit verified tenant binding;
+      // unlike read-only endpoints, even unscoped Owner/Super Admin is denied.
+      const companyId = parsePositiveInt(req.body?.company_id);
+      if (!companyId) {
+        res.status(400).json({ error: "company_id wajib", code: "COMPANY_REQUIRED" });
+        return;
+      }
+      if (actor.companyId == null || actor.companyId !== companyId) {
+        res.status(403).json({
+          error: "Perusahaan review tidak sesuai dengan identitas aktif.",
+          code: "COMPANY_SCOPE_FORBIDDEN",
+        });
+        return;
+      }
+      const candidateId = parsePositiveInt(req.params.id);
+      if (!candidateId) {
+        res.status(400).json({ error: "candidate id tidak valid." }); return;
+      }
+      const decision = req.body?.decision;
+      if (decision !== "reject" && decision !== "restore") {
+        res.status(400).json({ error: "Keputusan harus reject atau restore." }); return;
+      }
+      const result = await reviewGmailInvoiceCandidate({
+        companyId, candidateId, actorEmail: actor.email,
+        decision, reason: typeof req.body?.reason === "string" ? req.body.reason : "",
+      });
+      res.json({ ok: true, candidate: result });
+    } catch (error) {
+      const code = error && typeof error === "object" && "status" in error
+        ? Number((error as { status?: unknown }).status) : 503;
+      req.log.error({ error, candidateId: req.params.id }, "Failed to review Gmail candidate");
+      res.status([400, 409].includes(code) ? code : 503).json({
+        error: error instanceof Error ? error.message : "Keputusan kandidat tidak dapat disimpan.",
+        code: error && typeof error === "object" && "code" in error
+          ? String((error as { code?: unknown }).code ?? "GMAIL_REVIEW_FAILED")
+          : "GMAIL_REVIEW_FAILED",
+      });
+    }
+  },
+);
+
+router.post(
   "/recon-classification/invoice-sources/gmail/candidates/:id/import",
   async (req, res) => {
     const actor = await requireFinanceAdmin(req);
@@ -1471,15 +1552,5 @@ router.post(
     }
   },
 );
-
-if (!isDevelopmentEnvironment()) {
-  setTimeout(() => {
-    void runGmailOrganizerTick();
-  }, 60_000).unref();
-
-  setInterval(() => {
-    void runGmailOrganizerTick();
-  }, GMAIL_ORGANIZER_POLL_MS).unref();
-}
 
 export default router;
