@@ -154,7 +154,7 @@ describe("Unmounted legacy Payroll Super Admin approval — isolated HTTP contra
     expect(state.dbQueries.some(q=>q.sql.includes("FOR UPDATE"))).toBe(true);
     expect(state.dbQueries.some(q=>q.sql.includes("pg_advisory_xact_lock"))).toBe(true);
     expect(state.dbQueries.every(q=>! /\b(INSERT|DELETE|TRUNCATE|DROP|ALTER)\b/i.test(q.sql))).toBe(true);
-    expect(state.dbQueries.filter(q=>/\bUPDATE\b/i.test(q.sql))).toHaveLength(1);
+    expect(state.dbQueries.filter(q=>/^\s*UPDATE\s+public\.payroll_runs\b/i.test(q.sql))).toHaveLength(1);
     expect((await post()).status).toBe(409);
     expect(state.updates).toBe(1);expect(state.committed).toBe(1);
   });
