@@ -4,12 +4,12 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 const mock=vi.hoisted(()=>({
   session:vi.fn(),user:vi.fn(),isDev:vi.fn(),query:vi.fn(),
-  getInvoice:vi.fn(),submitInvoice:vi.fn(),createAp:vi.fn(),getAp:vi.fn(),reviewAp:vi.fn(),waitingAp:vi.fn(),
+  getInvoice:vi.fn(),submitInvoice:vi.fn(),createAp:vi.fn(),getAp:vi.fn(),reviewAp:vi.fn(),waitingAp:vi.fn(),handoffAp:vi.fn(),
 }));
 vi.mock("./dev-auth",()=>({getProductionSession:mock.session,getProductionUser:mock.user,isDevelopmentEnvironment:mock.isDev}));
 vi.mock("@workspace/db",()=>({pool:{query:mock.query}}));
 vi.mock("../lib/services/mktVendorInvoiceService.js",()=>({getMarketplaceVendorInvoice:mock.getInvoice,submitMarketplaceVendorInvoice:mock.submitInvoice,safeMarketplaceVendorInvoiceView:vi.fn(()=>({id:77}))}));
-vi.mock("../lib/services/mktApPreparationService.js",()=>({createApPreparation:mock.createAp,getApPreparation:mock.getAp,reviewApPreparation:mock.reviewAp,markApPreparationWaitingPayment:mock.waitingAp,safeApView:vi.fn(()=>({id:88}))}));
+vi.mock("../lib/services/mktApPreparationService.js",()=>({createApPreparation:mock.createAp,getApPreparation:mock.getAp,reviewApPreparation:mock.reviewAp,markApPreparationWaitingPayment:mock.waitingAp,createMarketplaceAccountingHandoff:mock.handoffAp,safeApView:vi.fn(()=>({id:88}))}));
 import route from "./dev-marketplace-finance-writer";
 let server:Server,base:string;
 beforeAll(async()=>{const app=express();app.use(express.json());app.use("/api",route);server=app.listen(0);await new Promise<void>(r=>server.once("listening",r));base="http://127.0.0.1:"+(server.address() as AddressInfo).port});
@@ -19,6 +19,7 @@ beforeEach(()=>{
   mock.isDev.mockReturnValue(true);mock.session.mockReturnValue({id:"signed"});mock.user.mockResolvedValue({email:"admin@test.dev",role:"super_admin"});mock.query.mockResolvedValue({rows:[{company_id:1}]});
   mock.getInvoice.mockResolvedValue({invoice:{id:77,mktPurchaseOrderId:12,companyId:1,supplierId:5},lines:[]});
   process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV="true";
+  delete process.env.BIZPORTAL_MARKETPLACE_ACCOUNTING_HANDOFF_ENABLED_DEV;
 });
 const get=(path:string)=>fetch(base+path);
 const post=(path:string,body:any={})=>fetch(base+path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
@@ -92,6 +93,39 @@ describe("DEV-only restored canonical vendor invoice/AP runtime gates",()=>{
    expect(sql).toContain("vi.mkt_goods_receipt_id=gr.id");
    expect(sql).toContain("vi.three_way_match_status='passed'");
    expect(params).toEqual([88]);
+ });
+ it("keeps Accounting handoff OFF by default even for a verified Super Admin", async () => {
+   const response = await post("/api/mkt/admin/ap-preparations/88/accounting-handoff");
+   expect(response.status).toBe(404);
+   expect(mock.handoffAp).not.toHaveBeenCalled();
+ });
+ it("requires the same verified AP company/PO/GR/3-way-match gate for handoff", async () => {
+   process.env.BIZPORTAL_MARKETPLACE_ACCOUNTING_HANDOFF_ENABLED_DEV="true";
+   mock.getAp.mockResolvedValue({ id:88,companyId:1,mktPurchaseOrderId:12,mktGoodsReceiptId:51,vendorInvoiceId:77 });
+   mock.query.mockResolvedValue({rows:[]});
+   expect((await post("/api/mkt/admin/ap-preparations/88/accounting-handoff")).status).toBe(404);
+   expect(mock.handoffAp).not.toHaveBeenCalled();
+ });
+ it("does not create Accounting handoff for unauthenticated sessions", async () => {
+   process.env.BIZPORTAL_MARKETPLACE_ACCOUNTING_HANDOFF_ENABLED_DEV="true";
+   mock.session.mockReturnValue(null);
+   expect((await post("/api/mkt/admin/ap-preparations/88/accounting-handoff")).status).toBe(401);
+   expect(mock.handoffAp).not.toHaveBeenCalled();
+ });
+ it("uses existing canonical handoff once; returns Draft-only, no journal", async () => {
+   process.env.BIZPORTAL_MARKETPLACE_ACCOUNTING_HANDOFF_ENABLED_DEV="true";
+   mock.getAp.mockResolvedValue({ id:88,companyId:1,mktPurchaseOrderId:12,mktGoodsReceiptId:51,vendorInvoiceId:77 });
+   mock.handoffAp
+     .mockResolvedValueOnce({ok:true,alreadyExists:false,paymentRequestId:41,handoffId:9})
+     .mockResolvedValueOnce({ok:true,alreadyExists:true,paymentRequestId:41,handoffId:9});
+   const url="/api/mkt/admin/ap-preparations/88/accounting-handoff";
+   const first=await post(url);
+   expect(first.status).toBe(201);
+   expect(await first.json()).toMatchObject({ok:true,alreadyExists:false,paymentStatus:"draft",journalPosted:false,paymentRequestId:41,handoffId:9});
+   const repeated=await post(url);
+   expect(repeated.status).toBe(200);
+   expect(await repeated.json()).toMatchObject({ok:true,alreadyExists:true,paymentRequestId:41,handoffId:9});
+   expect(mock.handoffAp).toHaveBeenCalledTimes(2);
  });
  it("does not advance AP when associated record lacks company",async()=>{
    mock.getAp.mockResolvedValue({id:88,companyId:null,mktPurchaseOrderId:12});
