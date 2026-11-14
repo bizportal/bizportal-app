@@ -37,7 +37,11 @@ vi.mock("./payroll-db",()=>({
   payrollScopedQuery:async(_company:number,sql:string,_args:unknown[])=>{
     state.devRead++;return read(sql);
   },
-  getPayrollPool:()=>({connect:async()=>{
+
+}));
+vi.mock("./payroll-dev-approval-db",()=>({
+  devApprovalDedicatedEnabled:()=>state.devReady,
+  getDevApprovalPool:()=>({connect:async()=>{
     state.devConnect++;
     if(state.devIdentityRole===null)throw Error("TEST_DEV_POOL_REACHED");
     return {query:async(sql:string)=>{
@@ -50,7 +54,7 @@ vi.mock("./payroll-db",()=>({
       throw Error("SQL_AFTER_UNVERIFIED_DEV_IDENTITY");
     },release:()=>{}};
   }}),
-  setPayrollCompanyScope:async()=>{},
+  setDevApprovalCompanyScope:async()=>{},
 }));
 vi.mock("./payroll-prod-db",()=>({
   payrollProdDedicatedRequired:()=>state.prodReady,
