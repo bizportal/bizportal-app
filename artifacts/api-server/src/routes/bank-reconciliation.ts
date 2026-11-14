@@ -3206,7 +3206,7 @@ async function assertApprovalCandidateExists(
   }
 }
 
-async function approveCanonicalSettlementLink(
+export async function approveCanonicalSettlementLink(
   client: ApprovalClient,
   mutationId: number,
   settlementId: number,
