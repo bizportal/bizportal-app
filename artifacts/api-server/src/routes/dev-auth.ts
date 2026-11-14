@@ -367,6 +367,11 @@ export async function getProductionUser(session: ProductionSession): Promise<Dev
     if (userData.is_active !== true || (status !== null && status !== "active")) {
       return null;
     }
+    // DEV OTP sessions bind both the account ID and email. If the address is
+    // reassigned to another account, the previous signed session must expire.
+    if (typeof userData.id !== "string" || userData.id !== session.id) {
+      return null;
+    }
   }
 
   const rawCompanyId = userData.company_id ?? userData.companyId;

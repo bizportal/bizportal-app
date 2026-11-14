@@ -159,6 +159,19 @@ describe("signed OTP HTTP admin middleware under explicit DEV opt-in", () => {
     expect(mocks.query).toHaveBeenCalledTimes(3);
   });
 
+  it("rejects a signed OTP session when its database user ID is replaced", async () => {
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
+    const both = await legacyDevCookie() + "; " + cookie();
+    mocks.query.mockResolvedValue({ rows: [{ user_data: {
+      id: "different-user-id", email: "admin@example.com", role: "admin",
+      company_id: 7, is_active: true, status: "active",
+    } }] });
+    // The same email is not sufficient to inherit another account's identity.
+    expect((await call(both)).status).toBe(401);
+    expect((await call(both, "/auth/user")).status).toBe(403);
+    expect((await call(both, "/users/me")).status).toBe(403);
+  });
+
   it("retains legacy DEV authorization when signed OTP is OFF", async () => {
     const both = await legacyDevCookie() + "; " + cookie();
     const route = await call(both);
@@ -187,7 +200,7 @@ describe("signed OTP HTTP admin middleware under explicit DEV opt-in", () => {
 
   it("rejects authenticated users without an admin role", async () => {
     process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
-    mocks.query.mockResolvedValue({rows:[{user_data:{email:"admin@example.com",role:"viewer",company_id:7,is_active:true,status:"active"}}]});
+    mocks.query.mockResolvedValue({rows:[{user_data:{id:"user-verified",email:"admin@example.com",role:"viewer",company_id:7,is_active:true,status:"active"}}]});
     const res = await call(cookie());
     expect(res.status).toBe(403);
   });
