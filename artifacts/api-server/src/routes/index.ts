@@ -27,6 +27,13 @@ import {
   isDevelopmentEnvironment,
 } from "./dev-auth";
 import { pool } from "@workspace/db";
+import {
+  authorizeRecurringVoid,
+  paymentMatchesCompany,
+  recurringVoidCompanyId,
+  recurringVoidEnabled,
+  type RecurringVoidActor,
+} from "./recurring-void-guard";
 
 const router: IRouter = Router();
 
@@ -79,15 +86,22 @@ router.post("/sport-center/payments/:id/void", async (req, res): Promise<void> =
     return;
   }
 
-  let actor: string | null = null;
+  const companyId = recurringVoidCompanyId(req.body?.companyId);
+  if (companyId === null) {
+    res.status(400).json({ error: "Perusahaan pembayaran wajib dipilih secara eksplisit." });
+    return;
+  }
+
+  let actor: RecurringVoidActor | null = null;
   try {
     if (isDevelopmentEnvironment()) {
-      actor = getDevSession(req)?.email ?? null;
+      const user = getDevSession(req);
+      if (user) actor = { email: user.email, role: user.role, companyId: user.companyId };
     } else {
       const session = getProductionSession(req);
       if (session) {
         const user = await getProductionUser(session);
-        actor = user?.email ?? null;
+        if (user) actor = { email: user.email, role: user.role, companyId: user.companyId };
       }
     }
   } catch (error) {
@@ -100,11 +114,28 @@ router.post("/sport-center/payments/:id/void", async (req, res): Promise<void> =
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
+  if (!authorizeRecurringVoid(actor, companyId)) {
+    res.status(403).json({ error: "Hanya owner yang berwenang untuk perusahaan pembayaran ini." });
+    return;
+  }
+  if (!recurringVoidEnabled()) {
+    res.status(503).json({ code: "RECURRING_VOID_DISABLED", error: "Pembatalan pembayaran berulang belum diaktifkan." });
+    return;
+  }
 
   try {
+    // Permission/RLS failures stop the operation before the financial function.
+    const ownership = await pool.query<{ company_id: number }>(
+      "SELECT company_id FROM sport_center.sport_payments WHERE id=$1 AND company_id=$2",
+      [paymentId, companyId],
+    );
+    if (!paymentMatchesCompany(ownership.rows, companyId)) {
+      res.status(404).json({ error: "Pembayaran tidak ditemukan dalam perusahaan aktif." });
+      return;
+    }
     const result = await pool.query(
       "SELECT sport_center.void_payment_for_recurring_replacement($1, $2, $3) AS audit",
-      [paymentId, actor, reason],
+      [paymentId, actor.email, reason],
     );
     res.json(result.rows[0]?.audit ?? null);
   } catch (error) {
