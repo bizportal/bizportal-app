@@ -50,4 +50,34 @@ describe("Gmail import transactional safeguard for historical payment-slip candi
     expect(sql.join(" ")).not.toMatch(/insert\s+into\s+(?:public\.)?(?:vendor_invoices|vendor_invoice_lines|accounting_entries)/);
     expect(client.release).toHaveBeenCalledOnce();
   });
+
+  it.each([
+    ["supporting", "FK_2026_TAX.pdf", "GMAIL_CANDIDATE_NOT_READY"],
+    ["manual_review", "invoice-uncertain.pdf", "GMAIL_CANDIDATE_NOT_READY"],
+    ["rejected", "invoice-rejected.pdf", "GMAIL_CANDIDATE_REJECTED"],
+  ])("blocks direct imports of %s evidence without financial writes", async (status, filename, expectedCode) => {
+    const client = {
+      query: vi.fn(async (statement: string) => {
+        if (/from public\.gmail_invoice_candidates/.test(statement)) {
+          return { rows: [{
+            id: 100, company_id: 1, status, extraction_status: "complete",
+            subject: "Invoice from supplier", attachment_file_name: filename,
+            vendor_invoice_id: null, extracted_vendor_name: "Supplier Test",
+            extracted_invoice_number: "SYN-TEST-100", extracted_total: "10000",
+            extracted_confidence: "0.99",
+          }] };
+        }
+        if (["begin", "rollback"].includes(statement)) return { rows: [] };
+        throw new Error(`Unexpected SQL for non-ready candidate: ${statement.slice(0, 50)}`);
+      }),
+      release: vi.fn(),
+    };
+    vi.mocked(pool.connect).mockResolvedValue(client as never);
+    await expect(importGmailInvoiceCandidate({companyId:1,candidateId:100,actorEmail:"finance@example.invalid"}))
+      .rejects.toMatchObject({status:409,code:expectedCode});
+    const sql=client.query.mock.calls.map(([statement])=>statement.toLowerCase());
+    expect(sql).toEqual(expect.arrayContaining(["begin","rollback"]));
+    expect(sql.join(" ")).not.toMatch(/insert\s+into/);
+    expect(client.release).toHaveBeenCalledOnce();
+  });
 });

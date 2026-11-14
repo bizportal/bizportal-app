@@ -659,6 +659,17 @@ export async function importGmailInvoiceCandidate(args: {
       );
     }
 
+    // The frontend only offers Import for 'ready' candidates. Enforce the
+    // same rule in the transactional writer: supporting Faktur Pajak,
+    // manual-review and other non-ready records must never be promoted by a
+    // direct API request. Existing imported rows remain idempotent above.
+    if (candidate.status !== "ready") {
+      throw Object.assign(
+        new Error("Hanya kandidat invoice berstatus siap yang dapat dibuat menjadi draft Vendor Invoice."),
+        { status: 409, code: "GMAIL_CANDIDATE_NOT_READY" },
+      );
+    }
+
     const vendorName = candidate.extracted_vendor_name?.trim() ?? "";
     const vendorReference =
       candidate.extracted_invoice_number?.trim() ?? "";
