@@ -16,8 +16,10 @@ export async function withHrdCompanyReadOnly<T>(
   }
   const client = await pool.connect();
   let inTransaction = false;
+  let beganAttempt = false;
   let discardClient: Error | undefined;
   try {
+    beganAttempt = true;
     await client.query("BEGIN READ ONLY");
     inTransaction = true;
     await client.query("SET LOCAL ROLE bizportal_hrd_prod");
@@ -38,6 +40,10 @@ export async function withHrdCompanyReadOnly<T>(
     if (inTransaction) {
       try { await client.query("ROLLBACK"); }
       catch { discardClient = Error("HRD_READONLY_ROLLBACK_UNCONFIRMED"); }
+    } else if (beganAttempt) {
+      // A timed-out BEGIN may have started a transaction server-side after
+      // the client timed out. It cannot safely be returned to the pool.
+      discardClient = Error("HRD_READONLY_BEGIN_UNCONFIRMED");
     }
     throw error;
   } finally {
