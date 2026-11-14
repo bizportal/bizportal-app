@@ -66,7 +66,9 @@ function resolve(company:Company,type:DocType,data:Record<string,unknown>={}):Re
   const cst=company.company_code?.toUpperCase()==="CST";
   const defaults:Record<string,unknown>={
     documentType:type,businessLine:"Logistic/Forwarder",
-    logoUrl:company.logo_url||(cst?"/cst-logo.png":""),
+    // CST official logo is shipped as a same-origin static asset; never rely
+    // on old DEV domains or externally stored company_logo_url for A4 print.
+    logoUrl:cst?"/cst-logo.png":company.logo_url||"",
     companyName:company.company_name||company.name||"",
     companyAddress:cst?VENUE:company.address||"",
     companyPhone:company.phone||"",companyEmail:company.email||"",
