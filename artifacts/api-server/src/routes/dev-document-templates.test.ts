@@ -2,7 +2,7 @@ import { afterAll,beforeAll,beforeEach,describe,expect,it,vi } from "vitest";
 import express from "express";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
-const mocked=vi.hoisted(()=>({query:vi.fn(),auth:vi.fn(),dev:vi.fn(),connect:vi.fn(),txQuery:vi.fn(),release:vi.fn(),role:"super_admin"}));
+const mocked=vi.hoisted(()=>({query:vi.fn(),auth:vi.fn(),dev:vi.fn(),connect:vi.fn(),txQuery:vi.fn(),release:vi.fn(),role:"super_admin",companyId:1 as number|null}));
 vi.mock("@workspace/db",()=>({pool:{query:mocked.query,connect:mocked.connect}}));
 vi.mock("./dev-auth",()=>({isDevelopmentEnvironment:mocked.dev}));
 vi.mock("./admin-auth",()=>({authenticateAdmin:mocked.auth}));
@@ -18,7 +18,7 @@ beforeAll(async()=>{
 });
 afterAll(async()=>{await new Promise<void>((resolve,reject)=>server.close(e=>e?reject(e):resolve()));});
 beforeEach(()=>{
-  vi.clearAllMocks();mocked.dev.mockReturnValue(true);mocked.role="super_admin";
+  vi.clearAllMocks();mocked.dev.mockReturnValue(true);mocked.role="super_admin";mocked.companyId=1;
   mocked.connect.mockResolvedValue({query:mocked.txQuery,release:mocked.release});
   mocked.txQuery.mockImplementation(async (sql:string,params?:unknown[])=>{
     if(sql.includes("select value from public.app_config"))return {rows:[{value:JSON.stringify({documentType:"invoice",headerText:"DEV_VERIFICATION",primaryColor:"#1e3a6e"})}]};
@@ -26,7 +26,7 @@ beforeEach(()=>{
   });
   mocked.auth.mockImplementation(async (req,res,next)=>{
     if(req.headers.authorization!=="Bearer verified"){res.status(401).json({error:"Unauthorized"});return;}
-    req.adminUser={id:"user-1",email:"admin@test.dev",role:mocked.role,companyId:1};next();
+    req.adminUser={id:"user-1",email:"admin@test.dev",role:mocked.role,companyId:mocked.companyId};next();
   });
   mocked.query.mockImplementation(async(sql:string)=>{
     if(sql.includes("from public.companies"))return {rows:[CST]};
@@ -51,6 +51,26 @@ describe("existing DEV document template API",()=>{
     expect((await fetch(url(),{headers})).status).toBe(200);
     expect((await fetch(url("?companyId=2"),{headers})).status).toBe(403);
     expect((await fetch(url("?companyId=not-an-id"),{headers})).status).toBe(400);
+  });
+  it("denies admin/finance without company binding before reading database",async()=>{
+    for(const role of ["admin","finance","accounting"]){
+      mocked.role=role;mocked.companyId=null;mocked.query.mockClear();
+      const r=await fetch(url("?companyId=2"),{headers});
+      expect(r.status).toBe(403);
+      expect((await r.json() as {code:string}).code).toBe("COMPANY_SCOPE_MISSING");
+      expect(mocked.query).not.toHaveBeenCalled();
+    }
+  });
+  it("rejects cross-company access before querying",async()=>{
+    mocked.role="finance";mocked.companyId=1;mocked.query.mockClear();
+    const r=await fetch(url("?companyId=2"),{headers});
+    expect(r.status).toBe(403);
+    expect((await r.json() as {code:string}).code).toBe("COMPANY_SCOPE_MISMATCH");
+    expect(mocked.query).not.toHaveBeenCalled();
+  });
+  it("permits a verified unscoped owner to select company explicitly",async()=>{
+    mocked.role="owner";mocked.companyId=null;
+    expect((await fetch(url("?companyId=1"),{headers})).status).toBe(200);
   });
   it("loads all existing document types without inserting new data",async()=>{
     const r=await fetch(url("?companyId=1"),{headers});expect(r.status).toBe(200);
