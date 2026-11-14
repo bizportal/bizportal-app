@@ -21,6 +21,15 @@ The 16 explicit source checks currently report **4 PRESENT / 12 MISSING** (stati
 | Reconciliation | Both define Preview Rule AI, differing code | Requires behavioral test | Preview safety, company scoping, no writes |
 | Kasbon | GET-only reader + scoped PostgreSQL role | Present via PR #32 | Authenticated Owner UI response and deployment still unproven |
 
+## Dependency audit and safe workstream order
+1. **HRD read-only parity first:** Legacy `hrd-routes.ts` imports `hrd-access`, `hrd-db`, employee status, photo/OCR routes, document OCR and storage canary. This is a dependency cluster, **not a single file copy**. Inspect each existing PROD authority/RLS rule, then stage only read-only readiness and employee queries in isolation; test other-company 403 and denied writes.
+2. **HRD resign/kasbon precheck second:** Preserve blocking/exception semantics and prove no automatic mutation of an unverified kasbon.
+3. **Payroll PROD gated parity next:** Restore only tested readiness and Super Admin approval controls behind the existing backend authorizations. The modules referenced by legacy payroll register eight extensions and include potential financial write paths. Do not register draft, approval, payment or journal writers merely to make the interface appear complete.
+4. **Group allocations later:** Legacy `group-payment-allocations.ts` provides `POST /sport-center/group-payments/:paymentId/allocate` (a financial writer). Never copy/mount or activate without standalone idempotence, allocation, permissions and rollback evidence.
+5. **Recon/Purchase regression checks:** Both repositories define the Rule AI preview route, but code differs; preserve read-only behavior and check invoice/payment mutation contracts before cutover.
+
+These stages are proposed source parity workstreams. They do not claim the production features have been behaviorally re-verified.
+
 ## Evidence already established for kasbon
 A limited `BEGIN READ ONLY; SET LOCAL ROLE bizportal_payroll_prod` query against Supabase PROD showed 23 CST historical records, with Andi (employee 38) holding two historical records totaling Rp16,000,000 **recorded and not yet verified for approval/disbursement/accounting**. A company-2 RLS scope returned zero CST rows. No financial writes were executed.
 
