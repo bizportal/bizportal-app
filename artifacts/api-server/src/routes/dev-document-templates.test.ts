@@ -159,6 +159,51 @@ describe("existing DEV document template API",()=>{
     const sqlCall=mocked.query.mock.calls.find(c=>String(c[0]).includes("insert into public.app_config"));
     expect(String(sqlCall?.[0])).toContain("on conflict (key)");
   });
+  it("renders existing PO transaction only for its verified company without writes",async()=>{
+    mocked.query.mockImplementation(async(sql:string,args?:unknown[])=>{
+      if(sql.includes("from public.companies"))return {rows:[CST]};
+      if(sql.includes("from public.purchase_documents"))return {rows:args?.[1]===1?[{
+        id:55,doc_number:"PO-CST-55",supplier_name:"Vendor DEV",supplier_address:"Tangerang",
+        created_at:"2026-11-14",grand_total:"300000",
+      }]:[]};
+      if(sql.includes("from public.purchase_document_lines"))return {rows:[{
+        name:"Jasa Kirim",description:"Paket",quantity:"2",unit:"unit",
+        unit_cost:"150000",subtotal:"300000",
+      }]};
+      if(sql.includes("from public.app_config"))return {rows:[]};
+      return {rows:[]};
+    });
+    const r=await fetch(url("/po/transaction-preview/55?companyId=1"),{headers});
+    expect(r.status).toBe(200);
+    const html=await r.text();
+    expect(html).toContain("PO-CST-55");
+    expect(html).toContain("Vendor DEV");
+    expect(html).toContain("Jasa Kirim");
+    expect(html).toContain("300.000,00");
+    expect(html).toContain("src='/cst-logo.png'");
+    expect(html).toContain("PRATINJAU TRANSAKSI");
+    expect(html).not.toContain("Data asli akan dimasukkan");
+    expect(mocked.query.mock.calls.every(call=>!/insert|update|delete/i.test(String(call[0])))).toBe(true);
+    expect(mocked.query.mock.calls.filter(call=>String(call[0]).includes("from public.purchase_documents"))
+      .every(call=>call[1][1]===1)).toBe(true);
+  });
+  it("refuses another company or anonymous PO transaction before accessing it",async()=>{
+    mocked.role="finance";mocked.companyId=1;
+    mocked.query.mockClear();
+    expect((await fetch(url("/po/transaction-preview/55?companyId=2"),{headers})).status).toBe(403);
+    expect(mocked.query).not.toHaveBeenCalled();
+    expect((await fetch(url("/po/transaction-preview/55?companyId=1"))).status).toBe(401);
+    expect(mocked.query).not.toHaveBeenCalled();
+  });
+  it("denies absent or invalid PO without writing",async()=>{
+    mocked.query.mockImplementation(async(sql:string)=>{
+      if(sql.includes("from public.companies"))return {rows:[CST]};
+      return {rows:[]};
+    });
+    expect((await fetch(url("/po/transaction-preview/999?companyId=1"),{headers})).status).toBe(404);
+    expect((await fetch(url("/po/transaction-preview/invalid?companyId=1"),{headers})).status).toBe(400);
+    expect(mocked.query.mock.calls.every(call=>!/insert|update|delete/i.test(String(call[0])))).toBe(true);
+  });
   it("refuses invalid payloads before writes",async()=>{
     for(const payload of [{documentType:"invoice",primaryColor:"red"},{documentType:"po",logoUrl:"x"},{documentType:"invoice",fontSize:200}]){
       const r=await fetch(url("/invoice?companyId=1"),{

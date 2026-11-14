@@ -81,7 +81,12 @@ function resolve(company:Company,type:DocType,data:Record<string,unknown>={}):Re
   if(cst){merged.companyName=defaults.companyName;merged.companyAddress=VENUE;merged.logoUrl=defaults.logoUrl;}
   return merged;
 }
-function preview(type:DocType,template:Record<string,unknown>):string{
+type DocumentPreviewData = {
+  number:string; date:string; recipient:string; reference:string;
+  lines:Array<{description:string;quantity:string;unit:string;price:string;subtotal:string}>;
+  total:string;
+};
+function preview(type:DocType,template:Record<string,unknown>,transaction?:DocumentPreviewData):string{
   const ink=safeColor(template.primaryColor),logo=safeLogo(template.logoUrl);
   const freight=["manifest","delivery_note","packing_list"].includes(type);
   const th=freight?["No.","Uraian Barang","Qty","Satuan","Catatan"]:["No.","Deskripsi","Qty","Harga","Subtotal"];
@@ -106,13 +111,14 @@ function preview(type:DocType,template:Record<string,unknown>):string{
     "<div class='brand'><h2>",esc(template.companyName),"</h2><p>",esc(template.companyAddress),
     "</p><p>",esc(template.companyPhone)," | ",esc(template.companyEmail),"</p></div></header>",
     "<div class='brand-rule'></div><div class='brand-rule-accent'></div>",
-    "<h1>",esc(TITLE[type]),"</h1><p class='note'>CONTOH TATA LETAK — BUKAN DOKUMEN TRANSAKSI</p>",
-    "<div class='grid'><section><small>No. Dokumen</small>Diisi oleh modul transaksi</section>",
-    "<section><small>Tanggal</small>Diisi oleh modul transaksi</section>",
-    "<section><small>Penerima</small>Diisi oleh modul transaksi</section>",
-    "<section><small>Referensi</small>Diisi oleh modul transaksi</section></div>",
-    "<table><thead><tr>",...th.map(x=>"<th>"+esc(x)+"</th>"),"</tr></thead>",
-    "<tbody><tr><td colspan='5'>Data asli akan dimasukkan oleh modul transaksi; preview tidak menerbitkan dokumen.</td></tr></tbody></table>",
+    "<h1>",esc(TITLE[type]),"</h1><p class='note'>",transaction?"PRATINJAU TRANSAKSI — TIDAK MENERBITKAN DOKUMEN":"CONTOH TATA LETAK — BUKAN DOKUMEN TRANSAKSI","</p>",
+    "<div class='grid'><section><small>No. Dokumen</small>",esc(transaction?.number??"Diisi oleh modul transaksi"),"</section>",
+    "<section><small>Tanggal</small>",esc(transaction?.date??"Diisi oleh modul transaksi"),"</section>",
+    "<section><small>Penerima</small>",esc(transaction?.recipient??"Diisi oleh modul transaksi"),"</section>",
+    "<section><small>Referensi</small>",esc(transaction?.reference??"Diisi oleh modul transaksi"),"</section></div>",
+    "<table><thead><tr>",...th.map(x=>"<th>"+esc(x)+"</th>"),"</tr></thead><tbody>",
+    ...(transaction?transaction.lines.map((line,i)=>"<tr><td>"+(i+1)+"</td><td>"+esc(line.description)+"</td><td>"+esc(line.quantity)+"</td><td>"+esc(line.price)+"</td><td>"+esc(line.subtotal)+"</td></tr>"):["<tr><td colspan='5'>Data asli akan dimasukkan oleh modul transaksi; preview tidak menerbitkan dokumen.</td></tr>"]),
+    "</tbody></table>",transaction?"<p style='text-align:right;font-weight:bold'>Total: "+esc(transaction.total)+"</p>":"",
     "<footer>",esc(template.footerText),"</footer>",
     "<p class='noprint'><button onclick='window.print()'>Cetak / Simpan PDF</button></p></body></html>",
   ].join("");
@@ -217,6 +223,56 @@ router.post("/settings/documents/verify",async(req:AdminRequest,res)=>{
     res.status(503).json({ok:false,error:"Verifikasi konfigurasi dokumen gagal.",code:"DOCUMENT_VERIFICATION_FAILED"});
   }finally{
     client?.release();
+  }
+});
+// Read-only print adapter for the existing Purchase transaction and A4 template.
+// No PDF binary generator, document issuance, or journal writes are performed.
+router.get("/settings/documents/po/transaction-preview/:id",async(req,res)=>{
+  const c=res.locals.documentCompany as Company;
+  const id=Number(req.params.id);
+  if(!Number.isSafeInteger(id)||id<=0){res.status(400).json({error:"Invalid PO ID"});return;}
+  try{
+    const q=await pool.query<{
+      id:number;doc_number:string;supplier_name:string;supplier_address:string|null;
+      created_at:Date|string;grand_total:string|number;
+    }>(
+      `select id,doc_number,supplier_name,supplier_address,created_at,grand_total
+       from public.purchase_documents
+       where id=$1 and company_id=$2 and kind='order' limit 1`,
+      [id,c.id],
+    );
+    const po=q.rows[0];
+    if(!po){res.status(404).json({error:"PO not found"});return;}
+    const [items,config]=await Promise.all([
+      pool.query<{name:string;description:string|null;quantity:string|number;unit:string|null;unit_cost:string|number;subtotal:string|number}>(
+        `select l.name,l.description,l.quantity,l.unit,l.unit_cost,l.subtotal
+         from public.purchase_document_lines l
+         join public.purchase_documents p on p.id=l.document_id
+         where p.id=$1 and p.company_id=$2 and p.kind='order'
+         order by l.id asc limit 201`,[id,c.id]),
+      pool.query<{value:string}>(
+        "select value from public.app_config where key=$1 and environment='development' and is_secret=false limit 1",
+        [key(c.id,"po")]),
+    ]);
+    if(items.rows.length>200){res.status(422).json({error:"PO exceeds print preview line limit"});return;}
+    const format=(v:string|number)=>Number(v).toLocaleString("id-ID",{minimumFractionDigits:2,maximumFractionDigits:2});
+    const data:DocumentPreviewData={
+      number:po.doc_number,date:new Date(po.created_at).toLocaleDateString("id-ID"),
+      recipient:po.supplier_name,reference:po.supplier_address??"",
+      lines:items.rows.map(l=>({
+        description:[l.name,l.description].filter(Boolean).join(" — "),
+        quantity:String(l.quantity),unit:l.unit??"",price:format(l.unit_cost),subtotal:format(l.subtotal),
+      })),
+      total:"Rp "+format(po.grand_total),
+    };
+    const html=preview("po",resolve(c,"po",config.rows[0]?.value?parseConfig(config.rows[0].value):{}),data);
+    res.setHeader("Content-Type","text/html; charset=utf-8");
+    res.setHeader("Cache-Control","no-store");
+    res.setHeader("Content-Security-Policy","default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'");
+    res.send(html);
+  }catch(error){
+    (req as AdminRequest).log?.error?.({error},"PO preview unavailable");
+    res.status(503).json({error:"Pratinjau PO belum tersedia."});
   }
 });
 router.get("/settings/documents/:type",async(req,res)=>{
