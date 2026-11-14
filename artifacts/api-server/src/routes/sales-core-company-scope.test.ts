@@ -7,6 +7,8 @@ type TestActor = { id: string; email: string; role: string; companyId: number | 
 const state = vi.hoisted(() => ({
   actor: null as TestActor | null,
   queries: [] as Array<{ sql: string; values: unknown[] }>,
+  otpEnabled: false,
+  signedSession: false,
 }));
 
 vi.mock("./admin-auth", () => ({
@@ -18,6 +20,14 @@ vi.mock("./admin-auth", () => ({
     (req as express.Request & { adminUser?: TestActor }).adminUser = state.actor;
     next();
   },
+}));
+
+vi.mock("./dev-auth", () => ({
+  isDevelopmentEnvironment: () => true,
+  isSignedOtpDevEnabled: () => state.otpEnabled,
+  getProductionSession: () => state.signedSession
+    ? { id: "signed-test", email: "test@example.invalid", expiresAt: Date.now() + 60_000 }
+    : null,
 }));
 
 vi.mock("@workspace/db", () => ({
@@ -51,6 +61,8 @@ describe("Sales AI draft API preserves active company isolation", () => {
   beforeEach(() => {
     state.actor = null;
     state.queries.length = 0;
+    state.otpEnabled = false;
+    state.signedSession = false;
   });
   const actor = (role: string, companyId: number | null): TestActor => ({
     id: "test-user", email: "test@example.invalid", role, companyId,
@@ -89,6 +101,37 @@ describe("Sales AI draft API preserves active company isolation", () => {
     expect(state.queries).toHaveLength(1);
     expect(state.queries[0]?.values).toEqual([1]);
     expect(state.queries[0]?.sql).toContain("company_id = $1");
+  });
+
+  it("blocks global Sales reads from a legacy DEV-only session when signed OTP is on", async () => {
+    state.otpEnabled = true;
+    for (const role of ["super_admin", "owner"]) {
+      state.actor = actor(role, null);
+      const response = await fetch(url);
+      expect(response.status).toBe(403);
+      const body = await response.json() as { code?: string };
+      expect(body.code).toBe("SIGNED_GLOBAL_ADMIN_REQUIRED");
+    }
+    expect(state.queries).toHaveLength(0);
+  });
+
+  it("permits global Sales read after signed OTP identity is verified by Admin middleware", async () => {
+    state.otpEnabled = true;
+    state.signedSession = true;
+    state.actor = actor("super_admin", null);
+    const response = await fetch(url);
+    expect(response.status).toBe(200);
+    expect(state.queries).toHaveLength(1);
+    expect(state.queries[0]?.values).toEqual([null]);
+  });
+
+  it("does not remove company-scoped legacy DEV reads during OTP opt-in", async () => {
+    state.otpEnabled = true;
+    state.actor = actor("admin", 1);
+    const response = await fetch(url);
+    expect(response.status).toBe(200);
+    expect(state.queries).toHaveLength(1);
+    expect(state.queries[0]?.values).toEqual([1]);
   });
 
   it("preserves intentional cross-company read for global Super Admin and Owner", async () => {
