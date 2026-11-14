@@ -7,6 +7,9 @@ const state=vi.hoisted(()=>({
   devReady:true,prodReady:true,
   devRead:0,prodRead:0,devConnect:0,prodConnect:0,
   actorRole:"super_admin",
+  devIdentityRole:null as string|null,
+  devIdentityCompany:"1",
+  devUpdateAttempts:0,
 }));
 const sampleItem={
   id:11,employee_id:101,is_paid:false,
@@ -34,7 +37,19 @@ vi.mock("./payroll-db",()=>({
   payrollScopedQuery:async(_company:number,sql:string,_args:unknown[])=>{
     state.devRead++;return read(sql);
   },
-  getPayrollPool:()=>({connect:async()=>{state.devConnect++;throw Error("TEST_DEV_POOL_REACHED");}}),
+  getPayrollPool:()=>({connect:async()=>{
+    state.devConnect++;
+    if(state.devIdentityRole===null)throw Error("TEST_DEV_POOL_REACHED");
+    return {query:async(sql:string)=>{
+      if(sql.startsWith("UPDATE "))state.devUpdateAttempts++;
+      if(sql.startsWith("SELECT current_user"))return {rowCount:1,rows:[{
+        role:state.devIdentityRole,company:state.devIdentityCompany,
+      }]};
+      if(sql==="BEGIN ISOLATION LEVEL READ COMMITTED"||sql==="ROLLBACK")
+        return {rowCount:null,rows:[]};
+      throw Error("SQL_AFTER_UNVERIFIED_DEV_IDENTITY");
+    },release:()=>{}};
+  }}),
   setPayrollCompanyScope:async()=>{},
 }));
 vi.mock("./payroll-prod-db",()=>({
@@ -74,6 +89,7 @@ describe("Unmounted Super Admin approval selects existing environment-specific P
     vi.stubEnv("PAYROLL_PROD_SUPER_ADMIN_APPROVAL_ENABLED","");
     state.devReady=true;state.prodReady=true;state.actorRole="super_admin";
     state.devRead=0;state.prodRead=0;state.devConnect=0;state.prodConnect=0;
+    state.devIdentityRole=null;state.devIdentityCompany="1";state.devUpdateAttempts=0;
   });
   afterEach(()=>vi.unstubAllEnvs());
   const preview=()=>fetch(base+"/api/payroll/runs/32/super-admin-approval-preview");
@@ -102,6 +118,20 @@ describe("Unmounted Super Admin approval selects existing environment-specific P
     expect((await approve()).status).toBe(503); // test pool intentionally unavailable
     expect(state.devConnect).toBe(1);
     expect(state.prodConnect).toBe(0);
+  });
+  it("refuses the legacy DEV Payroll login before any approval UPDATE",async()=>{
+    state.devIdentityRole="bizportal_payroll_dev";
+    vi.stubEnv("PAYROLL_DEV_SUPER_ADMIN_APPROVAL_ENABLED","true");
+    expect((await approve()).status).toBe(503);
+    expect(state.devConnect).toBe(1);
+    expect(state.devUpdateAttempts).toBe(0);
+  });
+  it("refuses an approver-role claim with mismatched company scope",async()=>{
+    state.devIdentityRole="bizportal_payroll_approver_dev";
+    state.devIdentityCompany="2";
+    vi.stubEnv("PAYROLL_DEV_SUPER_ADMIN_APPROVAL_ENABLED","true");
+    expect((await approve()).status).toBe(503);
+    expect(state.devUpdateAttempts).toBe(0);
   });
   it("does not enable PROD approval via the DEV flag",async()=>{
     vi.stubEnv("APP_ENV","production");
