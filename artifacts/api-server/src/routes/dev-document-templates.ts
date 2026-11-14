@@ -5,6 +5,8 @@ import { authenticateAdmin, type AdminRequest } from "./admin-auth";
 import { isDevelopmentEnvironment } from "./dev-auth";
 
 const router: IRouter = Router();
+// Wrap the no-argument overload so TypeScript preserves Promise<PoolClient>.
+const connectTemplateVerification = () => pool.connect();
 const TYPES = ["invoice","quotation","po","delivery_note","packing_list","manifest","mou","kontrak","nda","sla"] as const;
 type DocType = typeof TYPES[number];
 const TITLE: Record<DocType,string> = {
@@ -149,10 +151,10 @@ router.post("/settings/documents/verify",async(req:AdminRequest,res)=>{
   const testKey=PREFIX+c.id+":__verify__:"+randomUUID();
   const sample={documentType:"invoice",headerText:"DEV_VERIFICATION",primaryColor:"#1e3a6e"};
   const stored=JSON.stringify(sample);
-  let client: Awaited<ReturnType<typeof pool.connect>> | undefined;
+  let client: Awaited<ReturnType<typeof connectTemplateVerification>> | undefined;
   let transactionOpen=false;
   try{
-    client=await pool.connect();
+    client=await connectTemplateVerification();
     await client.query("BEGIN");
     transactionOpen=true;
     await client.query(
