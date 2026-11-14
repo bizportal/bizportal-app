@@ -27,9 +27,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = "b0d869eec8cf294e73840bcbd88718d3e20f3068"
-          test "$(git diff --name-only HEAD^ HEAD)" = ".github/workflows/canonical-prod-asset-fingerprint.yml"
-          echo "SOURCE_SHA=$(git rev-parse HEAD^)" >> "$GITHUB_ENV"
+          git fetch --no-tags origin b0d869eec8cf294e73840bcbd88718d3e20f3068
+          git checkout --detach b0d869eec8cf294e73840bcbd88718d3e20f3068
+          test "$(git rev-parse HEAD)" = "b0d869eec8cf294e73840bcbd88718d3e20f3068"
+          echo "SOURCE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
       - uses: pnpm/action-setup@v4
         with:
           version: 10
