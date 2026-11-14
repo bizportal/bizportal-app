@@ -8,6 +8,7 @@ import {
   getProductionUser,
   initializeProductionSessionSigning,
   isDevelopmentEnvironment,
+  isSignedOtpDevEnabled,
   setProductionSessionCookie,
   type ProductionSession,
 } from "./dev-auth";
@@ -118,6 +119,20 @@ function isValidEmail(value: string): boolean {
 }
 
 async function ensureEmailOtpTable(): Promise<void> {
+  if (isDevelopmentEnvironment()) {
+    // DEV migration must be performed by an explicitly approved operator.
+    // Requests may only inspect the existing table; they must never run DDL.
+    if (!isSignedOtpDevEnabled()) {
+      throw new Error("DEV_SIGNED_OTP_NOT_ENABLED");
+    }
+    const result = await pool.query<{ present: boolean }>(
+      "select to_regclass('public.bizportal_email_otp_codes') is not null as present",
+    );
+    if (result.rows[0]?.present !== true) {
+      throw new Error("DEV_EMAIL_OTP_SCHEMA_NOT_READY");
+    }
+    return;
+  }
   await pool.query(`
     create table if not exists public.bizportal_email_otp_codes (
       id bigserial primary key,
@@ -463,7 +478,7 @@ router.post("/auth/email-otp/send", async (
   response: Response,
   next: NextFunction,
 ): Promise<void> => {
-  if (isDevelopmentEnvironment()) {
+  if (isDevelopmentEnvironment() && !isSignedOtpDevEnabled()) {
     next();
     return;
   }
@@ -502,7 +517,7 @@ router.post("/auth/email-otp/send", async (
          update public.bizportal_email_otp_codes
             set verified_at = now()
           where email = $1
-            and purpose = $2
+            and purpose = $3
             and verified_at is null
        )
        insert into public.bizportal_email_otp_codes
@@ -546,7 +561,7 @@ router.post("/auth/email-otp/verify", async (
   response: Response,
   next: NextFunction,
 ): Promise<void> => {
-  if (isDevelopmentEnvironment()) {
+  if (isDevelopmentEnvironment() && !isSignedOtpDevEnabled()) {
     next();
     return;
   }

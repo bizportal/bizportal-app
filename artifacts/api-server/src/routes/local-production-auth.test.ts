@@ -190,6 +190,8 @@ describe("local production email OTP authentication", () => {
     const insertCall = queryMock.mock.calls.find(([sql]) => String(sql).includes("with invalidated"));
     expect(insertCall).toBeDefined();
     expect(String(insertCall?.[0])).toContain("values ($1, $2, $3, $4, $5)");
+    expect(String(insertCall?.[0])).toMatch(/where email = \$1\s+and purpose = \$3\s+and verified_at is null/);
+    expect(insertCall?.[1]?.[1]).not.toBe("admin-email-login");
     expect(insertCall?.[1]?.[2]).toBe("admin-email-login");
   });
 

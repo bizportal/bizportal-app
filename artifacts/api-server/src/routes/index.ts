@@ -39,6 +39,42 @@ router.use(createDevAuthRouter());
 // remaining API-owned routes.
 router.use(localProductionAuthRouter);
 
+
+// Canonical DEV-only document-template API, imported from verified legacy implementation.
+// OFF by default; do not activate before signed-session and A4 PDF E2E verification.
+router.use((req, res, next) => {
+  if (!req.path.startsWith("/settings/documents")) return next();
+  if (!isDevelopmentEnvironment() ||
+      process.env.BIZPORTAL_DOCUMENT_TEMPLATES_ENABLED_DEV !== "true") {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  void import("./dev-document-templates").then(({ default: handler }) => {
+    handler(req, res, next);
+  }).catch((error) => {
+    req.log?.error({ error }, "DEV document template router unavailable");
+    if (!res.headersSent) res.status(503).json({ error: "Template API unavailable" });
+  });
+});
+
+
+// Read-only Customer AR preview imported from the historical BizPortal source.
+// Deliberately OFF until tenant-scope and canonical DEV runtime parity are proven.
+router.use((req, res, next) => {
+  if (!req.path.startsWith("/sales/customer-invoices/auto-match-preview")) return next();
+  if (!isDevelopmentEnvironment() ||
+      process.env.BIZPORTAL_CUSTOMER_AR_PREVIEW_ENABLED_DEV !== "true") {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  void import("./customer-ar-match-preview").then(({ default: handler }) => {
+    handler(req, res, next);
+  }).catch((error) => {
+    req.log?.error({ error }, "DEV Customer AR preview unavailable");
+    if (!res.headersSent) res.status(503).json({ error: "AR preview unavailable" });
+  });
+});
+
 router.post("/auth/email-login", (_request, response) => {
   response.status(404).json({ error: "Not found" });
 });
