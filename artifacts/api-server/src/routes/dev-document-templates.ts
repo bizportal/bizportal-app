@@ -122,7 +122,11 @@ router.use("/settings/documents",async(req:AdminRequest,res,next)=>{
 router.use("/settings/documents",async(req:AdminRequest,res,next)=>{
   const companyId=Number(req.query.companyId??req.adminUser?.companyId);
   if(!Number.isSafeInteger(companyId)||companyId<=0){res.status(400).json({error:"Pilih perusahaan."});return;}
-  if(req.adminUser?.companyId&&req.adminUser.companyId!==companyId){res.status(403).json({error:"Perusahaan tidak diizinkan."});return;}
+  // An unscoped non-privileged admin must not choose any company by URL.
+  const actor=req.adminUser;
+  const privileged=["owner","super_admin"].includes(actor?.role?.toLowerCase()??"");
+  if(actor?.companyId==null&&!privileged){res.status(403).json({error:"Hak akses perusahaan tidak terverifikasi.",code:"COMPANY_SCOPE_MISSING"});return;}
+  if(actor?.companyId!=null&&actor.companyId!==companyId){res.status(403).json({error:"Perusahaan tidak diizinkan.",code:"COMPANY_SCOPE_MISMATCH"});return;}
   try{
     const q=await pool.query<Company>(
       "select id,company_name,name,company_code,logo_url,address,phone,email from public.companies where id=$1 and coalesce(is_active,true)=true limit 1",
