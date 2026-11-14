@@ -152,6 +152,89 @@ router.get("/hrd/employees", async (req: HrdReadRequest, res: Response) => {
   }
 });
 /**
+ * HRD document DETAIL stage 4: a metadata-only projection of the existing
+ * PROD document/audit read route. Sensitive OCR data, verified_data, storage
+ * paths, previews, actor identities and photo bytes are deliberately excluded.
+ * The same production HRD account/company gate is applied above.
+ *
+ * This is NOT full legacy detail parity; signed document previews, OCR,
+ * private document content and modifications remain disabled.
+ */
+router.get("/hrd/employees/:id", async (req:HrdReadRequest,res:Response) => {
+  if(process.env.HRD_CANONICAL_DOCUMENT_METADATA_ENABLED !== "true") {
+    res.status(404).json({message:"Metadata dokumen HRD belum diaktifkan."});
+    return;
+  }
+  const rawId=req.params.id;
+  const employeeId=typeof rawId==="string" && /^[1-9][0-9]*$/.test(rawId)
+    ?Number(rawId):NaN;
+  if(!Number.isSafeInteger(employeeId)||employeeId<=0) {
+    res.status(400).json({message:"ID karyawan tidak valid."});
+    return;
+  }
+  const companyId=req.hrdCompanyId!;
+  const role=req.hrdActor?.role?.toLowerCase();
+  if(role!=="owner" && role!=="super_admin") {
+    res.status(403).json({message:"Metadata HRD hanya untuk Owner/Super Admin HRD."});
+    return;
+  }
+  try {
+    const data=await withHrdCompanyReadOnly(companyId, async client=>{
+      const employee=await client.query(
+        `SELECT id,company_id,first_name,last_name,status FROM public.employees
+          WHERE id=$1 AND company_id=$2 AND deleted_at IS NULL LIMIT 1`,
+        [employeeId,companyId],
+      );
+      if(employee.rowCount!==1)return null;
+      // Query each private table with BOTH company and employee filters.
+      // The role-scoped BEGIN READ ONLY is an extra safeguard since the
+      // existing PROD HRD role also has limited private-table write grants.
+      const documents=await client.query(
+        `SELECT id,doc_type,mime_type,status,confidence,created_at,scanned_at,verified_at
+          FROM hrd_private.employee_documents
+          WHERE company_id=$1 AND employee_id=$2
+          ORDER BY created_at DESC,id DESC LIMIT 80`,
+        [companyId,employeeId],
+      );
+      const audit=await client.query(
+        `SELECT document_id,action,created_at FROM hrd_private.employee_document_audit
+          WHERE company_id=$1 AND employee_id=$2
+          ORDER BY created_at DESC,id DESC LIMIT 80`,
+        [companyId,employeeId],
+      );
+      const profile=await client.query(
+        `SELECT EXISTS(
+          SELECT 1 FROM hrd_private.employee_profiles
+          WHERE company_id=$1 AND employee_id=$2
+        ) AS "profilePresent"`,
+        [companyId,employeeId],
+      );
+      return {
+        employee:employee.rows[0],
+        documents:documents.rows,
+        audit:audit.rows,
+        profilePresent:profile.rows[0]?.profilePresent===true,
+      };
+    });
+    if(!data) {
+      res.status(404).json({message:"Karyawan tidak ditemukan pada perusahaan aktif."});
+      return;
+    }
+    res.json({
+      companyId,employeeId,...data,readOnly:true,
+      coverage:"HRD_DOCUMENT_METADATA_ONLY",
+      recordsLimitedTo:80,
+      verifiedProfile:null, // actual extracted/verified identity fields intentionally withheld
+      canPay:false,statusChangeEnabled:false,photoUploadEnabled:false,
+      ocrEnabled:false,canVerify:false,canPreview:false,
+    });
+  } catch(error) {
+    req.log?.error?.({companyId,employeeId,error},"Scoped HRD document metadata read failed");
+    res.status(503).json({message:"Metadata dokumen HRD belum dapat dibaca. Tidak ada data diubah."});
+  }
+});
+
+/**
  * Stage-two advisory only: reproduces the legacy HRD resign kasbon precheck,
  * with a separate flag and the existing role-scoped READ ONLY transaction.
  * Does not register the employee-status PATCH endpoint.
