@@ -67,6 +67,16 @@ function getSessionSecret(): string | null {
   return getExplicitSessionSecret() ?? initializedProductionSessionSecret;
 }
 
+/** Opt-in only. Never infer DEV OTP eligibility from a cookie or DB credential. */
+export function isSignedOtpDevEnabled(): boolean {
+  // APP_ENV is the authoritative deployment/DB boundary; NODE_ENV only sets
+  // Node's build/runtime mode and may be production for a bundled DEV server.
+  return process.env.APP_ENV?.trim().toLowerCase() === "development"
+    && isDevelopmentEnvironment()
+    && process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV === "true"
+    && getExplicitSessionSecret() !== null;
+}
+
 export async function initializeProductionSessionSigning(): Promise<void> {
   if (isDevelopmentEnvironment()) return;
   if (getSessionSecret()) return;
@@ -196,14 +206,14 @@ export function setProductionSessionCookie(response: Response, session: Producti
 }
 
 function clearSessionCookie(response: Response): void {
-  response.setHeader(
+  response.append(
     "Set-Cookie",
     `${DEV_SESSION_COOKIE}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax`,
   );
 }
 
 function clearProductionSessionCookie(response: Response): void {
-  response.setHeader(
+  response.append(
     "Set-Cookie",
     `${PRODUCTION_SESSION_COOKIE}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax`,
   );
@@ -261,7 +271,7 @@ export function getDevSession(request: Request): DevAuthUser | null {
 }
 
 export function getProductionSession(request: Request): ProductionSession | null {
-  if (isDevelopmentEnvironment()) return null;
+  if (isDevelopmentEnvironment() && !isSignedOtpDevEnabled()) return null;
 
   const session = decodeSignedCookie<ProductionSession>(request, PRODUCTION_SESSION_COOKIE);
   if (
@@ -359,6 +369,21 @@ export async function getProductionUser(session: ProductionSession): Promise<Dev
   const email = typeof userData.email === "string" ? userData.email.trim().toLowerCase() : "";
   const role = typeof userData.role === "string" ? userData.role.trim().toLowerCase() : "";
   if (email !== session.email || !role) return null;
+  // DEV opt-in must fail closed for inactive or ambiguous accounts. Do not change
+  // the existing PROD session lookup behavior during source migration.
+  if (isSignedOtpDevEnabled()) {
+    const status = typeof userData.status === "string"
+      ? userData.status.trim().toLowerCase()
+      : null;
+    if (userData.is_active !== true || (status !== null && status !== "active")) {
+      return null;
+    }
+    // DEV OTP sessions bind both the account ID and email. If the address is
+    // reassigned to another account, the previous signed session must expire.
+    if (typeof userData.id !== "string" || userData.id !== session.id) {
+      return null;
+    }
+  }
 
   const rawCompanyId = userData.company_id ?? userData.companyId;
   const parsedCompanyId = rawCompanyId === null || rawCompanyId === undefined
@@ -500,18 +525,54 @@ export function createDevAuthRouter(): Router {
       return;
     }
 
-    const user = getDevSession(request);
-    if (user) {
-      response.json({ user });
+    // When OTP is enabled, prefer its verified identity over a legacy cookie.
+    if (isSignedOtpDevEnabled()) {
+      const signed = getProductionSession(request);
+      if (signed) {
+        try {
+          const verifiedUser = await getProductionUser(signed);
+          if (!verifiedUser) {
+            response.status(403).json({ error: "Forbidden" });
+            return;
+          }
+          response.json({ user: verifiedUser });
+          return;
+        } catch (error) {
+          request.log?.error?.({ error }, "DEV signed OTP user lookup unavailable");
+          response.status(503).json({ error: "Authorization service unavailable" });
+          return;
+        }
+      }
+    }
+    const legacyUser = getDevSession(request);
+    if (legacyUser) {
+      response.json({ user: legacyUser });
       return;
     }
     next();
   });
 
-  router.get("/users/me", (request, response, next) => {
+  router.get("/users/me", async (request, response, next) => {
     if (!isDevelopmentEnvironment()) return next();
 
-    const user = getDevSession(request);
+    let user: DevAuthUser | null = null;
+    if (isSignedOtpDevEnabled()) {
+      const signed = getProductionSession(request);
+      if (signed) {
+        try {
+          user = await getProductionUser(signed);
+          if (!user) {
+            response.status(403).json({ error: "Forbidden" });
+            return;
+          }
+        } catch (error) {
+          request.log?.error?.({ error }, "DEV signed OTP profile unavailable");
+          response.status(503).json({ error: "Authorization service unavailable" });
+          return;
+        }
+      }
+    }
+    user ??= getDevSession(request);
     if (!user) return next();
 
     return response.json({
@@ -522,15 +583,13 @@ export function createDevAuthRouter(): Router {
     });
   });
 
-  router.get("/logout", (request, response, next) => {
-    if (!isDevelopmentEnvironment()) {
-      clearProductionSessionCookie(response);
-      response.redirect(getSafeRedirect(request.query.redirect));
-      return;
+  router.get("/logout", (request, response) => {
+    // Logout must also work for expired sessions and valid OTP/password sessions in DEV.
+    // Clearing cookies does not grant access or change the login authorization gates.
+    if (isDevelopmentEnvironment()) {
+      clearSessionCookie(response);
     }
-    if (!getDevSession(request)) return next();
-
-    clearSessionCookie(response);
+    clearProductionSessionCookie(response);
     return response.redirect(getSafeRedirect(request.query.redirect));
   });
 

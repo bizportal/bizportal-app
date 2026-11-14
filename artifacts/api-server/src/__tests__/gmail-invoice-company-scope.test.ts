@@ -35,6 +35,16 @@ describe("Gmail invoice source company isolation", () => {
         expect(handler).toContain("parsedState = await parseState(");
         expect(handler).toContain("actor.companyId !== parsedState.companyId");
         expect(handler).toContain('reason: "company_scope_mismatch"');
+      } else if (route[2] === "/recon-classification/invoice-sources/gmail/candidates/:id/review") {
+        // A status-changing route must use a STRICTER tenant binding than the
+        // legacy shared helper, which accepts an unscoped actor.
+        expect(handler).toContain("BIZPORTAL_GMAIL_REVIEW_ENABLED_DEV");
+        expect(handler).toContain("const companyId = parsePositiveInt(req.body?.company_id)");
+        expect(handler).toContain("actor.companyId == null || actor.companyId !== companyId");
+        expect(handler).toContain('"COMPANY_SCOPE_FORBIDDEN"');
+        expect(handler.indexOf("actor.companyId == null")).toBeLessThan(
+          handler.indexOf("await reviewGmailInvoiceCandidate("),
+        );
       } else {
         expect(handler).toContain("const companyId = requireCompanyScope(");
         expect(handler).toContain("if (!companyId) return;");

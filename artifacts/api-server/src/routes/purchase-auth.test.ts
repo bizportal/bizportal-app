@@ -158,6 +158,25 @@ describe("production purchase authentication", () => {
     expect(response.status).toBe(403);
   });
 
+  it.each([
+    ["admin", 204],
+    ["owner", 204],
+    ["super_admin", 204],
+    ["finance", 403],
+    ["accounting", 403],
+    ["viewer", 403],
+  ] as const)("characterizes signed Purchase Workflow role %s with no financial mutation", async (role, expectedStatus) => {
+    mockUser(role);
+    const response = await request(server, "/purchase-workflow/proxied-handler", {
+      cookie: makeProductionCookie("admin@example.com"),
+    });
+    expect(response.status).toBe(expectedStatus);
+    // A terminal 204 on this deliberately unmatched route does not write,
+    // approve, post or settle any financial record.
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    expect(String(queryMock.mock.calls[0]?.[0])).toContain("from public.users");
+  });
+
   it("serves vendor-invoice detail locally after auth", async () => {
     queryMock
       .mockResolvedValueOnce({

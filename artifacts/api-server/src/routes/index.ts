@@ -11,6 +11,7 @@ import businessDashboardRouter from "./business-dashboard";
 import localProductionAuthRouter from "./local-production-auth";
 import salesCoreRouter from "./sales-core";
 import adminRealtimeRouter from "./admin-realtime";
+import driverGeofenceRouter from "./driver-geofence";
 import legacyReadParityRouter from "./legacy-read-parity";
 import aiReviewReadParityRouter from "./ai-review-read-parity";
 import cashBankReadParityRouter from "./cash-bank-read-parity";
@@ -42,6 +43,63 @@ router.use(createDevAuthRouter());
 // remaining API-owned routes.
 router.use(localProductionAuthRouter);
 
+// Canonical DEV-only document-template API, imported from verified legacy implementation.
+// OFF by default; do not activate before signed-session and A4 PDF E2E verification.
+router.use((req, res, next) => {
+  if (!req.path.startsWith("/settings/documents")) return next();
+  if (!isDevelopmentEnvironment() ||
+      process.env.BIZPORTAL_DOCUMENT_TEMPLATES_ENABLED_DEV !== "true") {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  void import("./dev-document-templates").then(({ default: handler }) => {
+    handler(req, res, next);
+  }).catch((error) => {
+    req.log?.error({ error }, "DEV document template router unavailable");
+    if (!res.headersSent) res.status(503).json({ error: "Template API unavailable" });
+  });
+});
+
+
+// Read-only Customer AR preview imported from the historical BizPortal source.
+// Deliberately OFF until tenant-scope and canonical DEV runtime parity are proven.
+router.use((req, res, next) => {
+  if (!req.path.startsWith("/sales/customer-invoices/auto-match-preview")) return next();
+  if (!isDevelopmentEnvironment() ||
+      process.env.BIZPORTAL_CUSTOMER_AR_PREVIEW_ENABLED_DEV !== "true") {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  void import("./customer-ar-match-preview").then(({ default: handler }) => {
+    handler(req, res, next);
+  }).catch((error) => {
+    req.log?.error({ error }, "DEV Customer AR preview unavailable");
+    if (!res.headersSent) res.status(503).json({ error: "AR preview unavailable" });
+  });
+});
+
+// Canonical vendor invoice/AP services: DEV-only, feature flags OFF by default.
+// Standalone runtime does not create GL journals or execute payments.
+router.use((req,res,next) => {
+  if (req.path.startsWith('/mkt/admin/vendor-invoices/') || req.path.startsWith('/mkt/admin/ap-preparations/')) {
+    void import('./dev-marketplace-finance-writer').then(({default: handler})=>handler(req,res,next)).catch(error=>{
+      req.log?.error({error},'Canonical Marketplace finance router unavailable');
+      if (!res.headersSent) res.status(503).json({error:'Marketplace finance temporarily unavailable'});
+    });
+  } else next();
+});
+router.use('/mkt/vendor-invoice',async(req,res,next)=>{
+  // NODE_ENV=production is also used by the built DEV frontend; require the
+  // explicitly selected DEV APP_ENV and a separate vendor-invoice flag.
+  if (!isDevelopmentEnvironment() || process.env.APP_ENV?.trim().toLowerCase()!=='development' || process.env.BIZPORTAL_MARKETPLACE_VENDOR_INVOICE_ENABLED_DEV!=='true') {
+    res.status(404).json({error:'Not found'});return;
+  }
+  try {const {default: handler}=await import('./mktVendorInvoice');handler(req,res,next);}catch(error){
+    req.log?.error({error},'Canonical vendor invoice router unavailable');
+    if (!res.headersSent) res.status(503).json({error:'Vendor invoice unavailable'});
+  }
+});
+
 router.post("/auth/email-login", (_request, response) => {
   response.status(404).json({ error: "Not found" });
 });
@@ -56,6 +114,7 @@ router.use(accountingRouter);
 router.use(purchaseWorkflowRouter);
 router.use(businessDashboardRouter);
 router.use(salesCoreRouter);
+router.use(driverGeofenceRouter);
 router.use(adminRealtimeRouter);
 router.use(legacyReadParityRouter);
 router.use(aiReviewReadParityRouter);
