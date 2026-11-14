@@ -128,7 +128,7 @@ describe("Unmounted legacy Payroll Super Admin approval — isolated HTTP contra
     state.role="super_admin";state.invalidHold=true;
     const res=await fetch(root+"/api/payroll/runs/32/super-admin-approval-preview");
     expect(res.status).toBe(200);
-    const data=await res.json();
+    const data=await res.json() as {canApprove:boolean;blockedReasons:string[];readyForPayment:boolean};
     expect(data.canApprove).toBe(false);
     expect(data.blockedReasons).toContain("KASBON_RESERVATIONS_INVALID");
     expect(data.readyForPayment).toBe(false);
