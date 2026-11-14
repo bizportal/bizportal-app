@@ -347,13 +347,25 @@ async function verifySupabaseAccessToken(accessToken: string): Promise<{
 }
 
 export async function getProductionUser(session: ProductionSession): Promise<DevAuthUser | null> {
-  const result = await pool.query<{ user_data: Record<string, unknown> }>(
-    `select to_jsonb(u) user_data
-     from public.users u
-     where lower(coalesce(to_jsonb(u)->>'email', '')) = $1
-     limit 1`,
-    [session.email],
-  );
+  const signedOtpDev = isSignedOtpDevEnabled();
+  // Only DEV signed OTP pins the lookup to the signed account ID as well as
+  // email. Duplicate case-insensitive emails must not select a different role.
+  // Preserve the existing email-only PROD lookup unchanged.
+  const result = signedOtpDev
+    ? await pool.query<{ user_data: Record<string, unknown> }>(
+      `select to_jsonb(u) user_data
+       from public.users u
+       where u.id = $1 and lower(coalesce(to_jsonb(u)->>'email', '')) = $2
+       limit 1`,
+      [session.id, session.email],
+    )
+    : await pool.query<{ user_data: Record<string, unknown> }>(
+      `select to_jsonb(u) user_data
+       from public.users u
+       where lower(coalesce(to_jsonb(u)->>'email', '')) = $1
+       limit 1`,
+      [session.email],
+    );
   const userData = result.rows[0]?.user_data;
   if (!userData) return null;
   // Revalidate active account state on every authenticated request. A signed
@@ -369,9 +381,9 @@ export async function getProductionUser(session: ProductionSession): Promise<Dev
   const email = typeof userData.email === "string" ? userData.email.trim().toLowerCase() : "";
   const role = typeof userData.role === "string" ? userData.role.trim().toLowerCase() : "";
   if (email !== session.email || !role) return null;
-  // DEV opt-in must fail closed for inactive or ambiguous accounts. Do not change
-  // the existing PROD session lookup behavior during source migration.
-  if (isSignedOtpDevEnabled()) {
+  // DEV opt-in must fail closed for inactive or mismatched account IDs.
+  // Keep the existing PROD session lookup behavior unchanged.
+  if (signedOtpDev) {
     const status = typeof userData.status === "string"
       ? userData.status.trim().toLowerCase()
       : null;
