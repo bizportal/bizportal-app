@@ -48,7 +48,7 @@ jobs:
           set -euo pipefail
           docker run -d --name bizportal-shadow-check \
             --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m \
-            -v "$PWD":/app:ro -w /app \
+            -v "$PWD":"$PWD":ro -w "$PWD" \
             -e APP_ENV=development -e NODE_ENV=test \
             -e BIZPORTAL_SHADOW_MODE=true -e HOST=127.0.0.1 -e PORT=38888 \
             -e FLEET_EMBEDDED_REMINDER_ENABLED=true \
