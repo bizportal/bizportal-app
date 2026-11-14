@@ -128,6 +128,9 @@ export default function AdvanceManagementPage() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [dashboard, setDashboard] = useState<any>(null);
+  const [readError, setReadError] = useState("");
+  // The canonical standalone backend only exposes historical kasbon GET routes.
+  const readOnly = true;
   const [aging, setAging] = useState<any[]>([]);
   const [allAccounts, setAllAccounts] = useState<CoaAccount[]>([]);
   const [advanceAccounts, setAdvanceAccounts] = useState<CoaAccount[]>([]);
@@ -154,14 +157,18 @@ export default function AdvanceManagementPage() {
 
   // ── API helpers ──────────────────────────────────────────────────────────
   const api = useCallback(async (path: string, opts?: RequestInit) => {
-    const url = `/api/advances${path}`;
+    if (opts?.method && opts.method.toUpperCase() !== "GET") {
+      throw new Error("Aksi keuangan Advance belum diaktifkan. Riwayat kasbon hanya baca-saja.");
+    }
+    const url = `/api/advances${path}` + (path.includes("?") ? "&" : "?") +
+      "companyId=" + encodeURIComponent(String(activeCompanyId ?? ""));
     const res = await fetch(url, { credentials: "include", ...opts });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.message ?? body.error ?? `HTTP ${res.status}`);
     }
     return res.json();
-  }, []);
+  }, [activeCompanyId]);
 
   const coaApi = useCallback(async (type?: string, subtype?: string) => {
     const params = new URLSearchParams();
@@ -186,7 +193,11 @@ export default function AdvanceManagementPage() {
       const data = await api(`/?${params}`);
       setAdvances(data.data ?? []);
       setTotal(data.total ?? 0);
+      setReadError("");
     } catch (err: any) {
+      setAdvances([]);
+      setTotal(0);
+      setReadError(err?.message ?? "Riwayat kasbon tidak dapat dibaca.");
       toast({ variant: "destructive", title: "Gagal memuat data", description: err?.message });
     } finally {
       setLoading(false);
@@ -195,7 +206,7 @@ export default function AdvanceManagementPage() {
 
   const loadDashboard = useCallback(async () => {
     if (!activeCompanyId) return;
-    try { const d = await api("/dashboard"); setDashboard(d); } catch {}
+    try { const d = await api("/dashboard"); setDashboard(d); } catch (err: any) { setDashboard(null); setReadError(err?.message ?? "Dashboard kasbon tidak dapat dibaca."); }
   }, [activeCompanyId, api]);
 
   const loadAging = useCallback(async () => {
@@ -259,10 +270,13 @@ export default function AdvanceManagementPage() {
             <p className="text-sm text-slate-500 mt-0.5">Kelola semua jenis advance — kasbon, talangan, uang muka, dan lainnya</p>
           </div>
         </div>
-        <Button onClick={() => setCreateOpen(true)} className="gap-2">
+        <Button disabled={readOnly} onClick={() => setCreateOpen(true)} className="gap-2">
           <Plus className="w-4 h-4" /> Buat Advance
         </Button>
       </div>
+
+      {readOnly && <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">Hanya riwayat kasbon karyawan (baca-saja). Saldo tercatat yang belum diverifikasi bukan bukti utang yang telah disetujui atau dicairkan. Pencairan, pelunasan, Void, dan posting jurnal dinonaktifkan.</div>}
+      {readError && <div role="alert" className="rounded-md border border-red-300 p-3 text-sm text-red-700">Data kasbon gagal dibaca: {readError}. Angka nol tidak berarti kasbon tidak ada.</div>}
 
       {/* Stats cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -271,7 +285,7 @@ export default function AdvanceManagementPage() {
         <StatCard icon={<Clock className="w-5 h-5 text-yellow-600" />} bg="bg-yellow-50"
           label="Menunggu Approval" value={String(stats.pending_count ?? 0)} sub="advance" />
         <StatCard icon={<CheckCircle2 className="w-5 h-5 text-green-600" />} bg="bg-green-50"
-          label="Total Dilunasi" value={IDR(Number(stats.total_settled ?? 0))} sub="kumulatif" />
+          label="Tercatat Belum Terverifikasi" value={IDR(Number(stats.recorded_unverified_amount ?? 0))} sub={`${stats.recorded_unverified_count ?? 0} catatan, perlu pemeriksaan sumber` />
         <StatCard icon={<TrendingDown className="w-5 h-5 text-blue-600" />} bg="bg-blue-50"
           label="Sisa Terhutang" value={IDR(Number(stats.total_remaining ?? 0))} sub="dari outstanding" />
       </div>
@@ -280,8 +294,8 @@ export default function AdvanceManagementPage() {
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="h-9">
           <TabsTrigger value="list" className="text-xs">Daftar Advance</TabsTrigger>
-          <TabsTrigger value="aging" className="text-xs">Laporan Aging</TabsTrigger>
-          <TabsTrigger value="by_type" className="text-xs">Rekapitulasi</TabsTrigger>
+          {!readOnly && <TabsTrigger value="aging" className="text-xs">Laporan Aging</TabsTrigger>}
+          {!readOnly && <TabsTrigger value="by_type" className="text-xs">Rekapitulasi</TabsTrigger>}
         </TabsList>
 
         {/* ── LIST TAB ──────────────────────────────────────────────────── */}
