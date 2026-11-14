@@ -145,6 +145,37 @@ describe.skipIf(!enabled)("Payroll DEV additive receipt guard compatibility",()=
    await pool.query("GRANT UPDATE(approved_at) ON "+table+" TO "+role);
   }
  });
+ it("denies approver writes without company scope and denies posting-column writes",async()=>{
+  const c=await pool.connect();
+  try {
+   await c.query("BEGIN");
+   await c.query("SET LOCAL ROLE "+approver);
+   const rights=await c.query(
+    "SELECT has_column_privilege(current_user,$1,'approved_at','UPDATE') AS can_stamp,"+
+    "has_column_privilege(current_user,$1,'accounting_entry_id','UPDATE') AS can_post_accounting,"+
+    "has_column_privilege(current_user,$1,'payment_entry_id','UPDATE') AS can_post_payment",
+    [table],
+   );
+   expect(rights.rows[0]).toMatchObject({
+    can_stamp:true,can_post_accounting:false,can_post_payment:false,
+   });
+   const receipt=marker+" "+JSON.stringify({
+    actorId:"synthetic",actorEmail:"synthetic@example.test",
+    digest:"a".repeat(64),note:"Synthetic approval receipt",
+   });
+   const missingScope=await c.query(
+    "UPDATE "+table+" SET status='reviewed',approved_at=now(),notes=$1 WHERE id=1 RETURNING id",
+    [receipt],
+   );
+   expect(missingScope.rowCount).toBe(0);
+   await c.query("ROLLBACK");
+  }catch(error){await c.query("ROLLBACK").catch(()=>undefined);throw error;}
+  finally{c.release();}
+  const original=await pool.query("SELECT status,approved_at,accounting_entry_id,payment_entry_id FROM "+table+" WHERE id=1");
+  expect(original.rows[0]).toMatchObject({
+   status:"draft",approved_at:null,accounting_entry_id:null,payment_entry_id:null,
+  });
+ });
  it("preserves column-scoped UPDATE and denies blanket table UPDATE",async()=>{
   const r=await scoped(1,c=>c.query("SELECT has_table_privilege(current_user,$1,'UPDATE') AS table_write,has_column_privilege(current_user,$1,'status','UPDATE') AS status_write,has_column_privilege(current_user,$1,'approved_at','UPDATE') AS approved_write",[table]));
   expect(r.rows[0]).toMatchObject({table_write:false,status_write:true,approved_write:true});
