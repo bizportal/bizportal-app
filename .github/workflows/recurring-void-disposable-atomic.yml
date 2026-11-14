@@ -1,0 +1,55 @@
+name: Recurring Void Disposable Atomic PostgreSQL Gate
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "scripts/ci/recurring-void-atomic-disposable.mjs"
+      - ".github/workflows/recurring-void-disposable-atomic.yml"
+permissions:
+  contents: read
+jobs:
+  disposable-atomic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: synthetic_ci_only
+          POSTGRES_DB: void_ci
+        ports:
+          - 65432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d void_ci"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      RECURRING_VOID_DISPOSABLE_URL: postgresql://postgres:synthetic_ci_only@127.0.0.1:65432/void_ci
+      APP_ENV: development
+      NODE_ENV: test
+      SUPABASE_DATABASE_URL: ""
+      SUPABASE_DATABASE_URL_DEV: ""
+      PAYROLL_DATABASE_URL_PROD: ""
+      GCP_SECRET_MANAGER_BOOTSTRAP_JSON: ""
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Verify disposable PostgreSQL and prototype atomic reversal only
+        run: |
+          set -euo pipefail
+          test "$RECURRING_VOID_DISPOSABLE_URL" = "postgresql://postgres:synthetic_ci_only@127.0.0.1:65432/void_ci"
+          test -z "$SUPABASE_DATABASE_URL"
+          test -z "$SUPABASE_DATABASE_URL_DEV"
+          node scripts/ci/recurring-void-atomic-disposable.mjs
