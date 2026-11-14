@@ -28,6 +28,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Switch } from "@/components/ui/switch";
 import { CreatableCombobox, type ComboboxOption } from "@/components/ui/creatable-combobox";
 import { useCompany } from "@/contexts/CompanyContext";
+import { CompanySwitcher } from "@/components/CompanySwitcher";
 import InvoiceSourcesTab from "./InvoiceSourcesTab";
 import { editableRuleAiFieldsFromRow } from "@/lib/ruleAiMetadata";
 import {
@@ -2549,7 +2550,7 @@ export default function ReconClassificationConfigPage() {
 
   return (
     <div className="space-y-6 p-6">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <button onClick={() => window.history.back()} aria-label="Kembali"
           className="rounded-md p-1.5 text-slate-400 hover:text-white hover:bg-slate-700 transition-colors">
           <ArrowLeft size={18} />
@@ -2560,6 +2561,9 @@ export default function ReconClassificationConfigPage() {
           <p className="text-sm text-slate-400 mt-0.5">
             Kelola master data klasifikasi transaksi rekonsiliasi bank
           </p>
+        </div>
+        <div className="ml-auto shrink-0" data-testid="recon-config-company-switcher">
+          <CompanySwitcher />
         </div>
       </div>
 
