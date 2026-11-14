@@ -53,3 +53,5 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Run real PostgreSQL Draft HTTP test
         run: pnpm --filter @workspace/api-server exec vitest run src/routes/payroll-draft-postgres-http.test.ts
+      - name: Real PostgreSQL isolated Super Admin approval HTTP (no PROD)
+        run: pnpm --filter @workspace/api-server exec vitest run src/routes/payroll-super-admin-approval-real-postgres.test.ts
