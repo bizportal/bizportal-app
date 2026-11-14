@@ -1,5 +1,6 @@
 import {
   db,
+  onMarketplaceFinanceCommit,
   mktPoGoodsReceiptItemsTable,
   mktPoGoodsReceiptsTable,
   mktPoShipmentItemsTable,
@@ -389,8 +390,9 @@ async function evaluateThreeWayMatch(tx: any, invoice: InvoiceRow, lines: Invoic
 export async function submitMarketplaceVendorInvoice(
   invoiceId: number,
   actor: ActorInfo,
+  scopedDb: typeof db = db,
 ): Promise<InvoiceServiceResult & { match?: MatchResult }> {
-  const result = await db.transaction(async (tx) => {
+  const result = await scopedDb.transaction(async (tx) => {
     const [invoice] = await tx.select().from(vendorInvoicesTable)
       .where(eq(vendorInvoicesTable.id, invoiceId)).for("update").limit(1);
     if (!invoice) return { ok: false as const, code: "PO_NOT_FOUND" as const, message: "Invoice tidak ditemukan" };
@@ -428,6 +430,7 @@ export async function submitMarketplaceVendorInvoice(
   });
 
   if (result.ok && !result.alreadyExists) {
+    const publish = () => {
     const action = result.match?.ok ? "invoice_ready_for_ap" : "invoice_submitted";
     void logActivity({
       mktPurchaseOrderId: result.invoice.mktPurchaseOrderId,
@@ -458,10 +461,13 @@ export async function submitMarketplaceVendorInvoice(
       payloadJson: { invoiceId: result.invoice.id, status: result.invoice.status },
       deduplicationKey: `mkt_vendor_invoice:${result.invoice.id}:${result.invoice.status}`,
     });
+    };
+    if (scopedDb === db) publish();
+    else onMarketplaceFinanceCommit(scopedDb, publish);
   }
   return result;
 }
 
-export async function getMarketplaceVendorInvoice(invoiceId: number) {
-  return getInvoiceWithLines(invoiceId);
+export async function getMarketplaceVendorInvoice(invoiceId: number, scopedDb: typeof db = db) {
+  return getInvoiceWithLines(invoiceId, scopedDb);
 }
