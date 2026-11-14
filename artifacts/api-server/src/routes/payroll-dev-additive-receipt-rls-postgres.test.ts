@@ -6,6 +6,7 @@ describe.skipIf(!enabled)("Payroll DEV additive receipt guard compatibility",()=
  let pool:typeof import("@workspace/db")["pool"];
  const table="public.ci_payroll_receipt_probe";
  const role="ci_payroll_receipt_probe";
+ const approver="ci_payroll_approver_probe";
  const marker="[PAYROLL_SUPER_ADMIN_APPROVAL_V1]";
  const company="company_id=NULLIF(current_setting('app.payroll_company_id',true),'')::integer";
  async function scoped<T>(companyId:number,run:(c:{query:(sql:string,args?:unknown[])=>Promise<{rowCount:number|null;rows:any[]}>})=>Promise<T>):Promise<T>{
@@ -29,16 +30,24 @@ describe.skipIf(!enabled)("Payroll DEV additive receipt guard compatibility",()=
   process.env.SUPABASE_DATABASE_URL_DEV=process.env.PAYROLL_PG_E2E_URL!;
   ({pool}=await import("@workspace/db"));
   await pool.query("CREATE ROLE "+role+" NOLOGIN NOBYPASSRLS NOINHERIT");
+  await pool.query("CREATE ROLE "+approver+" NOLOGIN NOBYPASSRLS NOINHERIT");
   await pool.query("CREATE TABLE "+table+" (id int primary key,company_id int not null,status text not null,posting_status text not null,approved_at timestamptz,notes text,accounting_entry_id int,payment_entry_id int)");
   await pool.query("INSERT INTO "+table+" (id,company_id,status,posting_status) VALUES (1,1,'draft','pending'),(2,2,'draft','pending')");
   await pool.query("GRANT USAGE ON SCHEMA public TO "+role);
+  await pool.query("GRANT USAGE ON SCHEMA public TO "+approver);
   await pool.query("GRANT SELECT ON "+table+" TO "+role);
+  await pool.query("GRANT SELECT ON "+table+" TO "+approver);
   await pool.query("GRANT UPDATE(status,approved_at,notes) ON "+table+" TO "+role);
+  await pool.query("GRANT UPDATE(status,approved_at,notes) ON "+table+" TO "+approver);
   await pool.query("ALTER TABLE "+table+" ENABLE ROW LEVEL SECURITY");
   await pool.query("CREATE POLICY ci_read ON "+table+" FOR SELECT TO "+role+" USING ("+company+")");
+  await pool.query("CREATE POLICY ci_approver_read ON "+table+" FOR SELECT TO "+approver+" USING ("+company+")");
   await pool.query("CREATE POLICY ci_legacy_review ON "+table+" FOR UPDATE TO "+role+
    " USING ("+company+" AND status='draft' AND posting_status='pending' AND accounting_entry_id IS NULL AND payment_entry_id IS NULL)"+
    " WITH CHECK ("+company+" AND status='reviewed' AND posting_status='pending' AND accounting_entry_id IS NULL AND payment_entry_id IS NULL)");
+  await pool.query("CREATE POLICY ci_approver_write ON "+table+" FOR UPDATE TO "+approver+
+   " USING ("+company+" AND status='draft' AND approved_at IS NULL AND posting_status='pending' AND accounting_entry_id IS NULL AND payment_entry_id IS NULL)"+
+   " WITH CHECK ("+company+" AND status='reviewed' AND approved_at IS NOT NULL AND posting_status='pending' AND accounting_entry_id IS NULL AND payment_entry_id IS NULL AND coalesce(notes,'') LIKE '%[PAYROLL_SUPER_ADMIN_APPROVAL_V1]%')");
   // AND semantics for restrictive policies prevents a second permissive path.
   await pool.query("CREATE POLICY ci_receipt_gate ON "+table+" AS RESTRICTIVE FOR UPDATE TO "+role+
    " USING (approved_at IS NULL) WITH CHECK ("+
@@ -49,6 +58,8 @@ describe.skipIf(!enabled)("Payroll DEV additive receipt guard compatibility",()=
   if(pool){
    await pool.query("DROP TABLE IF EXISTS "+table+" CASCADE");
    await pool.query("REVOKE USAGE ON SCHEMA public FROM "+role);
+   await pool.query("REVOKE USAGE ON SCHEMA public FROM "+approver);
+   await pool.query("DROP ROLE IF EXISTS "+approver);
    await pool.query("DROP ROLE IF EXISTS "+role);
    await pool.end();
   }
@@ -97,6 +108,40 @@ describe.skipIf(!enabled)("Payroll DEV additive receipt guard compatibility",()=
    const row=await pool.query("SELECT status,approved_at,notes FROM "+table+" WHERE id=1");
    expect(row.rows[0]).toMatchObject({status:"draft",approved_at:null,notes:null});
   } finally {
+   await pool.query("GRANT UPDATE(approved_at) ON "+table+" TO "+role);
+  }
+ });
+ it("proves split writer privileges and tenant RLS without rewriting historical review",async()=>{
+  // Role isolation is exercised on disposable localhost PostgreSQL only.
+  await pool.query("REVOKE UPDATE(approved_at) ON "+table+" FROM "+role);
+  const asApprover=async(companyId:number,sql:string,args:unknown[]=[])=>{
+   const c=await pool.connect();
+   try {
+    await c.query("BEGIN");
+    await c.query("SET LOCAL ROLE "+approver);
+    await c.query("SELECT set_config('app.payroll_company_id',$1,true)",[String(companyId)]);
+    const identity=await c.query("SELECT current_user AS role");
+    expect(identity.rows[0].role).toBe(approver);
+    const result=await c.query(sql,args);
+    await c.query("ROLLBACK");
+    return result;
+   }catch(error){await c.query("ROLLBACK").catch(()=>undefined);throw error;}
+   finally{c.release();}
+  };
+  try {
+   const review=await scoped(1,c=>c.query("UPDATE "+table+" SET status='reviewed',notes='HR reviewed' WHERE id=1 RETURNING approved_at"));
+   expect(review.rowCount).toBe(1);
+   expect(review.rows[0].approved_at).toBeNull();
+   await expect(scoped(1,c=>c.query("UPDATE "+table+" SET status='reviewed',approved_at=now() WHERE id=1"))).rejects.toThrow();
+   const forgedMarker=marker+" "+JSON.stringify({actorId:"ci",actorEmail:"ci@example.test",digest:"a".repeat(64),note:"Synthetic approval from CI"});
+   const cross=await asApprover(1,"UPDATE "+table+" SET status='reviewed',approved_at=now(),notes=$1 WHERE id=2 RETURNING id",[forgedMarker]);
+   expect(cross.rowCount).toBe(0);
+   await expect(asApprover(1,"UPDATE "+table+" SET status='reviewed',approved_at=now(),notes='invalid' WHERE id=1 RETURNING id")).rejects.toThrow();
+   const valid=await asApprover(1,"UPDATE "+table+" SET status='reviewed',approved_at=now(),notes=$1 WHERE id=1 RETURNING id",[forgedMarker]);
+   expect(valid.rowCount).toBe(1);
+   const persisted=await pool.query("SELECT status,approved_at,notes FROM "+table+" WHERE id=1");
+   expect(persisted.rows[0]).toMatchObject({status:"draft",approved_at:null,notes:null});
+  }finally {
    await pool.query("GRANT UPDATE(approved_at) ON "+table+" TO "+role);
   }
  });
