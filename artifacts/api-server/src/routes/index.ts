@@ -86,7 +86,9 @@ router.use((req,res,next) => {
   } else next();
 });
 router.use('/mkt/vendor-invoice',async(req,res,next)=>{
-  if (!isDevelopmentEnvironment() || process.env.NODE_ENV==='production' || process.env.BIZPORTAL_MARKETPLACE_VENDOR_INVOICE_ENABLED_DEV!=='true') {
+  // NODE_ENV=production is also used by the built DEV frontend; require the
+  // explicitly selected DEV APP_ENV and a separate vendor-invoice flag.
+  if (!isDevelopmentEnvironment() || process.env.APP_ENV?.trim().toLowerCase()!=='development' || process.env.BIZPORTAL_MARKETPLACE_VENDOR_INVOICE_ENABLED_DEV!=='true') {
     res.status(404).json({error:'Not found'});return;
   }
   try {const {default: handler}=await import('./mktVendorInvoice');handler(req,res,next);}catch(error){

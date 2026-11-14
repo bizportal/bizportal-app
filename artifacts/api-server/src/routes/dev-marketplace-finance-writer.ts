@@ -13,7 +13,9 @@ const router = Router();
 const validId = (s: string): number | null => /^[1-9]\d{0,9}$/.test(s) ? Number(s) : null;
 
 async function authorize(req: Request, res: Response): Promise<string | null> {
-  if (!isDevelopmentEnvironment() || process.env.NODE_ENV === "production" || process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV !== "true") {
+  // Bundled DEV uses NODE_ENV=production; APP_ENV alone chooses the DB target.
+  // Never allow this writer on an inferred DEV or the actual PROD application.
+  if (!isDevelopmentEnvironment() || process.env.APP_ENV?.trim().toLowerCase() !== "development" || process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV !== "true") {
     res.status(404).json({ error: "Not found" });
     return null;
   }

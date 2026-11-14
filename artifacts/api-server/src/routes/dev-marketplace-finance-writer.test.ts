@@ -18,20 +18,32 @@ beforeEach(()=>{
   for(const v of Object.values(mock))v.mockReset();
   mock.isDev.mockReturnValue(true);mock.session.mockReturnValue({id:"signed"});mock.user.mockResolvedValue({email:"admin@test.dev",role:"super_admin"});mock.query.mockResolvedValue({rows:[{company_id:1}]});
   mock.getInvoice.mockResolvedValue({invoice:{id:77,mktPurchaseOrderId:12,companyId:1,supplierId:5},lines:[]});
+  process.env.APP_ENV="development";
+  delete process.env.NODE_ENV;
   process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV="true";
   delete process.env.BIZPORTAL_MARKETPLACE_ACCOUNTING_HANDOFF_ENABLED_DEV;
 });
 const get=(path:string)=>fetch(base+path);
 const post=(path:string,body:any={})=>fetch(base+path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
 describe("DEV-only restored canonical vendor invoice/AP runtime gates",()=>{
- it("fails closed in PROD, production Node runtime or disabled feature flag",async()=>{
+ it("fails closed for PROD, unspecified APP_ENV or disabled feature flag",async()=>{
    mock.isDev.mockReturnValue(false);
    expect((await get("/api/mkt/admin/vendor-invoices/77")).status).toBe(404);
-   mock.isDev.mockReturnValue(true);process.env.NODE_ENV="production";
+   mock.isDev.mockReturnValue(true);process.env.APP_ENV="production";
+   process.env.NODE_ENV="development";
    expect((await get("/api/mkt/admin/vendor-invoices/77")).status).toBe(404);
-   delete process.env.NODE_ENV;delete process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV;
+   delete process.env.APP_ENV;
+   expect((await get("/api/mkt/admin/vendor-invoices/77")).status).toBe(404);
+   process.env.APP_ENV="development";
+   delete process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV;
    expect((await post("/api/mkt/admin/vendor-invoices/77/match")).status).toBe(404);
    expect(mock.getInvoice).not.toHaveBeenCalled();expect(mock.submitInvoice).not.toHaveBeenCalled();
+ });
+ it("allows production-built Node only with explicit APP_ENV development and a verified session",async()=>{
+   process.env.APP_ENV="development";
+   process.env.NODE_ENV="production";
+   expect((await get("/api/mkt/admin/vendor-invoices/77")).status).toBe(200);
+   expect(mock.getInvoice).toHaveBeenCalledOnce();
  });
  it("requires a signed verified session, not role metadata",async()=>{
    mock.session.mockReturnValue(null);expect((await post("/api/mkt/admin/vendor-invoices/77/match")).status).toBe(401);

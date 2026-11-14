@@ -67,10 +67,25 @@ describe("signed OTP bridge is fail-closed in development", () => {
     } as unknown as Request)).toBeNull();
   });
 
-  it("never opts in DEV if NODE_ENV is production", () => {
+  it("supports production-built Node with explicitly selected DEV application", () => {
     process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
+    process.env.APP_ENV = "development";
     process.env.NODE_ENV = "production";
+    expect(isSignedOtpDevEnabled()).toBe(true);
+    expect(getProductionSession(signedRequest())).toMatchObject({ id: "otp-user-1" });
+  });
+
+  it("fails closed when APP_ENV selects PROD, even with a DEV OTP flag", () => {
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
+    process.env.APP_ENV = "production";
+    process.env.NODE_ENV = "development";
     expect(isSignedOtpDevEnabled()).toBe(false);
-    expect(getProductionSession(signedRequest())).toBeNull();
+  });
+
+  it("requires an explicit APP_ENV, not just NODE_ENV development", () => {
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
+    delete process.env.APP_ENV;
+    process.env.NODE_ENV = "development";
+    expect(isSignedOtpDevEnabled()).toBe(false);
   });
 });

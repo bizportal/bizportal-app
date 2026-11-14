@@ -69,8 +69,10 @@ function getSessionSecret(): string | null {
 
 /** Opt-in only. Never infer DEV OTP eligibility from a cookie or DB credential. */
 export function isSignedOtpDevEnabled(): boolean {
-  return isDevelopmentEnvironment()
-    && process.env.NODE_ENV !== "production"
+  // APP_ENV is the authoritative deployment/DB boundary; NODE_ENV only sets
+  // Node's build/runtime mode and may be production for a bundled DEV server.
+  return process.env.APP_ENV?.trim().toLowerCase() === "development"
+    && isDevelopmentEnvironment()
     && process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV === "true"
     && getExplicitSessionSecret() !== null;
 }
