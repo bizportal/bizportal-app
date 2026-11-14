@@ -449,6 +449,69 @@ export async function listGmailInvoiceCandidates(
   return result.rows.map(candidateView);
 }
 
+export async function reviewGmailInvoiceCandidate(args: {
+  companyId: number;
+  candidateId: number;
+  actorEmail: string;
+  decision: "reject" | "restore";
+  reason?: string;
+}): Promise<{ id: number; status: string }> {
+  const reason = args.reason?.trim() ?? "";
+  if (args.decision === "reject" && (reason.length < 10 || reason.length > 500)) {
+    throw Object.assign(new Error("Alasan penolakan wajib 10–500 karakter."), { status: 400 });
+  }
+  const isReject = args.decision === "reject";
+  // Atomic status guard: concurrent import cannot be rejected after it links
+  // an AP invoice. Review history is appended, never discarded on restore.
+  const updated = await pool.query<{ id: number; status: string }>(
+    `update public.gmail_invoice_candidates
+        set status = case
+             when $4::boolean then 'rejected'
+             when attachment_file_name ~* '^fk([[:space:]_.-]|$)' then 'supporting'
+             when extraction_status <> 'complete'
+               or (extracted_vendor_name is null and extracted_invoice_number is null and extracted_total is null)
+               then 'new'
+             when extraction_status='complete'
+               and nullif(trim(coalesce(extracted_vendor_name,'')),'') is not null
+               and nullif(trim(coalesce(extracted_invoice_number,'')),'') is not null
+               and coalesce(extracted_total,0) > 0
+               and coalesce(extracted_confidence,0) >= 0.65 then 'ready'
+             else 'manual_review'
+           end,
+            extraction_status = case
+              when not $4::boolean and extracted_vendor_name is null
+                and extracted_invoice_number is null and extracted_total is null then 'pending'
+              else extraction_status end,
+            error_message = case when $4::boolean then $5 else null end,
+            extracted_json = jsonb_set(
+              case when jsonb_typeof(extracted_json)='object' then extracted_json else '{}'::jsonb end,
+              '{source_review_history}',
+              (
+                case when jsonb_typeof(extracted_json->'source_review_history')='array'
+                  then extracted_json->'source_review_history' else '[]'::jsonb end
+                || jsonb_build_array(jsonb_build_object(
+                  'decision',case when $4::boolean then 'rejected' else 'restored' end,
+                  'reason',$5::text,'actor',$3::text,'at',now()
+                ))
+              ),
+              true
+            ),
+            updated_at=now()
+      where id=$1 and company_id=$2 and vendor_invoice_id is null
+        and (
+          ($4::boolean and status in ('new','ready','manual_review','failed','duplicate','supporting'))
+          or (not $4::boolean and status='rejected')
+        )
+      returning id,status`,
+    [args.candidateId, args.companyId, args.actorEmail, isReject, reason],
+  );
+  if (updated.rows[0]) return updated.rows[0];
+  throw Object.assign(
+    new Error("Kandidat tidak ditemukan, sudah diimpor, atau statusnya tidak mengizinkan perubahan."),
+    { status: 409, code: "GMAIL_REVIEW_CONFLICT" },
+  );
+}
+
 export async function importGmailInvoiceCandidate(args: {
   companyId: number;
   candidateId: number;
