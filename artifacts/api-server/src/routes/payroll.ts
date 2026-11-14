@@ -4,6 +4,7 @@ import { getPayrollPool, payrollScopedQuery, setPayrollCompanyScope } from "./pa
 import { authorizePayrollCompany } from "./payroll-access";
 import { registerPayrollSetupReadinessRoutes } from "./payroll-setup-readiness";
 import { registerPayrollProdConnectionPreflightRoutes } from "./payroll-prod-connection-preflight";
+import { readPayrollSuperAdminApprovalReceipt } from "./payroll-super-admin-approval-receipt";
 import { getDevSession, getProductionSession, getProductionUser, isDevelopmentEnvironment, type DevAuthUser } from "./dev-auth";
 
 /**
@@ -46,7 +47,12 @@ function serializeRun(row: Record<string, unknown>) {
   let integrityError: string | null = null;
   if (status === "approved" && !accountingId) integrityError = "Payroll disetujui tanpa jurnal akrual.";
   if (status === "paid" && (!accountingId || !paymentId)) integrityError = "Payroll dibayar tanpa jurnal lengkap.";
+  // Restore the legacy read-only receipt distinction without exposing raw notes.
+  // A parsed marker is recorded evidence, not a new approval or payment decision.
+  const receipt = readPayrollSuperAdminApprovalReceipt(row.notes, row.approved_at, status);
   return {
+    approvalType: receipt ? "super_admin" : null,
+    approvedAt: receipt ? String(row.approved_at) : null,
     id: Number(row.id),
     companyId: Number(row.company_id),
     month: Number(row.month),
@@ -67,7 +73,7 @@ router.get("/payroll/runs", async (req: PayrollRequest, res): Promise<void> => {
   const companyId = req.payrollCompanyId!;
   try {
     const rows = await payrollScopedQuery(companyId,
-      `SELECT id, company_id, month, year, status, posting_status, accounting_entry_id, payment_entry_id
+      `SELECT id, company_id, month, year, status, posting_status, accounting_entry_id, payment_entry_id, notes, approved_at
          FROM public.payroll_runs WHERE company_id = $1
         ORDER BY year DESC, month DESC, id DESC LIMIT 250`,
       [companyId],
@@ -85,7 +91,7 @@ router.get("/payroll/runs/:id", async (req: PayrollRequest, res): Promise<void> 
   if (!runId) { res.status(400).json({ message: "ID payroll tidak valid." }); return; }
   try {
     const result = await payrollScopedQuery(companyId,
-      `SELECT id, company_id, month, year, status, posting_status, accounting_entry_id, payment_entry_id
+      `SELECT id, company_id, month, year, status, posting_status, accounting_entry_id, payment_entry_id, notes, approved_at
          FROM public.payroll_runs WHERE company_id = $1 AND id = $2 LIMIT 1`,
       [companyId, runId],
     );

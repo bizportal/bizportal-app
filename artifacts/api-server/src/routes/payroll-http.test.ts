@@ -6,6 +6,9 @@ import { once } from "node:events";
 const state = vi.hoisted(() => ({
   actor: null as null | { id: string; email: string; role: string; companyId: number | null; firstName: string | null; lastName: string | null },
   queries: [] as Array<{ text: string; values: unknown[] }>,
+  runStatus: "draft",
+  approvedAt: null as string | null,
+  notes: null as string | null,
 }));
 
 vi.mock("./dev-auth", () => ({
@@ -19,13 +22,15 @@ vi.mock("@workspace/db", () => ({
   pool: {
     query: async (text: string, values: unknown[]) => {
       state.queries.push({ text, values });
+      const run = { id: 8, company_id: Number(values[0]), month: 11, year: 2026,
+        status: state.runStatus, approved_at: state.approvedAt, notes: state.notes };
       if (text.includes("FROM public.payroll_runs") && text.includes("AND id = $2")) {
         return Number(values[1]) === 8 && Number(values[0]) === 1
-          ? { rows: [{ id: 8, company_id: 1, month: 11, year: 2026, status: "draft" }], rowCount: 1 }
+          ? { rows: [run], rowCount: 1 }
           : { rows: [], rowCount: 0 };
       }
       if (text.includes("FROM public.payroll_runs")) return {
-        rows: [{ id: 8, company_id: Number(values[0]), month: 11, year: 2026, status: "draft" }],
+        rows: [run],
         rowCount: 1,
       };
       if (text.includes("FROM public.payroll_items")) return { rows: [], rowCount: 0 };
@@ -58,6 +63,9 @@ describe("payroll HTTP isolation", () => {
   beforeEach(() => {
     state.actor = null;
     state.queries.length = 0;
+    state.runStatus = "draft";
+    state.approvedAt = null;
+    state.notes = null;
   });
 
   it("rejects requests without session before querying payroll", async () => {
@@ -86,6 +94,69 @@ describe("payroll HTTP isolation", () => {
     expect(own.status).toBe(200);
     expect(((await own.json()) as { run: { companyId: number } }).run.companyId).toBe(1);
     expect(state.queries.every((query) => Number(query.values[0]) === 1)).toBe(true);
+  });
+
+  it("labels reviewed runs with a valid recorded Super Admin receipt but never returns raw notes", async () => {
+    state.actor = { id: "u1", email: "user@example.test", role: "finance", companyId: 1,
+      firstName: null, lastName: null };
+    state.runStatus = "reviewed";
+    state.approvedAt = "2026-11-14T10:00:00Z";
+    state.notes = "Prior note\n[PAYROLL_SUPER_ADMIN_APPROVAL_V1] " + JSON.stringify({
+      actorId: "ci-super-admin", actorEmail: "superadmin@example.test",
+      digest: "a".repeat(64), note: "Reviewed by authorized Super Admin",
+    });
+    const response = await fetch(root + "/api/payroll/runs/8?companyId=1");
+    expect(response.status).toBe(200);
+    const payload = await response.json() as {run:Record<string,unknown>};
+    expect(payload.run).toMatchObject({
+      status: "reviewed", approvalType: "super_admin", approvedAt: "2026-11-14T10:00:00Z",
+    });
+    expect(JSON.stringify(payload)).not.toContain("Prior note");
+    expect(JSON.stringify(payload)).not.toContain("superadmin@example.test");
+    expect(JSON.stringify(payload)).not.toContain("Reviewed by authorized");
+  });
+
+  it("does not misrepresent unsigned reviewed status as approved by Super Admin", async () => {
+    state.actor = { id: "u1", email: "user@example.test", role: "finance", companyId: 1,
+      firstName: null, lastName: null };
+    state.runStatus = "reviewed";
+    state.notes = "HR review without Super Admin receipt";
+    state.approvedAt = null;
+    const response = await fetch(root + "/api/payroll/runs?companyId=1");
+    expect(response.status).toBe(200);
+    const result = await response.json() as {runs:Array<Record<string,unknown>>};
+    expect(result.runs[0]).toMatchObject({status:"reviewed",approvalType:null,approvedAt:null});
+    expect(JSON.stringify(result)).not.toContain("HR review without Super Admin receipt");
+  });
+
+  it("does not present timestamp-only historic review as a verified Super Admin approval", async () => {
+    state.actor = { id: "u1", email: "user@example.test", role: "finance", companyId: 1,
+      firstName: null, lastName: null };
+    state.runStatus = "reviewed";
+    state.approvedAt = "2026-11-14T10:00:00Z";
+    state.notes = "Historical review entered before receipt rollout";
+    const res = await fetch(root + "/api/payroll/runs/8?companyId=1");
+    expect(res.status).toBe(200);
+    const result = await res.json() as {run:Record<string,unknown>};
+    expect(result.run).toMatchObject({status:"reviewed",approvalType:null,approvedAt:null});
+    expect(JSON.stringify(result)).not.toContain("Historical review entered");
+  });
+
+  it("rejects malformed approval marker in legacy notes without exposing it", async () => {
+    state.actor = { id: "u1", email: "user@example.test", role: "finance", companyId: 1,
+      firstName: null, lastName: null };
+    state.runStatus = "reviewed";
+    state.approvedAt = "2026-11-14T10:00:00Z";
+    state.notes = "[PAYROLL_SUPER_ADMIN_APPROVAL_V1] " + JSON.stringify({
+      actorId:"not-verified", actorEmail:"invalid-address", digest:"not-a-digest",
+      note:"This is a forged or malformed receipt",
+    });
+    const res = await fetch(root + "/api/payroll/runs?companyId=1");
+    expect(res.status).toBe(200);
+    const result = await res.json() as {runs:Array<Record<string,unknown>>};
+    expect(result.runs[0]).toMatchObject({status:"reviewed",approvalType:null,approvedAt:null});
+    expect(JSON.stringify(result)).not.toContain("not-verified");
+    expect(JSON.stringify(result)).not.toContain("forged or malformed");
   });
 
   it("refuses financial writes even for a privileged actor", async () => {

@@ -57,3 +57,7 @@ jobs:
         run: pnpm --filter @workspace/api-server exec vitest run src/routes/payroll-super-admin-approval-real-postgres.test.ts
       - name: Signed production login and role-scoped Super Admin approval (disposable DB only)
         run: pnpm --filter @workspace/api-server exec vitest run src/routes/payroll-super-admin-signed-session-postgres.test.ts --maxWorkers=1 --no-file-parallelism
+      - name: Verify DEV HR review policy versus approval receipt guard (disposable PostgreSQL)
+        run: pnpm --filter @workspace/api-server exec vitest run src/routes/payroll-dev-approval-rls-parity-postgres.test.ts --maxWorkers=1 --no-file-parallelism
+      - name: Verify additive restricted receipt RLS and legacy HR compatibility (disposable PostgreSQL)
+        run: pnpm --filter @workspace/api-server exec vitest run src/routes/payroll-dev-additive-receipt-rls-postgres.test.ts --maxWorkers=1 --no-file-parallelism
