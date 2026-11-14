@@ -7,6 +7,7 @@ import { registerPayrollSetupReadinessRoutes } from "./payroll-setup-readiness";
 const state = vi.hoisted(() => ({
   role: "owner",
   companyId: 1,
+  actorCompanyId: 1 as number|null,
   ready: true,
   throwDbError: false,
   calls: [] as Array<{companyId:number;sql:string;args:unknown[]}>,
@@ -31,9 +32,9 @@ describe("Payroll setup readiness via authenticated and company-scoped read-only
     const router=Router();
     router.use((req,_res,next) => {
       const q=req as typeof req & {
-        payrollActor?:{role:string};payrollCompanyId?:number
+        payrollActor?:{role:string;companyId:number|null};payrollCompanyId?:number
       };
-      q.payrollActor={role:state.role};
+      q.payrollActor={role:state.role,companyId:state.actorCompanyId};
       q.payrollCompanyId=state.companyId;
       next();
     });
@@ -51,7 +52,7 @@ describe("Payroll setup readiness via authenticated and company-scoped read-only
   beforeEach(()=>{
     vi.stubEnv("APP_ENV","production");
     vi.stubEnv("PAYROLL_CANONICAL_SETUP_READINESS_ENABLED","true");
-    state.role="owner";state.companyId=1;state.ready=true;state.throwDbError=false;
+    state.role="owner";state.companyId=1;state.actorCompanyId=1;state.ready=true;state.throwDbError=false;
     state.calls.length=0;
   });
   afterEach(()=>vi.unstubAllEnvs());
@@ -84,7 +85,7 @@ describe("Payroll setup readiness via authenticated and company-scoped read-only
     expect(state.calls[0]?.sql).not.toMatch(/\b(INSERT|UPDATE|DELETE|ALTER|DROP|CREATE)\b/i);
   });
   it("isolates a different company with a distinct employee count",async()=>{
-    state.companyId=3;
+    state.companyId=3;state.actorCompanyId=3;
     const data=await (await get("2026","12")).json() as Record<string,unknown>;
     expect(data.companyId).toBe(3);
     expect(data.employeeCount).toBe(1);
@@ -92,10 +93,22 @@ describe("Payroll setup readiness via authenticated and company-scoped read-only
     expect(state.calls[0]?.args).toEqual([3,"2026-12-31"]);
   });
   it("reports no readiness for a company with zero active employees",async()=>{
-    state.companyId=2;
+    state.companyId=2;state.actorCompanyId=2;
     const data=await (await get()).json() as Record<string,unknown>;
     expect(data.employeeCount).toBe(0);
     expect(data.dataComplete).toBe(false);
+  });
+  it("denies Owner cross-company salary readiness, without querying the database",async()=>{
+    state.companyId=3;state.actorCompanyId=1;
+    expect((await get()).status).toBe(403);
+    expect(state.calls).toHaveLength(0);
+  });
+  it("allows server-verified Super Admin scope without pretending it is an Owner",async()=>{
+    state.role="super_admin";state.actorCompanyId=null;state.companyId=3;
+    const r=await get();expect(r.status).toBe(200);
+    const data=await r.json() as Record<string,unknown>;
+    expect(data.companyId).toBe(3);
+    expect(state.calls[0]?.args).toEqual([3,"2026-11-30"]);
   });
   it("blocks staff and finance without querying database",async()=>{
     for(const role of ["staff","finance","admin"]) {
