@@ -301,6 +301,7 @@ const RECONCILED_PAYMENT_CTE = `
       on pmg.id = nullif(to_jsonb(pa)->>'group_id', '')::bigint
     left join public.bank_mutations bm
       on bm.id = nullif(to_jsonb(pa)->>'mutation_id', '')::bigint
+     and bm.company_id = nullif(to_jsonb(pa)->>'company_id', '')::bigint
     where nullif(to_jsonb(pa)->>'company_id', '')::bigint = $1
       and lower(coalesce(to_jsonb(pa)->>'is_active', 'true')) in ('true', 't', '1')
       and (
@@ -1143,6 +1144,7 @@ router.post("/purchase-workflow/vendor-invoices/:id/reset-payment", async (req, 
        from public.payment_allocations pa
        join public.payment_matching_groups pmg on pmg.id = pa.group_id
        left join public.bank_mutations bm on bm.id = pa.mutation_id
+        and bm.company_id = pa.company_id
        where pa.invoice_id = $1
          and pa.company_id = $2
          and coalesce(pa.is_active, true) = true
