@@ -3,6 +3,7 @@ import { pool } from "@workspace/db";
 import { getPayrollPool, payrollScopedQuery, setPayrollCompanyScope } from "./payroll-db";
 import { authorizePayrollCompany } from "./payroll-access";
 import { registerPayrollSetupReadinessRoutes } from "./payroll-setup-readiness";
+import { registerPayrollHistoricalSalaryReviewRoutes } from "./payroll-historical-salary-review";
 import { registerPayrollProdConnectionPreflightRoutes } from "./payroll-prod-connection-preflight";
 import { getDevSession, getProductionSession, getProductionUser, isDevelopmentEnvironment, type DevAuthUser } from "./dev-auth";
 
@@ -60,6 +61,8 @@ function serializeRun(row: Record<string, unknown>) {
 router.use("/payroll", authorize);
 // Stage-one PROD readiness: aggregate-only, default OFF; no payroll writers.
 registerPayrollSetupReadinessRoutes(router);
+// Legacy approved-and-posted historical references: GET only, never imports or approves salary.
+registerPayrollHistoricalSalaryReviewRoutes(router);
 // Port exact legacy read-only scoped PROD connection diagnostic; write paths remain disabled.
 registerPayrollProdConnectionPreflightRoutes(router);
 
