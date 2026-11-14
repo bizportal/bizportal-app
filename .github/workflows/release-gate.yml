@@ -49,6 +49,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: "QRIS #292 financial correction source-only safety gate"
+        run: node scripts/verify-qris292-release-invariants.mjs
+
       - name: API tests
         run: pnpm --filter @workspace/api-server test
 
