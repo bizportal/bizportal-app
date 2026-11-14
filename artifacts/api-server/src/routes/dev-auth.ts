@@ -499,18 +499,48 @@ export function createDevAuthRouter(): Router {
       return;
     }
 
-    const user = getDevSession(request);
-    if (user) {
-      response.json({ user });
+    const legacyUser = getDevSession(request);
+    if (legacyUser) {
+      response.json({ user: legacyUser });
       return;
+    }
+    if (isSignedOtpDevEnabled()) {
+      const signed = getProductionSession(request);
+      if (signed) {
+        try {
+          const verifiedUser = await getProductionUser(signed);
+          if (!verifiedUser) {
+            response.status(403).json({ error: "Forbidden" });
+            return;
+          }
+          response.json({ user: verifiedUser });
+          return;
+        } catch (error) {
+          request.log?.error?.({ error }, "DEV signed OTP user lookup unavailable");
+          response.status(503).json({ error: "Authorization service unavailable" });
+          return;
+        }
+      }
     }
     next();
   });
 
-  router.get("/users/me", (request, response, next) => {
+  router.get("/users/me", async (request, response, next) => {
     if (!isDevelopmentEnvironment()) return next();
 
-    const user = getDevSession(request);
+    let user = getDevSession(request);
+    if (!user && isSignedOtpDevEnabled()) {
+      const signed = getProductionSession(request);
+      if (signed) {
+        try {
+          user = await getProductionUser(signed);
+        } catch (error) {
+          request.log?.error?.({ error }, "DEV signed OTP profile unavailable");
+          response.status(503).json({ error: "Authorization service unavailable" });
+          return;
+        }
+      }
+    }
     if (!user) return next();
 
     return response.json({
