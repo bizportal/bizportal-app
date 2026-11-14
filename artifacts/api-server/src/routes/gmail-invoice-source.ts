@@ -11,6 +11,7 @@ import {
 import {
   importGmailInvoiceCandidate,
   listGmailInvoiceCandidates,
+  reviewGmailInvoiceCandidate,
   syncGmailInvoiceCandidates,
 } from "../lib/gmail-invoice-candidates";
 import { getRuntimeConfig } from "../lib/gmail-invoice-runtime";
@@ -1464,6 +1465,60 @@ router.post(
             ? `Gmail sync gagal: ${error.message}`
             : "Gmail terhubung tetapi pembacaan email belum berhasil.",
         code: "GMAIL_SYNC_FAILED",
+      });
+    }
+  },
+);
+
+router.post(
+  "/recon-classification/invoice-sources/gmail/candidates/:id/review",
+  async (req, res) => {
+    // This status mutation is isolated from read-only previews and disabled by
+    // default, including in DEV. No PROD path can enable the route.
+    if (!isDevelopmentEnvironment()
+        || process.env.BIZPORTAL_GMAIL_REVIEW_ENABLED_DEV !== "true") {
+      res.status(404).json({ error: "Not found" });
+      return;
+    }
+    try {
+      const actor = await requireFinanceAdmin(req);
+      if (!actor) { res.status(401).json({ error: "Unauthorized" }); return; }
+      // Candidate state changes require an explicit verified tenant binding;
+      // unlike read-only endpoints, even unscoped Owner/Super Admin is denied.
+      const companyId = parsePositiveInt(req.body?.company_id);
+      if (!companyId) {
+        res.status(400).json({ error: "company_id wajib", code: "COMPANY_REQUIRED" });
+        return;
+      }
+      if (actor.companyId == null || actor.companyId !== companyId) {
+        res.status(403).json({
+          error: "Perusahaan review tidak sesuai dengan identitas aktif.",
+          code: "COMPANY_SCOPE_FORBIDDEN",
+        });
+        return;
+      }
+      const candidateId = parsePositiveInt(req.params.id);
+      if (!candidateId) {
+        res.status(400).json({ error: "candidate id tidak valid." }); return;
+      }
+      const decision = req.body?.decision;
+      if (decision !== "reject" && decision !== "restore") {
+        res.status(400).json({ error: "Keputusan harus reject atau restore." }); return;
+      }
+      const result = await reviewGmailInvoiceCandidate({
+        companyId, candidateId, actorEmail: actor.email,
+        decision, reason: typeof req.body?.reason === "string" ? req.body.reason : "",
+      });
+      res.json({ ok: true, candidate: result });
+    } catch (error) {
+      const code = error && typeof error === "object" && "status" in error
+        ? Number((error as { status?: unknown }).status) : 503;
+      req.log.error({ error, candidateId: req.params.id }, "Failed to review Gmail candidate");
+      res.status([400, 409].includes(code) ? code : 503).json({
+        error: error instanceof Error ? error.message : "Keputusan kandidat tidak dapat disimpan.",
+        code: error && typeof error === "object" && "code" in error
+          ? String((error as { code?: unknown }).code ?? "GMAIL_REVIEW_FAILED")
+          : "GMAIL_REVIEW_FAILED",
       });
     }
   },
