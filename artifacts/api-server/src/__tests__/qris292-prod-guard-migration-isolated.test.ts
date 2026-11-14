@@ -86,6 +86,41 @@ describe.skipIf(!connectionString)("Issue #292 legacy PROD guard migration readi
         WHERE settlement_id=5738 AND payment_id=856`))
         .rejects.toThrow("FINALIZED_SETTLEMENT_ITEMS_ARE_IMMUTABLE");
       await c.query("ROLLBACK TO SAVEPOINT unauthorized_delete");
+
+      // The migration is for ONE historical correction, not a global bypass.
+      // Construct a separate synthetic reversed settlement with its own
+      // balanced posted compensation, then prove its membership is immutable
+      // even if the caller supplies the same custom correction session flag.
+      await c.query(`
+        INSERT INTO sport_center.payment_settlement_batches
+          (id,company_id,status,settlement_journal_id,settlement_date,
+           provider_code,bank_account_id,gross_amount,mdr_amount,net_amount)
+        VALUES(5741,1,'calculated',7210,'2026-11-06',
+          'mandiri_direct','1640006707220',10000,0,10000);
+        INSERT INTO sport_center.payment_settlement_items
+          (settlement_id,payment_id,item_status,gross_amount)
+        VALUES(5741,99990,'active',10000);
+        INSERT INTO sport_center.accounting_journals
+          (id,journal_type,status,is_reversal,settlement_batch_id,
+           reversal_of_id,debit_amount,credit_revenue_amount)
+        VALUES
+          (7210,'settlement','posted',false,5741,NULL,10000,10000),
+          (7211,'settlement','posted',true,5741,7210,10000,10000);
+        INSERT INTO sport_center.accounting_journal_lines
+          (journal_id,line_type,account_code,account_name,amount)
+        VALUES
+          (7211,'debit','1-1024-CST','Clearing',10000),
+          (7211,'credit','1-1023-CST','Bank',10000);
+        UPDATE sport_center.payment_settlement_batches
+           SET status='reversed' WHERE id=5741;
+      `);
+      await c.query("SAVEPOINT unrelated_batch");
+      await expect(c.query(`
+        UPDATE sport_center.payment_settlement_items
+           SET item_status='reversed'
+         WHERE settlement_id=5741 AND payment_id=99990
+      `)).rejects.toThrow("FINALIZED_SETTLEMENT_ITEMS_ARE_IMMUTABLE");
+      await c.query("ROLLBACK TO SAVEPOINT unrelated_batch");
       await c.query("ROLLBACK");
       const verify=await c.query<{hash:string;status:string;reversals:number;active:number}>(`
         SELECT md5(pg_get_functiondef('sport_center.guard_finalized_settlement_items()'::regprocedure)) AS hash,
