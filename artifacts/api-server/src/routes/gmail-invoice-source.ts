@@ -140,7 +140,11 @@ async function getActor(
   request: Request,
 ): Promise<DevAuthUser | null> {
   if (isDevelopmentEnvironment()) {
-    return getDevSession(request);
+    const legacyActor = getDevSession(request);
+    if (legacyActor) return legacyActor;
+    // Canonical signed OTP DEV bridge returns null unless explicitly enabled.
+    const signedDevSession = getProductionSession(request);
+    return signedDevSession ? getProductionUser(signedDevSession) : null;
   }
 
   const session = getProductionSession(request);
