@@ -53,3 +53,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Run real PostgreSQL Draft HTTP test
         run: pnpm --filter @workspace/api-server exec vitest run src/routes/payroll-draft-postgres-http.test.ts
+      - name: Real PostgreSQL isolated Super Admin approval HTTP (no PROD)
+        run: pnpm --filter @workspace/api-server exec vitest run src/routes/payroll-super-admin-approval-real-postgres.test.ts
+      - name: Signed production login and role-scoped Super Admin approval (disposable DB only)
+        run: pnpm --filter @workspace/api-server exec vitest run src/routes/payroll-super-admin-signed-session-postgres.test.ts --maxWorkers=1 --no-file-parallelism
