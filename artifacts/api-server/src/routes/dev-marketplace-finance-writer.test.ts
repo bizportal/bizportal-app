@@ -2,12 +2,15 @@ import { afterAll,beforeAll,beforeEach,describe,expect,it,vi } from "vitest";
 import express from "express";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { PgDialect } from "drizzle-orm/pg-core";
 const mock=vi.hoisted(()=>({
-  session:vi.fn(),user:vi.fn(),isDev:vi.fn(),query:vi.fn(),roleCheck:vi.fn(),
+  session:vi.fn(),user:vi.fn(),isDev:vi.fn(),query:vi.fn(),roleCheck:vi.fn(),finance:vi.fn(),
   getInvoice:vi.fn(),submitInvoice:vi.fn(),createAp:vi.fn(),getAp:vi.fn(),reviewAp:vi.fn(),waitingAp:vi.fn(),handoffAp:vi.fn(),
 }));
 vi.mock("./dev-auth",()=>({getProductionSession:mock.session,getProductionUser:mock.user,isDevelopmentEnvironment:mock.isDev}));
-vi.mock("@workspace/db",()=>({pool:{query:(...args:any[]) => String(args[0]).includes("row_security_active") ? mock.roleCheck(...args) : mock.query(...args)}}));
+vi.mock("@workspace/db",()=>({
+  withMarketplaceFinanceDevTransaction: mock.finance,
+}));
 vi.mock("../lib/services/mktVendorInvoiceService.js",()=>({getMarketplaceVendorInvoice:mock.getInvoice,submitMarketplaceVendorInvoice:mock.submitInvoice,safeMarketplaceVendorInvoiceView:vi.fn(()=>({id:77}))}));
 vi.mock("../lib/services/mktApPreparationService.js",()=>({createApPreparation:mock.createAp,getApPreparation:mock.getAp,reviewApPreparation:mock.reviewAp,markApPreparationWaitingPayment:mock.waitingAp,createMarketplaceAccountingHandoff:mock.handoffAp,safeApView:vi.fn(()=>({id:88}))}));
 import route from "./dev-marketplace-finance-writer";
@@ -17,7 +20,22 @@ afterAll(async()=>{await new Promise<void>((resolve,reject)=>server.close(e=>e?r
 beforeEach(()=>{
   for(const v of Object.values(mock))v.mockReset();
   mock.isDev.mockReturnValue(true);mock.session.mockReturnValue({id:"signed"});mock.user.mockResolvedValue({email:"admin@test.dev",role:"super_admin",companyId:1});mock.query.mockResolvedValue({rows:[{company_id:1}]});
-  mock.roleCheck.mockResolvedValue({rows:[{db_role:"bizportal_marketplace_login_dev",elevated:false,vendor_rls_active:true,ap_rls_active:true,payment_rls_active:true}]});
+  mock.roleCheck.mockResolvedValue({rows:[{db_role:"bizportal_marketplace_finance_login_dev",elevated:false,vendor_rls_active:true,ap_rls_active:true,payment_rls_active:true}]});
+  mock.finance.mockImplementation(async (companyId:number, fn:(db:unknown)=>Promise<unknown>) => {
+    if (companyId !== 1) throw Error("wrong tenant");
+    const role=(await mock.roleCheck()).rows[0];
+    if (role.db_role !== "bizportal_marketplace_finance_login_dev" || role.elevated ||
+        !role.vendor_rls_active || !role.ap_rls_active || !role.payment_rls_active) {
+      throw Error("role/RLS not ready");
+    }
+    const scopedDb = {
+      execute: (query: unknown) => {
+        const statement=new PgDialect().sqlToQuery(query as any);
+        return mock.query(statement.sql,statement.params);
+      },
+    };
+    return fn(scopedDb);
+  });
   mock.getInvoice.mockResolvedValue({invoice:{id:77,mktPurchaseOrderId:12,companyId:1,supplierId:5},lines:[]});
   process.env.APP_ENV="development";
   delete process.env.NODE_ENV;
@@ -60,7 +78,7 @@ describe("DEV-only restored canonical vendor invoice/AP runtime gates",()=>{
    const response=await get("/api/mkt/admin/vendor-invoices/77");
    expect(response.status).toBe(404);
    expect(mock.getInvoice).not.toHaveBeenCalled();
-   expect(mock.query).toHaveBeenCalledWith(expect.stringContaining("p.company_id=$2"),[77,1]);
+   expect(mock.query).toHaveBeenCalledWith(expect.stringContaining("p.company_id=$2"),[77,1,1]);
  });
  it("does not read another company's AP before scoped DB validation",async()=>{
    mock.getAp.mockResolvedValue({id:88,companyId:2,mktPurchaseOrderId:12,mktGoodsReceiptId:51,vendorInvoiceId:77});
@@ -68,7 +86,7 @@ describe("DEV-only restored canonical vendor invoice/AP runtime gates",()=>{
    const response=await get("/api/mkt/admin/ap-preparations/88");
    expect(response.status).toBe(404);
    expect(mock.getAp).not.toHaveBeenCalled();
-   expect(mock.query).toHaveBeenCalledWith(expect.stringContaining("ap.company_id=$2"),[88,1]);
+   expect(mock.query).toHaveBeenCalledWith(expect.stringContaining("ap.company_id=$2"),[88,1,1,1]);
  });
  it("blocks all cross-company Finance/AP actions before canonical writers",async()=>{
    process.env.BIZPORTAL_MARKETPLACE_ACCOUNTING_HANDOFF_ENABLED_DEV="true";
@@ -98,7 +116,7 @@ describe("DEV-only restored canonical vendor invoice/AP runtime gates",()=>{
  });
  it("rejects the dedicated role if any finance table is not under RLS",async()=>{
    mock.roleCheck.mockResolvedValueOnce({rows:[{
-     db_role:"bizportal_marketplace_login_dev", elevated:false, vendor_rls_active:true,
+     db_role:"bizportal_marketplace_finance_login_dev", elevated:false, vendor_rls_active:true,
      ap_rls_active:false, payment_rls_active:true,
    }]});
    expect((await get("/api/mkt/admin/vendor-invoices/77")).status).toBe(503);
@@ -120,7 +138,7 @@ describe("DEV-only restored canonical vendor invoice/AP runtime gates",()=>{
  it("requires company-scoped vendor invoice and matching PO, prevents null-company writes",async()=>{
    mock.getInvoice.mockResolvedValue({invoice:{id:77,mktPurchaseOrderId:12,companyId:null,supplierId:5},lines:[]});
    expect((await post("/api/mkt/admin/vendor-invoices/77/match")).status).toBe(404);
-   expect(mock.query).toHaveBeenCalledWith(expect.stringContaining("p.company_id=$2"),[77,1]);
+   expect(mock.query).toHaveBeenCalledWith(expect.stringContaining("p.company_id=$2"),[77,1,1]);
    expect(mock.submitInvoice).not.toHaveBeenCalled();
    mock.getInvoice.mockResolvedValue({invoice:{id:77,mktPurchaseOrderId:12,companyId:1,supplierId:5},lines:[]});
    mock.query.mockResolvedValue({rows:[]});
@@ -138,8 +156,11 @@ describe("DEV-only restored canonical vendor invoice/AP runtime gates",()=>{
    expect((await post("/api/mkt/admin/vendor-invoices/77/match")).status).toBe(200);
    expect((await post("/api/mkt/admin/vendor-invoices/77/ap-preparation")).status).toBe(201);
    expect(mock.submitInvoice).toHaveBeenCalledOnce();expect(mock.createAp).toHaveBeenCalledOnce();
+   expect(mock.getInvoice.mock.calls[0][1]).toBe(mock.submitInvoice.mock.calls[0][2]);
+   expect(mock.getInvoice.mock.calls[1][1]).toBe(mock.createAp.mock.calls[0][2]);
+   expect(mock.finance.mock.calls.map(([companyId]) => companyId)).toEqual([1,1]);
    expect(mock.query).toHaveBeenCalledTimes(2);
-   for(const [sql] of mock.query.mock.calls)expect(sql.toLowerCase()).toMatch(/^select /);
+   for(const [sql] of mock.query.mock.calls)expect(sql.toLowerCase()).toMatch(/^\s*select /);
  });
  it("reuses canonical AP without creating a second preparation",async()=>{
    mock.createAp.mockResolvedValue({ok:true,preparation:{id:88},alreadyExists:true});
@@ -164,7 +185,7 @@ describe("DEV-only restored canonical vendor invoice/AP runtime gates",()=>{
    expect(sql).toContain("ap.company_id=p.company_id");
    expect(sql).toContain("vi.mkt_goods_receipt_id=gr.id");
    expect(sql).toContain("vi.three_way_match_status='passed'");
-   expect(params).toEqual([88,1]);
+   expect(params).toEqual([88,1,1,1]);
  });
  it("keeps Accounting handoff OFF by default even for a verified Super Admin", async () => {
    const response = await post("/api/mkt/admin/ap-preparations/88/accounting-handoff");
