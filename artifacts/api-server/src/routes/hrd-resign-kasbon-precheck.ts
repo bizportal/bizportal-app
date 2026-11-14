@@ -13,6 +13,7 @@ export type HrdResignKasbonPrecheck = {
 };
 
 function nonnegativeCount(raw: unknown): number {
+  if (raw === null || raw === undefined || raw === "" || typeof raw === "boolean") throw Error("HRD_KASBON_PREFLIGHT_INVALID_COUNT");
   const n = Number(raw);
   if (!Number.isSafeInteger(n) || n < 0) throw Error("HRD_KASBON_PREFLIGHT_INVALID_COUNT");
   return n;
