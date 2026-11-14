@@ -23,6 +23,11 @@ non-BYPASSRLS Finance role, and unused fixture IDs (`990015001` and
   synthetic matched vendor invoice and Finance-role AP insert, review and
   waiting-payment transitions, draft Payment Request, draft-only Accounting
   handoff, cross-company reads denied, and attempted paid request denied.
+- `20261115_pr50_finance_two_tenant_rls_rehearsal.sql`:
+  creates two independent synthetic Marketplace PO/shipment/receipt/invoice
+  chains in one rolled-back transaction: company 1 (supplier 9) and company 3
+  (supplier 35). Checks positive reads for each tenant and negative reads for
+  the other tenant in both directions. No fixture is retained.
 
 Both use `BEGIN` and finish with `ROLLBACK`. Fixture primary keys are
 explicit to avoid sequence changes, and none of the tested tables have enabled
