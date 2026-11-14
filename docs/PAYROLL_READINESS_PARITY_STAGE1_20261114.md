@@ -6,7 +6,7 @@ Port only the existing PROD `/payroll/setup-readiness` aggregate endpoint from `
 
 ## Security and runtime restrictions
 - Mounted **after** the existing `router.use("/payroll", authorize)` middleware; company scope is resolved from the verified BizPortal session, not directly from untrusted query parameters.
-- Available only for Owner or Super Admin in production, and only when `PAYROLL_CANONICAL_SETUP_READINESS_ENABLED=true`. Flag defaults OFF (404).
+- Available only for Owner or Super Admin in production, and only when `PAYROLL_CANONICAL_SETUP_READINESS_ENABLED=true`. Flag defaults OFF (404). Owner also requires an exact match between the server-verified account company and requested scoped company; Super Admin retains its established cross-company authority.
 - Uses existing `payroll-prod-db.ts` role-scoped read-only connection; no `payroll-db.ts` PROD shared-pool fallback.
 - No action to create draft, apply setup, approve salary, pay payroll, settle kasbon or post accounting.
 - Preserves source's rules for `effectiveThrough`, five required deduction codes, nonnegative values, and disabled financial capabilities in the response.
