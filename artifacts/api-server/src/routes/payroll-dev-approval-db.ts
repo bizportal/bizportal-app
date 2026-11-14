@@ -21,7 +21,7 @@ function approvalUrl(): string | null {
   try { username = decodeURIComponent(url.username); } catch { return null; }
   const host = url.hostname.toLowerCase();
   const direct = host === "db." + DEV_REF + ".supabase.co" && username === LOGIN;
-  const pooler = /^aws-[0-9]+-[a-z0-9-]+\\.pooler\\.supabase\\.com$/.test(host) &&
+  const pooler = /^aws-[0-9]+-[a-z0-9-]+\.pooler\.supabase\.com$/.test(host) &&
     username === LOGIN + "." + DEV_REF;
   if (!(direct || pooler) || !url.password || !url.pathname || url.pathname === "/") return null;
   return raw;
