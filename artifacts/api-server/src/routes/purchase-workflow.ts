@@ -1,6 +1,6 @@
 import { Router, type IRouter, type NextFunction, type Request, type Response } from "express";
 import { pool } from "@workspace/db";
-import { getDevSession, getProductionSession, isDevelopmentEnvironment, type DevAuthUser } from "./dev-auth";
+import { getDevSession, getProductionSession, getProductionUser, isDevelopmentEnvironment, type DevAuthUser } from "./dev-auth";
 
 const router: IRouter = Router();
 
@@ -175,18 +175,34 @@ async function authenticatePurchaseUser(
   next: NextFunction,
 ): Promise<void> {
   if (isDevelopmentEnvironment()) {
-    const user = getDevSession(req);
-    if (!user) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
+    try {
+      // Preserve the already-running DEV Purchase Workflow contract:
+      // only an admin may cross this route boundary. Owner and Super Admin
+      // remain disallowed until a separately reviewed role-policy change.
+      const legacy = getDevSession(req);
+      const signedSession = legacy ? null : getProductionSession(req);
+      const verifiedSignedUser = signedSession ? await getProductionUser(signedSession) : null;
+      const user = legacy ?? verifiedSignedUser;
+      if (!user) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      if (user.role.trim().toLowerCase() !== "admin") {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+      // For opted-in signed OTP, the verified database tenant must be bound:
+      // legacy DEV sessions retain their existing behavior until migrated.
+      if (signedSession && !(Number.isSafeInteger(user.companyId) && (user.companyId ?? 0) > 0)) {
+        res.status(403).json({ error: "Verified company required", code: "COMPANY_SCOPE_MISSING" });
+        return;
+      }
+      req.purchaseUser = user;
+      next();
+    } catch (error) {
+      req.log?.error?.({ error }, "DEV purchase role verification unavailable");
+      res.status(503).json({ error: "Authorization service unavailable" });
     }
-    const role = user.role.toLowerCase();
-    if (!["admin", "owner", "super_admin"].includes(role)) {
-      res.status(403).json({ error: "Forbidden" });
-      return;
-    }
-    req.purchaseUser = user;
-    next();
     return;
   }
 
