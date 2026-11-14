@@ -1,0 +1,82 @@
+name: Isolated DEV Shadow HTTP Gate
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - artifacts/api-server/src/index.ts
+      - artifacts/api-server/src/lib/dev-shadow-policy.ts
+      - artifacts/api-server/src/lib/dev-shadow-policy.test.ts
+      - .github/workflows/isolated-dev-shadow-http.yml
+
+permissions:
+  contents: read
+
+jobs:
+  shadow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      APP_ENV: development
+      NODE_ENV: test
+      NODE_OPTIONS: --max-old-space-size=4096
+      SUPABASE_DATABASE_URL_DEV: ""
+      SUPABASE_DATABASE_URL: ""
+      DATABASE_URL: ""
+      PAYROLL_DATABASE_URL_PROD: ""
+      PAYROLL_DATABASE_URL_DEV: ""
+      FONNTE_TOKEN: ""
+      GCP_SECRET_MANAGER_BOOTSTRAP_JSON: ""
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Compile API only
+        run: pnpm --filter @workspace/api-server run build
+      - name: Start no-network read-only Docker shadow and assert HTTP behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name bizportal-shadow-check \
+            --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+            -v "$PWD":"$PWD":ro -w "$PWD" \
+            -e APP_ENV=development -e NODE_ENV=test \
+            -e BIZPORTAL_SHADOW_MODE=true -e HOST=127.0.0.1 -e PORT=38888 \
+            -e FLEET_EMBEDDED_REMINDER_ENABLED=true \
+            node:22-bookworm node artifacts/api-server/dist/index.mjs
+          trap 'docker logs bizportal-shadow-check 2>&1 | tail -40; docker rm -f bizportal-shadow-check >/dev/null 2>&1 || true' EXIT
+          for i in $(seq 1 30); do
+            if docker exec bizportal-shadow-check node -e "fetch('http://127.0.0.1:38888/api/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then break; fi
+            sleep 1
+          done
+          docker exec bizportal-shadow-check node --input-type=module -e '
+            const base="http://127.0.0.1:38888";
+            const routes=[
+              ["/api/health/live",200],
+              ["/api/advances?companyId=1",401],
+              ["/api/payroll/runs?companyId=1",401],
+              ["/api/payroll/capabilities?companyId=1",401],
+            ];
+            for (const [path,want] of routes) {
+              const result=await fetch(base+path);
+              if (result.status!==want) throw new Error(path+" expected "+want+" got "+result.status);
+              console.log("SHADOW_HTTP_PASS",path,result.status);
+            }
+          '
+          # Run past both legacy 20s and 30s scheduler startup windows.
+          sleep 36
+          test "$(docker inspect -f '{{.State.Running}}' bizportal-shadow-check)" = true
+          if docker logs bizportal-shadow-check 2>&1 | grep -E 'Kas Besar SC legacy Rule AI backfill completed|QRIS Sport Center auto-candidate sweep completed|Fleet auto WA reminder sweep completed|Embedded Fleet reminder scheduler is enabled'; then
+            echo SHADOW_WORKER_STARTED
+            exit 1
+          fi
+          echo SHADOW_NO_EMBEDDED_WORKERS_PASS
