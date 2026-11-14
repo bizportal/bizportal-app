@@ -50,6 +50,13 @@ describe("bank mutation read authorization", () => {
     }
   });
 
+  it("compares canonical QRIS settlement bigint IDs to text candidate IDs safely", () => {
+    const src = readFileSync(resolve(process.cwd(), "src/routes/bank-reconciliation.ts"), "utf8");
+    expect(src).not.toContain("settlement_batch.id = settlement_match.candidate_id");
+    expect(src.split("settlement_batch.id::text = settlement_match.candidate_id").length - 1).toBe(2);
+    expect(src).toContain("rule_match.candidate_id = rule.id::text");
+  });
+
   it("honors signed OTP sessions ahead of the development-only legacy session", () => {
     const src=readFileSync(resolve(process.cwd(),"src/routes/bank-reconciliation.ts"),"utf8");
     const start=src.indexOf("async function getApprovalActor(request:");

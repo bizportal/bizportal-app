@@ -5088,7 +5088,7 @@ const mutationListColumns = `
         join sport_center.payment_settlement_batches settlement_batch
           on settlement_match.candidate_type = 'qris_settlement'
          and settlement_match.candidate_source = 'sport_center.payment_settlement_batches'
-         and settlement_batch.id = settlement_match.candidate_id
+         and settlement_batch.id::text = settlement_match.candidate_id
         join sport_center.accounting_journals settlement_journal
           on settlement_journal.id = settlement_batch.settlement_journal_id
        where settlement_match.mutation_id = bm.id
@@ -5153,7 +5153,7 @@ const mutationListColumns = `
       join sport_center.payment_settlement_batches settlement_batch
         on settlement_match.candidate_type = 'qris_settlement'
        and settlement_match.candidate_source = 'sport_center.payment_settlement_batches'
-       and settlement_batch.id = settlement_match.candidate_id
+       and settlement_batch.id::text = settlement_match.candidate_id
       join sport_center.accounting_journals settlement_journal
         on settlement_journal.id = settlement_batch.settlement_journal_id
        and settlement_journal.status::text = 'posted'
@@ -5356,7 +5356,7 @@ const mutationListColumns = `
         join public.recon_rules rule
           on rule_match.candidate_type = 'recon_rule'
          and rule_match.candidate_source = 'public.recon_rules'
-         and rule_match.candidate_id = rule.id
+         and rule_match.candidate_id = rule.id::text
          and rule.company_id = bm.company_id
          and rule.is_active = true
          and rule.candidate_requirement = 'not_required'
