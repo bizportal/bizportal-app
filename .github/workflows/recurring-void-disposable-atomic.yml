@@ -4,6 +4,7 @@ on:
     branches: [main]
     paths:
       - "scripts/ci/recurring-void-atomic-disposable.mjs"
+      - "scripts/ci/recurring-void-posted-lines-regression.mjs"
       - ".github/workflows/recurring-void-disposable-atomic.yml"
 permissions:
   contents: read
@@ -53,3 +54,4 @@ jobs:
           test -z "$SUPABASE_DATABASE_URL"
           test -z "$SUPABASE_DATABASE_URL_DEV"
           node scripts/ci/recurring-void-atomic-disposable.mjs
+          node scripts/ci/recurring-void-posted-lines-regression.mjs
