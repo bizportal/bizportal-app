@@ -187,6 +187,73 @@ describe("existing DEV document template API",()=>{
     expect(mocked.query.mock.calls.filter(call=>String(call[0]).includes("from public.purchase_documents"))
       .every(call=>call[1][1]===1)).toBe(true);
   });
+  it.each(["delivery_note","manifest","packing_list"] as const)(
+    "renders %s using existing company-scoped Marketplace shipment data with correct freight columns",
+    async(type)=>{
+      mocked.query.mockImplementation(async(sql:string,args?:unknown[])=>{
+        if(sql.includes("from public.companies"))return {rows:[CST]};
+        if(sql.includes("from public.mkt_po_shipments sh") &&
+           !sql.includes("from public.mkt_po_shipment_items si"))return {rows:[{
+          id:32,shipment_number:"MKT-SHP-32",po_number:"MKT-PO-22",
+          shipment_status:"delivered",created_at:"2026-11-14",
+          destination:"Tangerang",origin:"CGK",tracking_number:"TRK-32",
+        }]};
+        if(sql.includes("from public.mkt_po_shipment_items si"))return {rows:[{
+          description:"Kotak Produk <VIP>",quantity:"2.00",unit:"BOX",notes:"Segel utuh",
+        }]};
+        if(sql.includes("from public.app_config"))return {rows:[]};
+        return {rows:[]};
+      });
+      const r=await fetch(url("/"+type+"/transaction-preview/32?companyId=1"),{headers});
+      expect(r.status).toBe(200);
+      const html=await r.text();
+      expect(html).toContain("MKT-SHP-32");
+      expect(html).toContain("MKT-PO-22");
+      expect(html).toContain("Tangerang");
+      expect(html).toContain("Kotak Produk &lt;VIP&gt;");
+      expect(html).toContain("<td>2.00</td><td>BOX</td><td>Segel utuh</td>");
+      expect(html).not.toContain("<td>0</td><td>0</td>");
+      expect(html).not.toContain("Total: Rp");
+      expect(html).toContain("PRATINJAU TRANSAKSI");
+      expect(html).toContain("@page{size:A4");
+      expect(html).toContain("src='/cst-logo.png'");
+      const dataQueries=mocked.query.mock.calls.filter(c=>String(c[0]).includes("public.mkt_po_"));
+      expect(dataQueries).toHaveLength(2);
+      expect(dataQueries.every(c=>c[1][1]===1 && c[1][0]===32)).toBe(true);
+      expect(dataQueries.every(c=>!/\binsert\b|\bupdate\b|\bdelete\b/i.test(String(c[0])))).toBe(true);
+    },
+  );
+  it("rejects shipment document access across companies and anonymous access before DB reads",async()=>{
+    mocked.role="finance";mocked.companyId=1;mocked.query.mockClear();
+    expect((await fetch(url("/manifest/transaction-preview/32?companyId=3"),{headers})).status).toBe(403);
+    expect(mocked.query).not.toHaveBeenCalled();
+    expect((await fetch(url("/manifest/transaction-preview/32?companyId=1"))).status).toBe(401);
+    expect(mocked.query).not.toHaveBeenCalled();
+  });
+  it("refuses shipment rows not assigned to the authenticated company",async()=>{
+    mocked.query.mockImplementation(async(sql:string)=>{
+      if(sql.includes("from public.companies"))return {rows:[CST]};
+      return {rows:[]};
+    });
+    const r=await fetch(url("/packing_list/transaction-preview/32?companyId=1"),{headers});
+    expect(r.status).toBe(404);
+    expect(mocked.query.mock.calls.some(c=>/\binsert\b|\bupdate\b|\bdelete\b/i.test(String(c[0])))).toBe(false);
+  });
+  it("refuses invalid or empty shipment preview instead of issuing an empty document",async()=>{
+    mocked.query.mockImplementation(async(sql:string)=>{
+      if(sql.includes("from public.companies"))return {rows:[CST]};
+      if(sql.includes("from public.mkt_po_shipments sh"))return {rows:[{
+        id:32,shipment_number:"MKT-SHP-32",po_number:"MKT-PO-22",
+        shipment_status:"planned",created_at:"2026-11-14",
+        destination:null,origin:null,tracking_number:null,
+      }]};
+      return {rows:[]};
+    });
+    expect((await fetch(url("/manifest/transaction-preview/invalid?companyId=1"),{headers})).status).toBe(400);
+    const r=await fetch(url("/manifest/transaction-preview/32?companyId=1"),{headers});
+    expect(r.status).toBe(422);
+    expect(mocked.query.mock.calls.every(c=>!/\binsert\b|\bupdate\b|\bdelete\b/i.test(String(c[0])))).toBe(true);
+  });
   it("refuses another company or anonymous PO transaction before accessing it",async()=>{
     mocked.role="finance";mocked.companyId=1;
     mocked.query.mockClear();
