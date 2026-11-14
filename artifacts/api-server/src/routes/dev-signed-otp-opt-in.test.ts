@@ -61,10 +61,10 @@ describe("signed OTP bridge is fail-closed in development", () => {
     const valid = getProductionSession(signedRequest());
     expect(valid).toMatchObject({ id: "otp-user-1", email: "admin@example.com" });
     expect(getProductionSession(signedRequest(Date.now() - 1000))).toBeNull();
-    const tampered = signedRequest();
-    tampered.headers.cookie = String(tampered.headers.cookie).replace("otp_user", "fake_user");
-    // A malformed or modified cookie cannot change an authenticated actor.
-    expect(getProductionSession({headers:{cookie:"bizportal_supabase_session=forged.invalid"}} as Request)).toBeNull();
+    // A forged signed session cannot authenticate.
+    expect(getProductionSession({
+      headers: { cookie: "bizportal_supabase_session=forged.invalid" },
+    } as unknown as Request)).toBeNull();
   });
 
   it("never opts in DEV if NODE_ENV is production", () => {
