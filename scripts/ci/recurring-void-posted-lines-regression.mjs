@@ -122,12 +122,14 @@ try {
   console.log("PASS candidate reversal unique index requires cleanup and blocks duplicates");
   // Reproduce a ledger-level gap: balanced header constraints alone do NOT
   // validate debit/credit sums over individual journal lines.
-  await pool.query("INSERT INTO ci_posted.realistic_lines(journal_id,line_type,amount) VALUES (1,'debit',60),(1,'credit',100)");
+  const draftJournalId=(await pool.query("SELECT id FROM ci_posted.realistic_headers WHERE status='draft' AND is_reversal=false ORDER BY id LIMIT 1")).rows[0]?.id;
+  assert.ok(Number.isInteger(draftJournalId));
+  await pool.query("INSERT INTO ci_posted.realistic_lines(journal_id,line_type,amount) VALUES ($1,'debit',60),($1,'credit',100)",[draftJournalId]);
   const sums=async(id)=>(await pool.query(
     "SELECT COALESCE(sum(amount) FILTER(WHERE line_type='debit'),0)::numeric AS debit, COALESCE(sum(amount) FILTER(WHERE line_type='credit'),0)::numeric AS credit FROM ci_posted.realistic_lines WHERE journal_id=$1",
     [id],
   )).rows[0];
-  const wrong=await sums(1);
+  const wrong=await sums(draftJournalId);
   assert.equal(Number(wrong.debit),60);
   assert.equal(Number(wrong.credit),100);
   console.log("PASS real-style column constraints alone permit inconsistent journal line totals");
@@ -154,10 +156,10 @@ try {
       )
     $verify$;
   `);
-  assert.equal((await pool.query("SELECT ci_posted.check_postable(1) AS ok")).rows[0].ok,false);
-  await pool.query("INSERT INTO ci_posted.realistic_lines(journal_id,line_type,amount) VALUES (1,'debit',40)");
-  assert.equal((await pool.query("SELECT ci_posted.check_postable(1) AS ok")).rows[0].ok,true);
-  await pool.query("UPDATE ci_posted.realistic_headers SET status='posted' WHERE id=1");
+  assert.equal((await pool.query("SELECT ci_posted.check_postable($1) AS ok",[draftJournalId])).rows[0].ok,false);
+  await pool.query("INSERT INTO ci_posted.realistic_lines(journal_id,line_type,amount) VALUES ($1,'debit',40)",[draftJournalId]);
+  assert.equal((await pool.query("SELECT ci_posted.check_postable($1) AS ok",[draftJournalId])).rows[0].ok,true);
+  await pool.query("UPDATE ci_posted.realistic_headers SET status='posted' WHERE id=$1",[draftJournalId]);
   console.log("PASS candidate pre-posting gate rejects mismatch and accepts reconciled lines");
   console.log("POSTED_LINES_ORDER_REGRESSION_PASS 9 checks");
 } finally {
