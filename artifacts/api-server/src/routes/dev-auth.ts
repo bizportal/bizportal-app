@@ -358,6 +358,16 @@ export async function getProductionUser(session: ProductionSession): Promise<Dev
   const email = typeof userData.email === "string" ? userData.email.trim().toLowerCase() : "";
   const role = typeof userData.role === "string" ? userData.role.trim().toLowerCase() : "";
   if (email !== session.email || !role) return null;
+  // DEV opt-in must fail closed for inactive or ambiguous accounts. Do not change
+  // the existing PROD session lookup behavior during source migration.
+  if (isSignedOtpDevEnabled()) {
+    const status = typeof userData.status === "string"
+      ? userData.status.trim().toLowerCase()
+      : null;
+    if (userData.is_active !== true || (status !== null && status !== "active")) {
+      return null;
+    }
+  }
 
   const rawCompanyId = userData.company_id ?? userData.companyId;
   const parsedCompanyId = rawCompanyId === null || rawCompanyId === undefined
