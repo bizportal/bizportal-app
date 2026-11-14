@@ -7,6 +7,9 @@
 - Canonical repository: `bizportal/bizportal-app@8331aae4a0027cc3516aa26085fed327b55774b9`, containing merged Kasbon PR #32. GitHub Release Gate PASS.
 - Git tree comparison: legacy 5,219 paths; canonical 889 paths. Many legacy paths are build/test or non-runtime files; counts alone do not establish feature loss.
 
+## Source-preflight result on canonical baseline
+The 16 explicit source checks currently report **4 PRESENT / 12 MISSING** (static code evidence only). The four present contracts are the scoped historical kasbon API, its role-scoped PROD reader, the unverified balance UI label, and the read-only Rule AI preview route. The absent checks cover HRD, Payroll PROD extensions, and group allocations. **Even 16/16 PRESENT would not prove runtime behavioral parity.**
+
 ## Confirmed source-level gaps (not yet behaviorally verified)
 | Area | Existing legacy entrypoint/module | Canonical status | Impact to prove |
 | --- | --- | --- | --- |
