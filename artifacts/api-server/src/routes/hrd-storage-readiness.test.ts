@@ -49,6 +49,8 @@ describe("pinned private HRD storage metadata preflight",()=>{
     const [url,request]=fetcher.mock.calls[0] as [string,RequestInit];
     expect(url).toBe("https://nzdweipzckfszczzqtuw.supabase.co/storage/v1/bucket/bizportal-hrd-documents-prod");
     expect(request.method).toBe("GET");
+    expect(request.redirect).toBe("error");
+    expect(request.cache).toBe("no-store");
     expect(request.body).toBeUndefined();
     expect(JSON.stringify({ ready:true })).not.toContain("example-fake-credential");
   });
