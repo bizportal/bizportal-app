@@ -168,7 +168,7 @@ describe("existing DEV document template API",()=>{
     }
     expect(mocked.query.mock.calls.some(c=>String(c[0]).includes("insert"))).toBe(false);
   });
-  it.each(["invoice","po","delivery_note","manifest","kontrak"] as const)("previews centered %s with CST logo and print CSS, no database writes",(async type=>{
+  it.each(["invoice","quotation","po","delivery_note","packing_list","manifest","mou","kontrak","nda","sla"] as const)("previews centered %s with CST logo and print CSS, no database writes",(async type=>{
     const r=await fetch(url("/"+type+"/preview?companyId=1"),{
       method:"POST",headers:{...headers,"content-type":"application/json"},
       body:JSON.stringify({documentType:type,footerText:"Selesai",primaryColor:"#1e3a6e"}),
