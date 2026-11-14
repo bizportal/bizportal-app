@@ -86,6 +86,9 @@ async function clean() {
   for (const table of [handoff, pr, ap, vi]) {
     await pool.query("DROP TABLE IF EXISTS " + table + " CASCADE");
   }
+  // The disposable role also owns a schema-level USAGE grant. Revoke it
+  // before dropping the role or PostgreSQL correctly reports 2BP01.
+  await pool.query("REVOKE USAGE ON SCHEMA public FROM " + role);
   await pool.query("DROP ROLE IF EXISTS " + role);
 }
 try {
