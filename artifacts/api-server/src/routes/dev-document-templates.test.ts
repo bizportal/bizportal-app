@@ -61,7 +61,7 @@ describe("existing DEV document template API",()=>{
     }
     const invoice=data.find(x=>x.documentType==="invoice")!;
     expect(invoice.logoUrl).toContain("cst-logo.png");
-    expect(String(invoice.companyAddress)).toContain("Gedung Sport Center");
+    expect(String(invoice.companyAddress)).toContain("GEDUNG SPORT CENTER");
     expect(String(invoice.companyAddress)).not.toContain("Ternate");
     expect(mocked.query.mock.calls.every(c=>!String(c[0]).includes("insert"))).toBe(true);
   });
@@ -133,7 +133,7 @@ describe("existing DEV document template API",()=>{
       expect(loaded.status).toBe(200);
       const config=await loaded.json() as Record<string,unknown>;
       expect(config.headerText).toBe("PO CST");
-      expect(config.companyAddress).toContain("Gedung Sport Center");
+      expect(config.companyAddress).toContain("GEDUNG SPORT CENTER");
     }
     expect(writeCount).toBe(2); // idempotent upsert to same key, never new transaction
     const sqlCall=mocked.query.mock.calls.find(c=>String(c[0]).includes("insert into public.app_config"));
@@ -158,7 +158,7 @@ describe("existing DEV document template API",()=>{
     expect(html).toContain("text-align:center");
     expect(html).toContain("@page{size:A4");
     expect(html).toContain("cst-logo.png");
-    expect(html).toContain("Gedung Sport Center");
+    expect(html).toContain("GEDUNG SPORT CENTER");
     expect(html).toContain("BUKAN DOKUMEN TRANSAKSI");
     expect(mocked.query.mock.calls.some(c=>String(c[0]).includes("insert"))).toBe(false);
   }));
