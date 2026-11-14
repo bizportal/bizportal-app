@@ -346,6 +346,15 @@ export async function getProductionUser(session: ProductionSession): Promise<Dev
   );
   const userData = result.rows[0]?.user_data;
   if (!userData) return null;
+  // Revalidate active account state on every authenticated request. A signed
+  // cookie must not preserve access after HRD/admin deactivates the account.
+  if (userData.is_active !== true && userData.isActive !== true) return null;
+  const accountStatus = typeof userData.status === "string"
+    ? userData.status.trim().toLowerCase()
+    : typeof userData.user_status === "string"
+      ? userData.user_status.trim().toLowerCase()
+      : null;
+  if (accountStatus !== null && accountStatus !== "active") return null;
 
   const email = typeof userData.email === "string" ? userData.email.trim().toLowerCase() : "";
   const role = typeof userData.role === "string" ? userData.role.trim().toLowerCase() : "";
