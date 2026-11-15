@@ -113,6 +113,32 @@ describe("signed OTP HTTP admin middleware under explicit DEV opt-in", () => {
     return { status: result.status, body: JSON.parse(result.body) as Record<string, unknown> };
   }
 
+  it("disables legacy DEV account enumeration and email-only login when OTP is ON", async () => {
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
+    const address = server.address();
+    if (!address || typeof address === "string") throw Error("Missing test port");
+    const base = "http://127.0.0.1:" + address.port;
+    const users = await fetch(base + "/auth/dev-users");
+    expect(users.status).toBe(404);
+    const login = await fetch(base + "/auth/dev-login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "admin@example.com" }),
+    });
+    expect(login.status).toBe(404);
+    expect(login.headers.get("set-cookie")).toBeNull();
+    expect(mocks.query).not.toHaveBeenCalled();
+  });
+
+  it("revokes legacy cookie authorization once signed OTP is enabled", async () => {
+    const legacy = await legacyDevCookie();
+    expect((await call(legacy)).status).toBe(200);
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
+    const protectedRoute = await call(legacy);
+    expect(protectedRoute.status).toBe(401);
+    expect(mocks.query).not.toHaveBeenCalled();
+  });
+
   it("rejects signed OTP cookies by default with no user database query", async () => {
     const res = await call(cookie());
     expect(res.status).toBe(401);
@@ -185,8 +211,10 @@ describe("signed OTP HTTP admin middleware under explicit DEV opt-in", () => {
   });
 
   it("rejects a signed OTP session when its database user ID is replaced", async () => {
-    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
+    // The legacy cookie was issued BEFORE enabling signed OTP. Once enabled,
+    // the old email-only route cannot issue a replacement cookie.
     const both = await legacyDevCookie() + "; " + cookie();
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
     mocks.query.mockResolvedValue({ rows: [{ user_data: {
       id: "different-user-id", email: "admin@example.com", role: "admin",
       company_id: 7, is_active: true, status: "active",
