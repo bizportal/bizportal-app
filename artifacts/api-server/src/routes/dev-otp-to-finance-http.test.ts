@@ -9,6 +9,7 @@ const m = vi.hoisted(() => ({
   invoiceSubmit: vi.fn(), ap: vi.fn(), currentCompany: 1, userActive: true,
   userId: "admin-otp-1", userRole: "super_admin", codeHash: "",
   duplicateIdentity: false, duplicateIdentityInactive: false,
+  primaryStatus: "active", duplicateStatus: "active",
   consumed: false, attempts: 0, scopedCalls: [] as {sql:string;params:unknown[]}[],
 }));
 vi.mock("@workspace/db", () => ({
@@ -85,6 +86,7 @@ beforeEach(() => {
   for (const v of [m.query,m.email,m.finance,m.getInvoice,m.invoiceSubmit,m.ap]) v.mockReset();
   m.currentCompany = 1; m.userActive = true;
   m.userId = "admin-otp-1"; m.userRole = "super_admin"; m.duplicateIdentity=false; m.duplicateIdentityInactive=false;
+  m.primaryStatus = "active"; m.duplicateStatus = "active";
   m.codeHash = "";m.consumed = false;m.attempts=0;m.scopedCalls.length=0;
   m.email.mockResolvedValue(undefined);
   m.query.mockImplementation(async (q:string, args?:unknown[]) => {
@@ -113,16 +115,19 @@ beforeEach(() => {
     if (q.includes("to_jsonb(u)")) {
       const first = {user_data:{
         id:m.userId,email:"admin-otp@example.invalid",role:m.userRole,
-        status:m.userActive?"active":"inactive",
+        status:m.userActive?m.primaryStatus:"inactive",
         is_active:m.userActive,company_id:m.currentCompany,
       }};
       const duplicate = {user_data:{
         id:"duplicate-admin",email:"ADMIN-OTP@example.invalid",role:"admin",
-        status:"active",is_active:true,company_id:null,
+        status:m.duplicateStatus,is_active:!m.duplicateIdentityInactive,company_id:null,
       }};
-      const activeOnlySql = q.includes("u.is_active = true") && q.includes("lower(btrim(u.status))");
-      return { rows: m.duplicateIdentity && !(m.duplicateIdentityInactive && activeOnlySql)
-        ? [first, duplicate] : [first] };
+      const competingActive = m.duplicateIdentity && !m.duplicateIdentityInactive;
+      // Any competing is_active=true account blocks signed OTP regardless of
+      // potentially inconsistent whitespace or status text.
+      if (q.includes("not exists")) return { rows: competingActive ? [] : [first] };
+      if (q.includes("limit 2")) return { rows: competingActive ? [first, duplicate] : [first] };
+      return { rows: [first] };
     }
     if (q.includes("insert into public.bizportal_email_otp_codes")) return {rows:[],rowCount:1};
     throw new Error("Unexpected DB query in isolated OTP test");
@@ -256,20 +261,35 @@ describe("signed Super Admin OTP -> canonical Finance route integrated HTTP boun
 });
 
 describe("Issue #76 duplicate normalized Admin email identity regression", () => {
-  it("normalizes padded active status in signed-OTP account and duplicate SQL lookups", async () => {
+  it("accepts a sole active identity with padded status via TypeScript checks", async () => {
+    m.primaryStatus = "\t active \t";
     const cookie = await otpLogin();
     expect((await getInvoice(cookie)).status).toBe(200);
     const queries = m.query.mock.calls.map(([sql]) => String(sql))
       .filter(sql => sql.includes("from public.users u") && sql.includes("not exists"));
-    // Source-only contract: Postgres must recognize ' active ' the same way
-    // the existing TypeScript eligibility check trims a status string.
     expect(queries.length).toBeGreaterThanOrEqual(2);
     for (const sql of queries) {
-      expect(sql).toContain("lower(btrim(u.status)) = 'active'");
-      expect(sql).toContain("lower(btrim(dupe.status)) = 'active'");
-      expect(sql).not.toContain("lower(u.status) = 'active'");
-      expect(sql).not.toContain("lower(dupe.status) = 'active'");
+      expect(sql).toContain("u.is_active = true");
+      expect(sql).toContain("dupe.is_active = true");
+      expect(sql).not.toContain("dupe.status");
+      expect(sql).not.toContain("lower(btrim(u.status))");
     }
+  });
+  it("refuses duplicate active roles with mixed space- and tab-padded statuses", async () => {
+    m.primaryStatus = " active ";
+    m.duplicateStatus = "\tactive\t";
+    m.duplicateIdentity = true;
+    const response = await fetch(origin + "/api/auth/email-otp/send", {
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({email:"admin-otp@example.invalid"}),
+    });
+    expect(response.status).toBe(202);
+    expect(m.email).not.toHaveBeenCalled();
+    expect(m.finance).not.toHaveBeenCalled();
+    const sql = m.query.mock.calls.map(([query]) => String(query))
+      .find(query => query.includes("from public.users u") && query.includes("not exists"));
+    expect(sql).toContain("dupe.is_active = true");
+    expect(sql).not.toContain("dupe.status");
   });
   it("permits a unique active identity after the historical shadow is disabled", async () => {
     m.duplicateIdentity = true;

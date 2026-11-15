@@ -56,20 +56,19 @@ async function findUserByEmail(email: string, exactId?: string): Promise<RawUser
   // account with the same normalized email.
   const signedDev = isSignedOtpDevEnabled();
   const activeOnly = signedDev
-    ? " and u.is_active = true and (u.status is null or lower(btrim(u.status)) = 'active')"
+    ? " and u.is_active = true"
     : "";
   const result = exactId
     ? await pool.query<{ user_data: Record<string, unknown> }>(
       `select to_jsonb(u) as user_data
          from public.users u
         where u.id = $1 and lower(coalesce(to_jsonb(u)->>'email', '')) = $2
-          and u.is_active = true and (u.status is null or lower(btrim(u.status)) = 'active')
+          and u.is_active = true
           and not exists (
             select 1 from public.users dupe
              where dupe.id <> u.id
                and lower(coalesce(to_jsonb(dupe)->>'email', '')) = $2
                and dupe.is_active = true
-               and (dupe.status is null or lower(btrim(dupe.status)) = 'active')
           )
         limit 1`,
       [exactId, email],
