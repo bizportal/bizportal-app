@@ -161,6 +161,19 @@ describe("Issue #76 DEV global Super Admin Finance company selection", () => {
     expect(mock.companyQuery).toHaveBeenCalledTimes(2);
     expect(mock.setScopeCookie).toHaveBeenCalledOnce();
   });
+  it("selects a signed company in read-only GET mode without any database audit write", async () => {
+    delete process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV;
+    process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV = "true";
+    mock.companyQuery.mockResolvedValueOnce({rows:[{id:1}]});
+    const response = await post("/api/mkt/admin/finance-company-selection",{companyId:1});
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ok:true,companyId:1});
+    expect(mock.companyQuery).toHaveBeenCalledTimes(1);
+    expect(mock.companyQuery.mock.calls[0][0]).toContain("public.companies");
+    expect(mock.setScopeCookie).toHaveBeenCalledOnce();
+    expect(mock.finance).not.toHaveBeenCalled();
+    expect(mock.submitInvoice).not.toHaveBeenCalled();
+  });
   it("checks the live company, writes audit before issuing scoped cookie", async () => {
     mock.companyQuery.mockResolvedValueOnce({rows:[{id:1}]})
       .mockResolvedValueOnce({rowCount:1,rows:[]});
