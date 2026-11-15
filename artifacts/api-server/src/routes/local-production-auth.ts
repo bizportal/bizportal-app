@@ -55,7 +55,7 @@ async function findUserByEmail(email: string): Promise<RawUser | null> {
   // A disabled historical account is not a second eligible OTP identity.
   // Still reject two active rows and preserve the unchanged PROD lookup.
   const activeOnly = signedDev
-    ? " and u.is_active = true and (u.status is null or lower(u.status) = 'active')"
+    ? " and u.is_active = true and (u.status is null or lower(btrim(u.status)) = 'active')"
     : "";
   const result = await pool.query<{ user_data: Record<string, unknown> }>(
     `select to_jsonb(u) as user_data

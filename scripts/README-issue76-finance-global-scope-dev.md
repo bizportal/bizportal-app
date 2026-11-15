@@ -60,12 +60,21 @@ For every canonical Finance request, a global account must still pass current Su
 
 ## Normalized email identity uniqueness gate
 
-CST-DEV currently contains two active `public.users` rows that normalize
+CST-DEV initially contained two active `public.users` rows that normalize
 to the same Admin email, but have different roles (`admin` and
-`super_admin`). Previously, an OTP query using `lower(email)` plus
+`super_admin`). With the account owner's explicit approval, the shadow
+`admin` row was marked inactive on 15 Nov 2026 (audit event #2624),
+while the existing `super_admin` remained active. The full row and history
+were retained; there is now one eligible active account.
+Previously, an OTP query using `lower(email)` plus
 `LIMIT 1` could select either account. For DEV **signed OTP only**,
 both OTP identity lookup and subsequent session authorization now check
 up to two **eligible active** accounts (and require exactly one).
+The SQL eligibility filter uses `lower(btrim(u.status)) = 'active'` to match
+the application-side `status.trim().toLowerCase()` rules, including
+whitespace-padded active status values; this closes a GitHub review P2
+duplicate-identity bypass. Regression tests cover both OTP issuance and
+already signed Finance sessions with this padded-active shadow.
 Two active accounts fail closed. An inactive historical shadow cannot
 silently regain access; changing its status to active immediately makes
 the identity ambiguous again. PROD authentication semantics are unchanged.

@@ -9,6 +9,7 @@ const m = vi.hoisted(() => ({
   invoiceSubmit: vi.fn(), ap: vi.fn(), currentCompany: 1, userActive: true,
   userId: "admin-otp-1", userRole: "super_admin", codeHash: "",
   duplicateIdentity: false, duplicateIdentityInactive: false,
+  duplicateIdentityPaddedActive: false,
   consumed: false, attempts: 0, scopedCalls: [] as {sql:string;params:unknown[]}[],
 }));
 vi.mock("@workspace/db", () => ({
@@ -80,7 +81,8 @@ beforeEach(() => {
   delete process.env.BIZPORTAL_FINANCE_GLOBAL_COMPANY_IDS_DEV;
   for (const v of [m.query,m.email,m.finance,m.getInvoice,m.invoiceSubmit,m.ap]) v.mockReset();
   m.currentCompany = 1; m.userActive = true;
-  m.userId = "admin-otp-1"; m.userRole = "super_admin"; m.duplicateIdentity=false; m.duplicateIdentityInactive=false;
+  m.userId = "admin-otp-1"; m.userRole = "super_admin"; m.duplicateIdentity=false;
+  m.duplicateIdentityInactive=false; m.duplicateIdentityPaddedActive=false;
   m.codeHash = "";m.consumed = false;m.attempts=0;m.scopedCalls.length=0;
   m.email.mockResolvedValue(undefined);
   m.query.mockImplementation(async (q:string, args?:unknown[]) => {
@@ -114,11 +116,16 @@ beforeEach(() => {
       }};
       const duplicate = {user_data:{
         id:"duplicate-admin",email:"ADMIN-OTP@example.invalid",role:"admin",
-        status:"active",is_active:true,company_id:null,
+        status:m.duplicateIdentityPaddedActive ? " active " : "active",
+        is_active:true,company_id:null,
       }};
-      const activeOnlySql = q.includes("u.is_active = true") && q.includes("lower(u.status)");
+      const activeOnlySql = q.includes("u.is_active = true") && q.includes("lower(btrim(u.status))");
+      // Reflect PostgreSQL semantics: lower(status) alone excludes a padded
+      // but JS-eligible active account, masking a duplicate identity.
+      const untrimmedSqlWouldMissDuplicate = m.duplicateIdentityPaddedActive
+        && q.includes("lower(u.status)") && !activeOnlySql;
       return { rows: m.duplicateIdentity && !(m.duplicateIdentityInactive && activeOnlySql)
-        ? [first, duplicate] : [first] };
+        && !untrimmedSqlWouldMissDuplicate ? [first, duplicate] : [first] };
     }
     if (q.includes("insert into public.bizportal_email_otp_codes")) return {rows:[],rowCount:1};
     throw new Error("Unexpected DB query in isolated OTP test");
@@ -276,6 +283,28 @@ describe("Issue #76 duplicate normalized Admin email identity regression", () =>
     expect(m.finance).not.toHaveBeenCalled();
     const lookup = m.query.mock.calls.find(([sql]) => String(sql).includes("to_jsonb(u)"));
     expect(lookup?.[0]).toContain("limit 2");
+  });
+  it("rejects a whitespace-padded active duplicate instead of sending OTP", async () => {
+    m.duplicateIdentity = true;
+    m.duplicateIdentityPaddedActive = true;
+    const result = await fetch(origin+"/api/auth/email-otp/send", {
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({email:"admin-otp@example.invalid"}),
+    });
+    expect(result.status).toBe(202);
+    expect(m.email).not.toHaveBeenCalled();
+    expect(m.finance).not.toHaveBeenCalled();
+    const lookups=m.query.mock.calls.filter(([sql])=>String(sql).includes("to_jsonb(u)"));
+    expect(lookups).toHaveLength(1);
+    expect(String(lookups[0][0])).toContain("lower(btrim(u.status))");
+  });
+  it("invalidates an existing signed session if a padded active duplicate is added", async () => {
+    const cookie=await otpLogin();
+    m.duplicateIdentity=true;
+    m.duplicateIdentityPaddedActive=true;
+    expect((await getInvoice(cookie)).status).toBe(403);
+    expect(m.finance).not.toHaveBeenCalled();
+    expect(m.getInvoice).not.toHaveBeenCalled();
   });
   it("revokes an existing signed Admin session when the email becomes ambiguous", async () => {
     const cookie = await otpLogin();

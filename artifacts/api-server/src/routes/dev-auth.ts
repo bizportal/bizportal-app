@@ -434,7 +434,7 @@ async function verifySupabaseAccessToken(accessToken: string): Promise<{
 export async function getProductionUser(session: ProductionSession): Promise<DevAuthUser | null> {
   const signedDev = isSignedOtpDevEnabled();
   const activeOnly = signedDev
-    ? " and u.is_active = true and (u.status is null or lower(u.status) = 'active')"
+    ? " and u.is_active = true and (u.status is null or lower(btrim(u.status)) = 'active')"
     : "";
   const result = await pool.query<{ user_data: Record<string, unknown> }>(
     `select to_jsonb(u) user_data
