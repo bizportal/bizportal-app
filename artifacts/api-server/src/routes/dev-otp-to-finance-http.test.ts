@@ -120,7 +120,7 @@ beforeEach(() => {
         id:"duplicate-admin",email:"ADMIN-OTP@example.invalid",role:"admin",
         status:"active",is_active:true,company_id:null,
       }};
-      const activeOnlySql = q.includes("u.is_active = true") && q.includes("lower(u.status)");
+      const activeOnlySql = q.includes("u.is_active = true") && q.includes("lower(btrim(u.status))");
       return { rows: m.duplicateIdentity && !(m.duplicateIdentityInactive && activeOnlySql)
         ? [first, duplicate] : [first] };
     }
@@ -256,6 +256,21 @@ describe("signed Super Admin OTP -> canonical Finance route integrated HTTP boun
 });
 
 describe("Issue #76 duplicate normalized Admin email identity regression", () => {
+  it("normalizes padded active status in signed-OTP account and duplicate SQL lookups", async () => {
+    const cookie = await otpLogin();
+    expect((await getInvoice(cookie)).status).toBe(200);
+    const queries = m.query.mock.calls.map(([sql]) => String(sql))
+      .filter(sql => sql.includes("from public.users u") && sql.includes("not exists"));
+    // Source-only contract: Postgres must recognize ' active ' the same way
+    // the existing TypeScript eligibility check trims a status string.
+    expect(queries.length).toBeGreaterThanOrEqual(2);
+    for (const sql of queries) {
+      expect(sql).toContain("lower(btrim(u.status)) = 'active'");
+      expect(sql).toContain("lower(btrim(dupe.status)) = 'active'");
+      expect(sql).not.toContain("lower(u.status) = 'active'");
+      expect(sql).not.toContain("lower(dupe.status) = 'active'");
+    }
+  });
   it("permits a unique active identity after the historical shadow is disabled", async () => {
     m.duplicateIdentity = true;
     m.duplicateIdentityInactive = true;
