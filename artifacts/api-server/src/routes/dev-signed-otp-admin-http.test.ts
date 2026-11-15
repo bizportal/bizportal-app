@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@workspace/db", () => ({ pool: { query: mocks.query } }));
 
 import { authenticateAdmin, type AdminRequest } from "./admin-auth";
-import { createDevAuthRouter, setProductionSessionCookie } from "./dev-auth";
+import { createDevAuthRouter, getProductionUser, setProductionSessionCookie } from "./dev-auth";
 
 const envKeys = ["APP_ENV", "NODE_ENV", "SESSION_SECRET", "BIZPORTAL_SESSION_SECRET", "BIZPORTAL_SIGNED_OTP_ENABLED_DEV", "DEV_LOGIN_EMAILS", "DEV_LOGIN_ROLE"] as const;
 const original = Object.fromEntries(envKeys.map(k => [k, process.env[k]])) as Record<(typeof envKeys)[number], string | undefined>;
@@ -125,6 +125,31 @@ describe("signed OTP HTTP admin middleware under explicit DEV opt-in", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ email: "admin@example.com", role: "admin", companyId: 7 });
     expect(mocks.query).toHaveBeenCalledTimes(1);
+  });
+
+  it("pins signed DEV OTP lookup to signed user ID and email, never an arbitrary duplicate", async () => {
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
+    const res = await call(cookie());
+    expect(res.status).toBe(200);
+    expect(mocks.query).toHaveBeenCalledTimes(1);
+    const [sql, parameters] = mocks.query.mock.calls[0] as [string, unknown[]];
+    expect(sql).toContain("where u.id = $1");
+    expect(sql).toContain("= $2");
+    expect(parameters).toEqual(["user-verified", "admin@example.com"]);
+  });
+
+  it("preserves the original email-only lookup when DEV signed OTP is disabled", async () => {
+    const user = await getProductionUser({
+      id: "user-verified",
+      email: "admin@example.com",
+      issuedAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+    });
+    expect(user?.role).toBe("admin");
+    expect(mocks.query).toHaveBeenCalledTimes(1);
+    const [sql, parameters] = mocks.query.mock.calls[0] as [string, unknown[]];
+    expect(sql).not.toContain("u.id = $1");
+    expect(parameters).toEqual(["admin@example.com"]);
   });
 
   it("prefers DB-verified signed OTP to a simultaneous valid legacy DEV cookie", async () => {

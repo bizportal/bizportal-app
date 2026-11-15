@@ -1,6 +1,7 @@
 import { normalizeCanonicalBankMutationId } from "../lib/reconciliation/canonicalBankMutationId";
 import { Router, type IRouter, type Request } from "express";
 import { pool } from "@workspace/db";
+import { scopeBankMutationRead } from "./bank-mutation-read-scope";
 import { evaluateReconRules, type ReconRule } from "../lib/reconciliation/reconRuleEngine";
 import {
   hydrateQrisReviewDiagnostics,
@@ -356,15 +357,17 @@ function hasQrisBankEvidenceForAutoPost(mutation: MatchingMutation): boolean {
 async function getApprovalActor(request: Request): Promise<ApprovalActor | null> {
   const allowedRoles = new Set(["admin", "owner", "finance", "accounting", "accountant", "super_admin"]);
 
-  if (isDevelopmentEnvironment()) {
-    const user = getDevSession(request);
+  // The signed OTP session is available on the canonical DEV deployment.
+  // Prefer its DB-verified identity; do not drop back to a legacy actor when
+  // a signed session exists but is no longer authorized.
+  const signedSession = getProductionSession(request);
+  if (signedSession) {
+    const user = await getProductionUser(signedSession);
     if (!user || !allowedRoles.has(user.role.toLowerCase())) return null;
     return { email: user.email, companyId: user.companyId };
   }
-
-  const session = getProductionSession(request);
-  if (!session) return null;
-  const user = await getProductionUser(session);
+  if (!isDevelopmentEnvironment()) return null;
+  const user = getDevSession(request);
   if (!user || !allowedRoles.has(user.role.toLowerCase())) return null;
   return { email: user.email, companyId: user.companyId };
 }
@@ -5085,7 +5088,7 @@ const mutationListColumns = `
         join sport_center.payment_settlement_batches settlement_batch
           on settlement_match.candidate_type = 'qris_settlement'
          and settlement_match.candidate_source = 'sport_center.payment_settlement_batches'
-         and settlement_batch.id = settlement_match.candidate_id
+         and settlement_batch.id::text = settlement_match.candidate_id
         join sport_center.accounting_journals settlement_journal
           on settlement_journal.id = settlement_batch.settlement_journal_id
        where settlement_match.mutation_id = bm.id
@@ -5150,7 +5153,7 @@ const mutationListColumns = `
       join sport_center.payment_settlement_batches settlement_batch
         on settlement_match.candidate_type = 'qris_settlement'
        and settlement_match.candidate_source = 'sport_center.payment_settlement_batches'
-       and settlement_batch.id = settlement_match.candidate_id
+       and settlement_batch.id::text = settlement_match.candidate_id
       join sport_center.accounting_journals settlement_journal
         on settlement_journal.id = settlement_batch.settlement_journal_id
        and settlement_journal.status::text = 'posted'
@@ -5353,7 +5356,7 @@ const mutationListColumns = `
         join public.recon_rules rule
           on rule_match.candidate_type = 'recon_rule'
          and rule_match.candidate_source = 'public.recon_rules'
-         and rule_match.candidate_id = rule.id
+         and rule_match.candidate_id = rule.id::text
          and rule.company_id = bm.company_id
          and rule.is_active = true
          and rule.candidate_requirement = 'not_required'
@@ -7814,8 +7817,10 @@ router.get("/bank-reconciliation/mutations/:mutationId", async (req, res): Promi
   }
 });
 router.get("/bank-reconciliation/mutations", async (req, res): Promise<void> => {
+  const actor = await getApprovalActor(req).catch(() => null);
+  if (!actor) { res.status(401).json({ error: "Unauthorized" }); return; }
   try {
-    const { where, values } = buildMutationFilters(req);
+    const { where, values } = scopeBankMutationRead(buildMutationFilters(req), actor.companyId);
     const requestedLimit = parsePositiveInt(queryString(req.query.limit));
     const requestedOffset = Number(queryString(req.query.offset) ?? 0);
     const limit = Math.min(requestedLimit ?? 20, 1_000);
@@ -7846,6 +7851,10 @@ router.get("/bank-reconciliation/mutations", async (req, res): Promise<void> => 
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
+    if (message === "UNVERIFIED_ACTOR_COMPANY" || message === "COMPANY_SCOPE_FORBIDDEN") {
+      res.status(403).json({ error: "Akses mutasi untuk perusahaan ini ditolak." });
+      return;
+    }
     if (message === "INVALID_COMPANY") {
       res.status(400).json({ error: "company_id tidak valid" });
       return;
@@ -7863,8 +7872,10 @@ router.get("/bank-reconciliation/mutations", async (req, res): Promise<void> => 
 });
 
 router.get("/bank-reconciliation/summary", async (req, res): Promise<void> => {
+  const actor = await getApprovalActor(req).catch(() => null);
+  if (!actor) { res.status(401).json({ error: "Unauthorized" }); return; }
   try {
-    const { where, values } = buildMutationFilters(req);
+    const { where, values } = scopeBankMutationRead(buildMutationFilters(req), actor.companyId);
     const result = await pool.query(
       `select bm.status, count(*)::text as count, coalesce(sum(bm.amount), 0)::text as total_amount
          from public.bank_mutations bm
@@ -7876,6 +7887,10 @@ router.get("/bank-reconciliation/summary", async (req, res): Promise<void> => {
     res.json({ summary: result.rows });
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
+    if (message === "UNVERIFIED_ACTOR_COMPANY" || message === "COMPANY_SCOPE_FORBIDDEN") {
+      res.status(403).json({ error: "Akses mutasi untuk perusahaan ini ditolak." });
+      return;
+    }
     if (message === "INVALID_COMPANY") {
       res.status(400).json({ error: "company_id tidak valid" });
       return;

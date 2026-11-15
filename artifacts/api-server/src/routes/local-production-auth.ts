@@ -50,14 +50,24 @@ function createSession(user: { id: string; email: string }): ProductionSession {
   };
 }
 
-async function findUserByEmail(email: string): Promise<RawUser | null> {
-  const result = await pool.query<{ user_data: Record<string, unknown> }>(
-    `select to_jsonb(u) as user_data
-       from public.users u
-      where lower(coalesce(to_jsonb(u)->>'email', '')) = $1
-      limit 1`,
-    [email],
-  );
+async function findUserByEmail(email: string, exactId?: string): Promise<RawUser | null> {
+  // PROD and normal login retain the original email-only query.
+  // Signed OTP in DEV can bind a single, explicitly approved account ID.
+  const result = exactId
+    ? await pool.query<{ user_data: Record<string, unknown> }>(
+      `select to_jsonb(u) as user_data
+         from public.users u
+        where u.id = $1 and lower(coalesce(to_jsonb(u)->>'email', '')) = $2
+        limit 1`,
+      [exactId, email],
+    )
+    : await pool.query<{ user_data: Record<string, unknown> }>(
+      `select to_jsonb(u) as user_data
+         from public.users u
+        where lower(coalesce(to_jsonb(u)->>'email', '')) = $1
+        limit 1`,
+      [email],
+    );
   const data = result.rows[0]?.user_data;
   if (!data || typeof data.id !== "string" || typeof data.email !== "string") return null;
 
@@ -84,6 +94,20 @@ async function findUserByEmail(email: string): Promise<RawUser | null> {
         : null,
     passwordHash: typeof data.password_hash === "string" ? data.password_hash : null,
   };
+}
+
+// Only a deliberately pinned Super Admin may use the signed DEV OTP route.
+// This refuses ambiguous case-insensitive email matches without modifying
+// existing accounts, PROD email/password authentication, or legacy DEV login.
+async function findEmailOtpUserByEmail(email: string): Promise<RawUser | null> {
+  if (!isSignedOtpDevEnabled()) return findUserByEmail(email);
+
+  const pinnedEmail = process.env.BIZPORTAL_SIGNED_OTP_ACCOUNT_EMAIL_DEV?.trim().toLowerCase();
+  const pinnedId = process.env.BIZPORTAL_SIGNED_OTP_ACCOUNT_ID_DEV?.trim();
+  if (!pinnedEmail || !pinnedId || email !== pinnedEmail) return null;
+
+  const account = await findUserByEmail(email, pinnedId);
+  return account?.role.trim().toLowerCase() === "super_admin" ? account : null;
 }
 
 function isActivePrivilegedUser(user: RawUser | null): user is RawUser {
@@ -518,7 +542,7 @@ router.post("/auth/email-otp/send", async (
       return;
     }
 
-    const user = await findUserByEmail(email);
+    const user = await findEmailOtpUserByEmail(email);
     if (!isEmailOtpEligibleUser(user)) {
       await pool.query(
         `insert into public.bizportal_email_otp_codes
@@ -638,7 +662,7 @@ router.post("/auth/email-otp/verify", async (
       return;
     }
 
-    const user = await findUserByEmail(email);
+    const user = await findEmailOtpUserByEmail(email);
     if (!isEmailOtpEligibleUser(user)) {
       await pool.query(
         "update public.bizportal_email_otp_codes set verified_at = now() where id = $1 and verified_at is null",

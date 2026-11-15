@@ -1,7 +1,7 @@
 import http from "node:http";
 import express, { type Express } from "express";
 import { hash } from "bcryptjs";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { queryMock, sendEmailMock } = vi.hoisted(() => ({
   queryMock: vi.fn(),
@@ -127,6 +127,14 @@ describe("local production email OTP authentication", () => {
     server = await new Promise<http.Server>((resolve) => {
       const listeningServer = app.listen(0, "127.0.0.1", () => resolve(listeningServer));
     });
+  });
+
+  afterEach(() => {
+    process.env.APP_ENV = "production";
+    process.env.NODE_ENV = "production";
+    delete process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV;
+    delete process.env.BIZPORTAL_SIGNED_OTP_ACCOUNT_ID_DEV;
+    delete process.env.BIZPORTAL_SIGNED_OTP_ACCOUNT_EMAIL_DEV;
   });
 
   afterAll(async () => {
@@ -271,11 +279,37 @@ describe("local production email OTP authentication", () => {
     expect(verified.status).toBe(400);
   });
 
+  it("fails closed when the DEV Super Admin account pin is absent or mismatched", async () => {
+    process.env.APP_ENV = "development";
+    process.env.NODE_ENV = "development";
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
+    activeRole = "super_admin";
+
+    const withoutPin = await request(server, "/auth/email-otp/send", { email: "admin@example.com" });
+    expect(withoutPin.status).toBe(202);
+    expect(sendEmailMock).not.toHaveBeenCalled();
+    expect(queryMock.mock.calls.some(([sql]) => String(sql).includes("where u.id = $1"))).toBe(false);
+
+    process.env.BIZPORTAL_SIGNED_OTP_ACCOUNT_ID_DEV = "admin-1";
+    process.env.BIZPORTAL_SIGNED_OTP_ACCOUNT_EMAIL_DEV = "different@example.com";
+    const emailMismatch = await request(server, "/auth/email-otp/send", { email: "admin@example.com" });
+    expect(emailMismatch.status).toBe(202);
+    expect(sendEmailMock).not.toHaveBeenCalled();
+
+    process.env.BIZPORTAL_SIGNED_OTP_ACCOUNT_EMAIL_DEV = "admin@example.com";
+    activeRole = "admin";
+    const roleMismatch = await request(server, "/auth/email-otp/send", { email: "admin@example.com" });
+    expect(roleMismatch.status).toBe(202);
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
   it("permits only DEV opt-in signed OTP for an active Super Admin", async () => {
     const originals = {
       APP_ENV: process.env.APP_ENV,
       NODE_ENV: process.env.NODE_ENV,
       BIZPORTAL_SIGNED_OTP_ENABLED_DEV: process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV,
+      BIZPORTAL_SIGNED_OTP_ACCOUNT_ID_DEV: process.env.BIZPORTAL_SIGNED_OTP_ACCOUNT_ID_DEV,
+      BIZPORTAL_SIGNED_OTP_ACCOUNT_EMAIL_DEV: process.env.BIZPORTAL_SIGNED_OTP_ACCOUNT_EMAIL_DEV,
     };
     activeRole = "super_admin";
     try {
@@ -287,9 +321,14 @@ describe("local production email OTP authentication", () => {
       expect(sendEmailMock).not.toHaveBeenCalled();
 
       process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
+      process.env.BIZPORTAL_SIGNED_OTP_ACCOUNT_ID_DEV = "admin-1";
+      process.env.BIZPORTAL_SIGNED_OTP_ACCOUNT_EMAIL_DEV = "admin@example.com";
       const sent = await request(server, "/auth/email-otp/send", { email: "admin@example.com" });
       expect(sent.status).toBe(202);
       expect(sendEmailMock).toHaveBeenCalledTimes(1);
+      const pinnedLookups = queryMock.mock.calls.filter(([sql]) => String(sql).includes("where u.id = $1"));
+      expect(pinnedLookups.length).toBeGreaterThan(0);
+      expect(pinnedLookups[0]?.[1]).toEqual(["admin-1", "admin@example.com"]);
 
       const verified = await request(server, "/auth/email-otp/verify", {
         email: "admin@example.com", code: "123456",
