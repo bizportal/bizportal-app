@@ -50,6 +50,14 @@ After the existing genuine signed Super Admin OTP, an explicitly allowlisted glo
 
 Server checks the signed session, current user/role/active status in DB, global identity, both allowlists, and active company in DB. A successful selection persists a Finance-specific audit event before it issues a separate Secure, HttpOnly, SameSite=Strict, 30-minute HMAC-signed scope cookie bound to the original session account/email/issuedAt. Any failed audit leaves the user without a new scope cookie.
 
+Browser-origin defense is also checked before a company-scope cookie is issued.
+If an `Origin` header is present, the server verifies that its URL scheme and
+host match the request's Host/protocol and rejects a foreign Origin even when
+a caller forges `Sec-Fetch-Site: same-origin`. JSON content type remains
+mandatory. This preserves the existing signed OTP, explicit allowlist and
+audit-before-cookie safeguards; the Origin check is not an authentication
+substitute. The new HTTP regression is reused from PR #77.
+
 For every canonical Finance request, a global account must still pass current Super Admin authorization, both allowlists, the cookie's signature/session binding, and an active-company lookup. Frontend localStorage, query parameters, and `x-company-id` never grant Finance scope. Existing company-bound Super Admin behavior remains unchanged. No company-wide consolidated scope is accepted.
 
 ## Normalized email identity uniqueness gate
@@ -62,6 +70,12 @@ could select the wrong identity. **A fresh aggregate-only read on
 historical identity, **not two simultaneously active identities**.
 This source-only review did not change either account. Do not infer
 when, how or by whom any account state changed.
+
+The current integrated review deliberately retains the **stricter**
+PR #79 fail-closed duplicate-`is_active` policy rather than reverting to
+PR #77's padded-status-only filtering. The latter would not cover all
+TypeScript whitespace variants such as tabs; tests specifically preserve
+the stronger guard while reusing PR #77's independent Origin defense.
 
 In signed DEV OTP mode, the session is pinned to the account ID and email.
 The database uniqueness guard refuses **any second `is_active=true`
