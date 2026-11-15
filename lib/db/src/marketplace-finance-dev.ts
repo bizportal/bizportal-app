@@ -1,8 +1,13 @@
 import pg from "pg";
+import { X509Certificate } from "node:crypto";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { sql } from "drizzle-orm";
 import * as schema from "./schema";
 import { readSecret } from "./gcp-database-secret";
+import {
+  SUPABASE_FINANCE_ROOT_2021_PEM,
+  SUPABASE_FINANCE_ROOT_2021_FINGERPRINT256,
+} from "./supabase-finance-root-2021";
 
 type ScopedDb = typeof import("./index").db;
 type FinanceDatabase = ReturnType<typeof drizzle<typeof schema>>;
@@ -76,6 +81,48 @@ export async function resolveMarketplaceFinanceDevDatabaseUrl(
   return raw;
 }
 
+/** Hostinger lacks the VPS-only sslrootcert path contained in the DEV DSN.
+ * Build explicit pg connection fields so node-postgres never reads that
+ * inaccessible path. Direct Supabase connections use the pinned PUBLIC
+ * Supabase 2021 root CA and always verify the TLS chain and hostname.
+ * Pooler connections use system-trusted CAs, with the same strict TLS checks.
+ * No private keys, credentials, or production DB fallback are bundled here.
+ */
+function secureFinancePoolOptions(raw: string): pg.PoolConfig {
+  const url = new URL(raw);
+  const hostname = url.hostname.toLowerCase();
+  const directHost = `db.${EXPECTED_PROJECT}.supabase.co`;
+  const user = decodeURIComponent(url.username);
+  const database = decodeURIComponent(url.pathname.slice(1));
+  const port = Number(url.port || 5432);
+
+  if ((hostname !== directHost && !hostname.endsWith(".pooler.supabase.com")) ||
+      (user !== EXPECTED_ROLE && user !== `${EXPECTED_ROLE}.${EXPECTED_PROJECT}`) ||
+      !Number.isSafeInteger(port) || ![5432, 6543].includes(port) ||
+      database !== "postgres" || !url.password) {
+    throw new Error("DEV_FINANCE_DATABASE_TARGET_INVALID");
+  }
+
+  let ca: string | undefined;
+  if (hostname === directHost) {
+    const cert = new X509Certificate(SUPABASE_FINANCE_ROOT_2021_PEM);
+    if (!cert.ca ||
+        cert.fingerprint256.toUpperCase() !== SUPABASE_FINANCE_ROOT_2021_FINGERPRINT256) {
+      throw new Error("DEV_FINANCE_PINNED_CA_INVALID");
+    }
+    ca = SUPABASE_FINANCE_ROOT_2021_PEM;
+  }
+
+  return {
+    host: hostname, port, user,
+    password: decodeURIComponent(url.password),
+    database,
+    ssl: { rejectUnauthorized: true, servername: hostname, ...(ca ? { ca } : {}) },
+    max: 1, connectionTimeoutMillis: 8000, idleTimeoutMillis: 5000,
+    query_timeout: 20000, application_name: "bizportal-finance-dev",
+  };
+}
+
 async function getFinanceDb(): Promise<FinanceDatabase> {
   const url = await resolveMarketplaceFinanceDevDatabaseUrl();
   if (financePool && activeFinanceConnectionUrl !== url) {
@@ -84,11 +131,7 @@ async function getFinanceDb(): Promise<FinanceDatabase> {
     throw new Error("DEV_FINANCE_CREDENTIAL_CHANGED_RESTART_REQUIRED");
   }
   if (!financePool) {
-    financePool = new pg.Pool({
-      connectionString: url, max: 1,
-      connectionTimeoutMillis: 8000, idleTimeoutMillis: 5000,
-      query_timeout: 20000, application_name: "bizportal-finance-dev",
-    });
+    financePool = new pg.Pool(secureFinancePoolOptions(url));
     financeDb = drizzle(financePool, { schema });
     activeFinanceConnectionUrl = url;
   }

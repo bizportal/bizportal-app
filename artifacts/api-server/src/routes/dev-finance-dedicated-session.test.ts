@@ -44,7 +44,7 @@ describe("dedicated Finance DEV database transaction boundary", () => {
     process.env.APP_ENV = "development";
     process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV = "true";
     process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV =
-      "postgresql://bizportal_marketplace_finance_login_dev.xssrfshdrtdfupgqwfdw:synthetic@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres?sslmode=require";
+      "postgresql://bizportal_marketplace_finance_login_dev:synthetic@db.xssrfshdrtdfupgqwfdw.supabase.co:5432/postgres?sslmode=verify-full&sslrootcert=/opt/cst-dev-finance-tls/supabase-root-2021.crt";
     mock.options.mockClear();
     mock.execute.mockReset();
     mock.scopedCompany = "";
@@ -162,14 +162,28 @@ describe("dedicated Finance DEV database transaction boundary", () => {
   });
   it("sets the verified tenant on the same bounded transaction and uses no shared pool", async () => {
     process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV =
-      "postgresql://bizportal_marketplace_finance_login_dev.xssrfshdrtdfupgqwfdw:synthetic@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres?sslmode=require";
+      "postgresql://bizportal_marketplace_finance_login_dev:synthetic@db.xssrfshdrtdfupgqwfdw.supabase.co:5432/postgres?sslmode=verify-full&sslrootcert=/opt/cst-dev-finance-tls/supabase-root-2021.crt";
     const result = await withMarketplaceFinanceDevTransaction(1, async (scoped) => {
       expect(scoped).toBe(mock.session);
       expect(mock.scopedCompany).toBe("1");
       return { accepted: true };
     });
     expect(result).toEqual({ accepted: true });
-    expect(mock.options).toHaveBeenCalledWith(expect.objectContaining({ max: 1 }));
+    expect(mock.options).toHaveBeenCalledWith(expect.objectContaining({
+      max: 1,
+      host: "db.xssrfshdrtdfupgqwfdw.supabase.co",
+      port: 5432,
+      user: "bizportal_marketplace_finance_login_dev",
+      database: "postgres",
+      ssl: expect.objectContaining({
+        rejectUnauthorized: true,
+        servername: "db.xssrfshdrtdfupgqwfdw.supabase.co",
+        ca: expect.stringContaining("-----BEGIN CERTIFICATE-----"),
+      }),
+    }));
+    const options = mock.options.mock.calls[0]?.[0] as Record<string, any>;
+    expect(options).not.toHaveProperty("connectionString");
+    expect(options.ssl.ca).toContain("-----END CERTIFICATE-----");
     expect(mock.execute).toHaveBeenCalledTimes(3);
   });
   it("runs deferred Finance audit only after the outer transaction succeeds", async () => {
