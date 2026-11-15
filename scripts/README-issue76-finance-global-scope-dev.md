@@ -49,14 +49,23 @@ to the same Admin email, but have different roles (`admin` and
 `super_admin`). Previously, an OTP query using `lower(email)` plus
 `LIMIT 1` could select either account. For DEV **signed OTP only**,
 both OTP identity lookup and subsequent session authorization now check
-up to two matching rows and **fail closed** if the normalized email is
-not unique. PROD authentication semantics are unchanged.
+up to two **eligible active** accounts (and require exactly one).
+Two active accounts fail closed. An inactive historical shadow cannot
+silently regain access; changing its status to active immediately makes
+the identity ambiguous again. PROD authentication semantics are unchanged.
 
-This does **not** change either historical user, and it does not resolve
-the duplicate for real OTP E2E. An authorized account-identity review
-must reconcile the two rows (preserving role and audit history) before
-using that mailbox for live Super Admin Finance tests. Never auto-promote
-an Admin role or guess which row is authoritative.
+Read-only identity audit: the older `super_admin` account has a recorded
+recent login and password, while the later `admin` account has no
+recorded login or password. Neither has a direct `user_allowed_companies`
+assignment or a division-manager foreign-key reference. This is supporting
+evidence, **not authorization** to alter either account.
+
+An explicitly approved account review may mark an unintended historical
+shadow inactive while preserving its row and audit history. Do not delete,
+re-role, silently change company binding, or infer Finance permissions from
+account timestamps. No account status was changed as part of this PR.
+After any approved identity reconciliation, re-run the live signed OTP
+and cross-company Finance checks before any cutover.
 
 ## Remaining release gates
 

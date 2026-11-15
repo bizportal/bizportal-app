@@ -8,7 +8,7 @@ const m = vi.hoisted(() => ({
   query: vi.fn(), email: vi.fn(), finance: vi.fn(), getInvoice: vi.fn(),
   invoiceSubmit: vi.fn(), ap: vi.fn(), currentCompany: 1, userActive: true,
   userId: "admin-otp-1", userRole: "super_admin", codeHash: "",
-  duplicateIdentity: false,
+  duplicateIdentity: false, duplicateIdentityInactive: false,
   consumed: false, attempts: 0, scopedCalls: [] as {sql:string;params:unknown[]}[],
 }));
 vi.mock("@workspace/db", () => ({
@@ -80,7 +80,7 @@ beforeEach(() => {
   delete process.env.BIZPORTAL_FINANCE_GLOBAL_COMPANY_IDS_DEV;
   for (const v of [m.query,m.email,m.finance,m.getInvoice,m.invoiceSubmit,m.ap]) v.mockReset();
   m.currentCompany = 1; m.userActive = true;
-  m.userId = "admin-otp-1"; m.userRole = "super_admin"; m.duplicateIdentity=false;
+  m.userId = "admin-otp-1"; m.userRole = "super_admin"; m.duplicateIdentity=false; m.duplicateIdentityInactive=false;
   m.codeHash = "";m.consumed = false;m.attempts=0;m.scopedCalls.length=0;
   m.email.mockResolvedValue(undefined);
   m.query.mockImplementation(async (q:string, args?:unknown[]) => {
@@ -116,7 +116,9 @@ beforeEach(() => {
         id:"duplicate-admin",email:"ADMIN-OTP@example.invalid",role:"admin",
         status:"active",is_active:true,company_id:null,
       }};
-      return {rows: m.duplicateIdentity ? [first,duplicate] : [first]};
+      const activeOnlySql = q.includes("u.is_active = true") && q.includes("lower(u.status)");
+      return { rows: m.duplicateIdentity && !(m.duplicateIdentityInactive && activeOnlySql)
+        ? [first, duplicate] : [first] };
     }
     if (q.includes("insert into public.bizportal_email_otp_codes")) return {rows:[],rowCount:1};
     throw new Error("Unexpected DB query in isolated OTP test");
@@ -250,6 +252,19 @@ describe("signed Super Admin OTP -> canonical Finance route integrated HTTP boun
 });
 
 describe("Issue #76 duplicate normalized Admin email identity regression", () => {
+  it("permits a unique active identity after the historical shadow is disabled", async () => {
+    m.duplicateIdentity = true;
+    m.duplicateIdentityInactive = true;
+    const cookie = await otpLogin();
+    expect((await getInvoice(cookie)).status).toBe(200);
+    expect(m.finance).toHaveBeenCalledOnce();
+    const lookups = m.query.mock.calls.filter(([sql]) => String(sql).includes("to_jsonb(u)"));
+    expect(lookups.length).toBeGreaterThan(1);
+    for (const [sql] of lookups) {
+      expect(String(sql)).toContain("u.is_active = true");
+      expect(String(sql)).toContain("limit 2");
+    }
+  });
   it("does not send an OTP when normalized email matches multiple active roles", async () => {
     m.duplicateIdentity = true;
     const response = await fetch(origin + "/api/auth/email-otp/send", {
