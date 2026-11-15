@@ -15,6 +15,22 @@ All conditions must be true in the **separate DEV candidate process**:
 
 Do **not** enable these on the active legacy DEV service or PROD. No default account or company ID is assumed.
 
+## Existing email OTP frontend role preservation
+
+The original `App.tsx` login form previously cached the literal role
+`admin` after a successful email OTP, even when the authenticated
+backend returned `super_admin`. The signed OTP context now returns the
+server-verified `user` object to the existing login form, and the form
+caches that returned role instead of a fixed string. A verified
+`super_admin` now opens the existing dashboard path `/dashboard`.
+No login route or role permissions are broadened, and server-side
+authorization still reads the current database identity on each request.
+
+A new source-contract regression covers the role-cache and routing
+behavior; the full BizPortal frontend tests, typecheck and build passed
+on the isolated candidate. This is not a claim that a genuine OTP was
+submitted via a live browser.
+
 ## Existing BizPortal Vendor Invoice UI (separately gated)
 
 The existing `/purchase/vendor-invoices` page can display an explicit

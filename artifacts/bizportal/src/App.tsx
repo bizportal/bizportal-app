@@ -48,6 +48,7 @@ function writeRoleCache(role: string | null) {
 function roleToPath(role?: string | null) {
   switch (role) {
     case "admin":
+    case "super_admin":
       return "/dashboard";
     case "ecommerce":
       return "/ecommerce";
@@ -476,7 +477,9 @@ function EmailLoginSection() {
       setLoading(false);
       return;
     }
-    writeRoleCache("admin");
+    // Keep the role returned by the authenticated OTP endpoint. The previous
+    // hardcoded "admin" cache hid signed Super Admin identity at login.
+    writeRoleCache(result.user?.role ?? null);
     window.location.href = appRootPath;
   };
 
