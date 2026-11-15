@@ -67,6 +67,28 @@ account timestamps. No account status was changed as part of this PR.
 After any approved identity reconciliation, re-run the live signed OTP
 and cross-company Finance checks before any cutover.
 
+## Loopback source/API rollback rehearsal (no credentials)
+
+`scripts/dev-issue76-loopback-rollback-smoke.sh` performs **baseline PR #50
+→ PR #77 candidate → baseline** in sequential, short-lived, 127.0.0.1-only
+processes using the same isolated port. It deliberately clears all inherited
+database, SMTP, GCP and session credentials and disables Finance, OTP and
+embedded scheduling. It verifies HTTP 200 for liveness, 401 for anonymous
+Admin/company routes, 404 for disabled Finance, and unchanged live systemd
+PID, source SHA and Nginx configuration fingerprint.
+
+Initial rehearsal exposed a pre-existing SIGTERM bug: the handler only
+cancelled schedulers but did not close the listener. The candidate now
+closes the HTTP listener and idle connections and bounds termination to
+10 seconds. The script explicitly requires **candidate SIGTERM to exit
+gracefully**. The old PR #50 baseline may require forced shutdown; the
+test script uses a limited fallback only for those unchanged baseline runs.
+
+This is **not** a complete real Admin/DB rollback rehearsal. The existing
+live legacy service also has the old SIGTERM behavior, which must be
+accounted for in the eventual drain/cutover plan. Do not switch Nginx,
+systemd, signed OTP, Finance or PROD based on this smoke alone.
+
 ## Remaining release gates
 
 - Implement deliberate selection UX and verify real same-origin browser login; the API contract alone is not a UI cutover.
