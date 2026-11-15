@@ -477,7 +477,9 @@ function EmailLoginSection() {
       setLoading(false);
       return;
     }
-    writeRoleCache("admin");
+    // Cache the role returned by the verified OTP endpoint; do not
+    // downgrade a Super Admin session to a hardcoded "admin" label.
+    writeRoleCache(result.user?.role ?? null);
     window.location.href = appRootPath;
   };
 
