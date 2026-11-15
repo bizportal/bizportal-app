@@ -36,9 +36,15 @@ export function onMarketplaceFinanceCommit(session: object, action: PostCommitAc
  */
 export async function resolveMarketplaceFinanceDevDatabaseUrl(
   secretReader: (secretName: string) => Promise<string> = readSecret,
+  mode: "writer" | "readonly" = "writer",
 ): Promise<string> {
-  if (process.env.APP_ENV?.trim().toLowerCase() !== "development" ||
-      process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV !== "true") {
+  // The new summary path is independent of the canonical writer feature.
+  // Selecting read-only NEVER enables the vendor/AP mutation routes.
+  const enabled = mode === "readonly"
+    ? process.env.BIZPORTAL_FINANCE_READONLY_ENABLED_DEV === "true"
+      && process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV !== "true"
+    : process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV === "true";
+  if (process.env.APP_ENV?.trim().toLowerCase() !== "development" || !enabled) {
     throw new Error("DEV_FINANCE_DISABLED");
   }
   const direct = process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV?.trim();
@@ -213,4 +219,131 @@ export async function withMarketplaceFinanceDevTransaction<T>(
   // No audit or external notification is sent after a failed/rolled-back commit.
   for (const action of afterCommit) await action();
   return result;
+}
+
+
+/**
+ * DEV-only, strictly transaction-read-only Finance summary. This connection
+ * never joins the canonical Writer pool, never queues after-commit callbacks
+ * and never receives SQL chosen by a browser. One call = one READ ONLY
+ * transaction + unconditional rollback + closed pool.
+ */
+export async function readMarketplaceFinanceSummaryDev(companyId: number): Promise<{
+  companyId: number;
+  purchaseOrders: number;
+  vendorInvoices: number;
+  apPreparations: number;
+  accountingHandoffs: number;
+}> {
+  if (process.env.APP_ENV?.trim().toLowerCase() !== "development"
+      || process.env.BIZPORTAL_FINANCE_READONLY_ENABLED_DEV !== "true"
+      || process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV === "true"
+      || !Number.isSafeInteger(companyId) || companyId <= 0) {
+    throw new Error("DEV_FINANCE_READONLY_DISABLED_OR_INVALID_COMPANY");
+  }
+  const approvedIds = (process.env.BIZPORTAL_FINANCE_READONLY_COMPANY_IDS_DEV ?? "")
+    .split(",").map(x => x.trim()).filter(x => /^[1-9][0-9]*$/.test(x)).map(Number);
+  if (!approvedIds.includes(companyId) || ![1, 3].includes(companyId)) {
+    throw new Error("DEV_FINANCE_READONLY_COMPANY_NOT_APPROVED");
+  }
+
+  const raw = await resolveMarketplaceFinanceDevDatabaseUrl(readSecret, "readonly");
+  const url = new URL(raw);
+  const options = secureFinancePoolOptions(raw);
+  // Explicitly pin the public Supabase 2021 root even on the pooler path.
+  // Never lower TLS or accept a certificate learned from the remote endpoint.
+  const root = new X509Certificate(SUPABASE_FINANCE_ROOT_2021_PEM);
+  if (!root.ca ||
+      root.fingerprint256.toUpperCase() !== SUPABASE_FINANCE_ROOT_2021_FINGERPRINT256) {
+    throw new Error("DEV_FINANCE_READONLY_PINNED_CA_INVALID");
+  }
+  const finance = new pg.Pool({
+    ...options,
+    ssl: {
+      rejectUnauthorized: true,
+      servername: url.hostname.toLowerCase(),
+      ca: SUPABASE_FINANCE_ROOT_2021_PEM,
+    },
+    max: 1,
+    application_name: "bizportal-finance-readonly-dev",
+  });
+
+  let client: pg.PoolClient | undefined;
+  try {
+    client = await finance.connect();
+    const sslStream = (client as unknown as {
+      connection?: { stream?: { encrypted?: boolean; authorized?: boolean } };
+    }).connection?.stream;
+    if (sslStream?.encrypted !== true || sslStream?.authorized !== true) {
+      throw new Error("DEV_FINANCE_READONLY_TLS_NOT_VERIFIED");
+    }
+    await client.query("BEGIN READ ONLY");
+    await client.query("SET LOCAL statement_timeout = '10000ms'");
+    const id = await client.query<{
+      db_role: string; login_role: string; elevated: boolean;
+      read_only: string; rls_po: boolean; rls_vi: boolean;
+      rls_ap: boolean; rls_handoff: boolean;
+      rls_po_lines: boolean; rls_shipments: boolean; rls_shipment_items: boolean;
+      rls_receipts: boolean; rls_receipt_items: boolean;
+      rls_vi_lines: boolean; rls_payment: boolean;
+    }>(`
+      SELECT current_user::text AS db_role, session_user::text AS login_role,
+        coalesce((SELECT rolsuper OR rolbypassrls FROM pg_roles
+                  WHERE rolname=current_user), TRUE) AS elevated,
+        current_setting('transaction_read_only') AS read_only,
+        row_security_active('public.mkt_purchase_orders'::regclass) AS rls_po,
+        row_security_active('public.mkt_purchase_order_lines'::regclass) AS rls_po_lines,
+        row_security_active('public.mkt_po_shipments'::regclass) AS rls_shipments,
+        row_security_active('public.mkt_po_shipment_items'::regclass) AS rls_shipment_items,
+        row_security_active('public.mkt_po_goods_receipts'::regclass) AS rls_receipts,
+        row_security_active('public.mkt_po_goods_receipt_items'::regclass) AS rls_receipt_items,
+        row_security_active('public.vendor_invoices'::regclass) AS rls_vi,
+        row_security_active('public.vendor_invoice_lines'::regclass) AS rls_vi_lines,
+        row_security_active('public.mkt_ap_preparations'::regclass) AS rls_ap,
+        row_security_active('public.payment_requests'::regclass) AS rls_payment,
+        row_security_active('public.mkt_accounting_handoffs'::regclass) AS rls_handoff
+    `);
+    const scope = id.rows[0];
+    if (!scope || scope.db_role !== EXPECTED_ROLE || scope.login_role !== EXPECTED_ROLE
+        || scope.elevated !== false || scope.read_only !== "on"
+        || [
+          scope.rls_po, scope.rls_po_lines, scope.rls_shipments,
+          scope.rls_shipment_items, scope.rls_receipts, scope.rls_receipt_items,
+          scope.rls_vi, scope.rls_vi_lines, scope.rls_ap, scope.rls_payment,
+          scope.rls_handoff,
+        ].some(flag => flag !== true)) {
+      throw new Error("DEV_FINANCE_READONLY_ROLE_OR_RLS_UNVERIFIED");
+    }
+    await client.query("SELECT set_config('app.marketplace_company_id',$1,true)", [String(companyId)]);
+    const bound = await client.query<{ tenant: string | null }>(
+      "SELECT current_setting('app.marketplace_company_id',true) AS tenant",
+    );
+    if (bound.rows[0]?.tenant !== String(companyId)) {
+      throw new Error("DEV_FINANCE_READONLY_TENANT_BINDING_FAILED");
+    }
+    const counts = await client.query<{
+      po_count: number; invoice_count: number; ap_count: number; handoff_count: number;
+    }>(`
+      SELECT
+        (SELECT count(*)::int FROM public.mkt_purchase_orders) AS po_count,
+        (SELECT count(*)::int FROM public.vendor_invoices) AS invoice_count,
+        (SELECT count(*)::int FROM public.mkt_ap_preparations) AS ap_count,
+        (SELECT count(*)::int FROM public.mkt_accounting_handoffs) AS handoff_count
+    `);
+    const record = counts.rows[0];
+    if (!record) throw new Error("DEV_FINANCE_READONLY_NO_RESULT");
+    return {
+      companyId,
+      purchaseOrders: Number(record.po_count),
+      vendorInvoices: Number(record.invoice_count),
+      apPreparations: Number(record.ap_count),
+      accountingHandoffs: Number(record.handoff_count),
+    };
+  } finally {
+    if (client) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
+    await finance.end();
+  }
 }

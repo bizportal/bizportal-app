@@ -96,6 +96,24 @@ router.use((req, res, next) => {
   });
 });
 
+// Standalone Finance summary is read-only and opt-in, with an independent
+// route tree. The canonical Vendor Invoice/AP writer remains OFF.
+router.use((req, res, next) => {
+  if (!req.path.startsWith("/mkt/admin/finance-readonly/")) return next();
+  if (process.env.APP_ENV?.trim().toLowerCase() !== "development"
+      || !isDevelopmentEnvironment()
+      || process.env.BIZPORTAL_FINANCE_READONLY_ENABLED_DEV !== "true"
+      || process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV === "true") {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  void import("./dev-finance-readonly-summary").then(({ default: handler }) => {
+    handler(req, res, next);
+  }).catch(() => {
+    if (!res.headersSent) res.status(503).json({ error: "Read-only Finance unavailable" });
+  });
+});
+
 // Canonical vendor invoice/AP services: DEV-only, feature flags OFF by default.
 // Standalone runtime does not create GL journals or execute payments.
 router.use((req,res,next) => {
