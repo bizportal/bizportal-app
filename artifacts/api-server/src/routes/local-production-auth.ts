@@ -9,6 +9,7 @@ import {
   initializeProductionSessionSigning,
   isDevelopmentEnvironment,
   isSignedOtpDevEnabled,
+  isSignedPasswordDevEnabled,
   setProductionSessionCookie,
   type ProductionSession,
 } from "./dev-auth";
@@ -327,7 +328,11 @@ router.post("/auth/email-login", async (
   response: Response,
   next: NextFunction,
 ): Promise<void> => {
-  if (isDevelopmentEnvironment()) {
+  // Reuse the *existing* password hash and production password verifier.
+  // In DEV this route is disabled unless explicitly enabled with a pinned,
+  // server-verified Super Admin; the general PROD login is unchanged.
+  const devPassword = isDevelopmentEnvironment();
+  if (devPassword && !isSignedPasswordDevEnabled()) {
     next();
     return;
   }
@@ -345,7 +350,25 @@ router.post("/auth/email-login", async (
   }
 
   try {
-    const user = await findUserByEmail(email);
+    const pinnedEmail = process.env.BIZPORTAL_SIGNED_PASSWORD_ACCOUNT_EMAIL_DEV?.trim().toLowerCase();
+    const pinnedId = process.env.BIZPORTAL_SIGNED_PASSWORD_ACCOUNT_ID_DEV?.trim();
+    // Do not expose whether an account exists or which role it has.
+    if (devPassword && (!pinnedEmail || !pinnedId || email !== pinnedEmail)) {
+      response.status(401).json({ error: "Email atau password salah." });
+      return;
+    }
+    const user = devPassword
+      ? await findUserByEmail(email, pinnedId)
+      : await findUserByEmail(email);
+    if (devPassword && (
+      !user || user.id !== pinnedId || user.email.trim().toLowerCase() !== pinnedEmail
+      || user.role.trim().toLowerCase() !== "super_admin"
+      || !user.isActive || user.status?.trim().toLowerCase() !== "active"
+      || user.companyId !== null
+    )) {
+      response.status(401).json({ error: "Email atau password salah." });
+      return;
+    }
     if (!user?.passwordHash || !(await compare(password, user.passwordHash))) {
       response.status(401).json({ error: "Email atau password salah." });
       return;
@@ -359,6 +382,9 @@ router.post("/auth/email-login", async (
 
     await initializeProductionSessionSigning();
 
+    // The pinned ID, active status, uniqueness and password have already
+    // been validated above. The existing getProductionUser session middleware
+    // rechecks identity on every subsequent protected request, not at login.
     const session = createSession(user);
     setProductionSessionCookie(response, session);
     response.json({

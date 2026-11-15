@@ -367,6 +367,9 @@ function WaLoginSection() {
 
 function EmailLoginSection() {
   const { signInWithEmail, sendEmailOtp, verifyEmailOtp, devLogin } = useSupabaseAuth();
+  // Only an explicit preview build setting hides the unused OTP choice.
+  // Never infer authentication permissions from this UI switch.
+  const passwordOnlyPreview = import.meta.env.VITE_BIZPORTAL_DEV_PASSWORD_ONLY === "true";
   const [mode, setMode] = React.useState<"password" | "otp">("password");
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
@@ -431,12 +434,12 @@ function EmailLoginSection() {
       }
       setDevUsers(availableDevUsers);
     }
-    const loginMode = resolveEmailLoginMode({
+    const loginMode = passwordOnlyPreview ? "password" : resolveEmailLoginMode({
       email,
       password,
       devEmails: availableDevUsers?.map((user) => user.email) ?? [],
     });
-    const result = loginMode === "dev"
+    const result: { error: string | null; user?: { role?: string } } = loginMode === "dev"
       ? await devLogin(email)
       : await signInWithEmail(email, password);
     if (result.error) {
@@ -446,7 +449,9 @@ function EmailLoginSection() {
       const devUser = availableDevUsers?.find(
         (user) => user.email.trim().toLowerCase() === email.trim().toLowerCase(),
       );
-      writeRoleCache(loginMode === "dev" ? devUser?.role ?? null : "admin");
+      writeRoleCache(loginMode === "dev"
+        ? devUser?.role ?? null
+        : result.user?.role ?? null);
       window.location.href = appRootPath;
     }
   };
@@ -493,13 +498,15 @@ function EmailLoginSection() {
         >
           Password
         </button>
-        <button
-          type="button"
-          onClick={() => { setMode("otp"); setError(null); }}
-          className={`flex-1 rounded-md py-2 text-xs font-medium transition-all ${mode === "otp" ? "bg-indigo-600 text-white shadow" : "text-slate-400 hover:text-white"}`}
-        >
-          OTP Email
-        </button>
+        {!passwordOnlyPreview && (
+          <button
+            type="button"
+            onClick={() => { setMode("otp"); setError(null); }}
+            className={`flex-1 rounded-md py-2 text-xs font-medium transition-all ${mode === "otp" ? "bg-indigo-600 text-white shadow" : "text-slate-400 hover:text-white"}`}
+          >
+            OTP Email
+          </button>
+        )}
       </div>
       <input
         type="email"
@@ -516,13 +523,13 @@ function EmailLoginSection() {
           <input
             type="password"
             aria-label="Password admin"
-            placeholder="Password (kosong untuk DEV)"
+            placeholder={passwordOnlyPreview ? "Password Super Admin" : "Password (kosong untuk DEV)"}
             value={password}
             onChange={(event) => setPassword(event.target.value)}
             autoComplete="current-password"
             className="rounded-lg bg-slate-800/70 border border-slate-700 px-3 py-2.5 text-sm text-slate-300 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
           />
-          {resolveEmailLoginMode({
+          {!passwordOnlyPreview && resolveEmailLoginMode({
             email,
             password,
             devEmails: devUsers?.map((user) => user.email) ?? [],

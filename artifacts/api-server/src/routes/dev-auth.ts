@@ -74,7 +74,32 @@ export function isSignedOtpDevEnabled(): boolean {
   return process.env.APP_ENV?.trim().toLowerCase() === "development"
     && isDevelopmentEnvironment()
     && process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV === "true"
+    && process.env.BIZPORTAL_SIGNED_PASSWORD_ENABLED_DEV !== "true"
     && getExplicitSessionSecret() !== null;
+}
+
+/** Explicit opt-in for using the pre-existing Super Admin password in DEV.
+ * This is an application session gate, never a PostgreSQL password.
+ */
+export function isSignedPasswordDevEnabled(): boolean {
+  return process.env.APP_ENV?.trim().toLowerCase() === "development"
+    && isDevelopmentEnvironment()
+    && process.env.BIZPORTAL_SIGNED_PASSWORD_ENABLED_DEV === "true"
+    && process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV !== "true"
+    && getExplicitSessionSecret() !== null
+    && Boolean(process.env.BIZPORTAL_SIGNED_PASSWORD_ACCOUNT_ID_DEV?.trim())
+    && Boolean(process.env.BIZPORTAL_SIGNED_PASSWORD_ACCOUNT_EMAIL_DEV?.trim());
+}
+
+function isSignedDevAuthRequested(): boolean {
+  return isDevelopmentEnvironment() && (
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV === "true"
+    || process.env.BIZPORTAL_SIGNED_PASSWORD_ENABLED_DEV === "true"
+  );
+}
+
+export function isSignedDevAuthEnabled(): boolean {
+  return isSignedOtpDevEnabled() || isSignedPasswordDevEnabled();
 }
 
 export async function initializeProductionSessionSigning(): Promise<void> {
@@ -241,7 +266,7 @@ function decodeSignedCookie<T>(request: Request, cookieName: string): T | null {
 export function getDevSession(request: Request): DevAuthUser | null {
   // Once signed DEV OTP is explicitly enabled, a legacy email-only cookie
   // must never act as fallback authentication for protected routes.
-  if (!isDevelopmentEnvironment() || isSignedOtpDevEnabled()) return null;
+  if (!isDevelopmentEnvironment() || isSignedDevAuthRequested()) return null;
 
   const secret = getSessionSecret();
   const raw = getCookie(request, DEV_SESSION_COOKIE);
@@ -273,7 +298,7 @@ export function getDevSession(request: Request): DevAuthUser | null {
 }
 
 export function getProductionSession(request: Request): ProductionSession | null {
-  if (isDevelopmentEnvironment() && !isSignedOtpDevEnabled()) return null;
+  if (isDevelopmentEnvironment() && !isSignedDevAuthEnabled()) return null;
 
   const session = decodeSignedCookie<ProductionSession>(request, PRODUCTION_SESSION_COOKIE);
   if (
@@ -305,7 +330,7 @@ interface FinanceCompanyScope {
 }
 
 export function isFinanceGlobalScopeDevEnabled(): boolean {
-  return isSignedOtpDevEnabled()
+  return isSignedDevAuthEnabled()
     && process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV === "true"
     && process.env.BIZPORTAL_FINANCE_GLOBAL_SCOPE_ENABLED_DEV === "true";
 }
@@ -434,7 +459,11 @@ async function verifySupabaseAccessToken(accessToken: string): Promise<{
 }
 
 export async function getProductionUser(session: ProductionSession): Promise<DevAuthUser | null> {
-  const signedOtpDev = isSignedOtpDevEnabled();
+  const signedOtpDev = isSignedDevAuthEnabled();
+  if (isSignedPasswordDevEnabled() && (
+    session.id !== process.env.BIZPORTAL_SIGNED_PASSWORD_ACCOUNT_ID_DEV?.trim()
+    || session.email !== process.env.BIZPORTAL_SIGNED_PASSWORD_ACCOUNT_EMAIL_DEV?.trim().toLowerCase()
+  )) return null;
   // Only DEV signed OTP pins the lookup to the signed account ID as well as
   // email. Duplicate case-insensitive emails must not select a different role.
   // Preserve the existing email-only PROD lookup unchanged.
@@ -571,7 +600,7 @@ export function createDevAuthRouter(): Router {
 
   router.get("/auth/dev-users", (_request, response) => {
     // DEV-only identity enumeration is not part of signed OTP auth.
-    if (!isDevelopmentEnvironment() || isSignedOtpDevEnabled()) {
+    if (!isDevelopmentEnvironment() || isSignedDevAuthRequested()) {
       return response.status(404).json({ error: "Not found" });
     }
     return response.json({ users: getDevUsers() });
@@ -580,7 +609,7 @@ export function createDevAuthRouter(): Router {
   router.post("/auth/dev-login", async (request, response) => {
     // Never issue an email-only DEV session when signed OTP is required.
     // Legacy local/test login remains unchanged while OTP is OFF.
-    if (!isDevelopmentEnvironment() || isSignedOtpDevEnabled()) {
+    if (!isDevelopmentEnvironment() || isSignedDevAuthRequested()) {
       return response.status(404).json({ error: "Not found" });
     }
 
@@ -642,7 +671,7 @@ export function createDevAuthRouter(): Router {
     }
 
     // When OTP is enabled, prefer its verified identity over a legacy cookie.
-    if (isSignedOtpDevEnabled()) {
+    if (isSignedDevAuthEnabled()) {
       const signed = getProductionSession(request);
       if (signed) {
         try {
@@ -672,7 +701,7 @@ export function createDevAuthRouter(): Router {
     if (!isDevelopmentEnvironment()) return next();
 
     let user: DevAuthUser | null = null;
-    if (isSignedOtpDevEnabled()) {
+    if (isSignedDevAuthEnabled()) {
       const signed = getProductionSession(request);
       if (signed) {
         try {

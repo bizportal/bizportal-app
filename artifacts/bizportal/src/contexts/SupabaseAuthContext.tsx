@@ -13,7 +13,7 @@ interface AuthContextValue {
   apiReadinessError: string | null;
   retryApiReadiness: () => void;
   signInWithGoogle: () => void;
-  signInWithEmail: (email: string, password: string) => Promise<{ error: string | null }>;
+  signInWithEmail: (email: string, password: string) => Promise<{ error: string | null; user?: AuthUser }>;
   sendEmailOtp: (email: string) => Promise<{ error: string | null }>;
   verifyEmailOtp: (email: string, code: string) => Promise<{ error: string | null; user?: AuthUser }>;
   devLogin: (email: string) => Promise<{ error: string | null }>;
@@ -305,7 +305,7 @@ export function SupabaseAuthProvider({ children }: { children: React.ReactNode }
       if (!data?.user) return { error: "Session login tidak diterima server." };
       writeCache(data.user);
       setUser(data.user);
-      return { error: null };
+      return { error: null, user: data.user };
     } catch {
       return { error: "Koneksi ke server gagal." };
     }
