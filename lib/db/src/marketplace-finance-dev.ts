@@ -65,8 +65,16 @@ export async function resolveMarketplaceFinanceDevDatabaseUrl(
   const trustedUser = username === EXPECTED_ROLE ||
     username === `${EXPECTED_ROLE}.${EXPECTED_PROJECT}`;
   const projectBound = hostname.includes(EXPECTED_PROJECT) || username.includes(EXPECTED_PROJECT);
-  if (!["require", "verify-ca", "verify-full"].includes(url.searchParams.get("sslmode") ?? "")) {
+  const sslmode = url.searchParams.get("sslmode");
+  if (!sslmode) {
     throw new Error("DEV_FINANCE_DATABASE_SSL_REQUIRED");
+  }
+  // pg-connection-string v2 currently treats sslmode=require and verify-ca
+  // as aliases for verify-full; its v3/libpq semantics do not. Require CA
+  // and hostname verification explicitly to prevent dependency downgrade.
+  const sslrootcert = url.searchParams.get("sslrootcert");
+  if (sslmode !== "verify-full" || !sslrootcert?.startsWith("/")) {
+    throw new Error("DEV_FINANCE_DATABASE_VERIFIED_CA_REQUIRED");
   }
   if (!["postgres:", "postgresql:"].includes(url.protocol) ||
       !trustedHost || !trustedUser || !projectBound || !url.password ||

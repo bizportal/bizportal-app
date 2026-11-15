@@ -20,7 +20,16 @@ any PROD database account.
 
 Both sources must not be configured simultaneously. The Finance URL must
 identify Supabase **CST-DEV**, authenticate as the dedicated Finance role,
-and include TLS (`sslmode=require`, `verify-ca`, or `verify-full`).
+and explicitly require CA and hostname verification using
+sslmode=verify-full with sslrootcert=/absolute/path/to/cst-dev-supabase-ca.crt.
+The CA must be the genuine project-specific certificate downloaded from the
+CST-DEV Supabase Dashboard (Database > Settings > SSL Configuration),
+installed securely on the real DEV host. Do not trust a certificate copied
+only from an unverified TLS connection or disable rejectUnauthorized.
+sslmode=require, verify-ca, a missing CA, and relative CA paths now fail
+closed. Node-postgres v8 currently aliases require to verify-full, but
+pg-connection-string explicitly warns this becomes weaker in v3.
+No CA file has been installed in active Hostinger by this source change.
 Any missing, conflicting, wrong-role, PROD, or invalid configuration fails
 closed. Generic application-wide secrets are explicitly rejected.
 
