@@ -8,6 +8,7 @@ const m = vi.hoisted(() => ({
   query: vi.fn(), email: vi.fn(), finance: vi.fn(), getInvoice: vi.fn(),
   invoiceSubmit: vi.fn(), ap: vi.fn(), currentCompany: 1, userActive: true,
   userId: "admin-otp-1", userRole: "super_admin", codeHash: "",
+  duplicateIdentity: false,
   consumed: false, attempts: 0, scopedCalls: [] as {sql:string;params:unknown[]}[],
 }));
 vi.mock("@workspace/db", () => ({
@@ -79,7 +80,7 @@ beforeEach(() => {
   delete process.env.BIZPORTAL_FINANCE_GLOBAL_COMPANY_IDS_DEV;
   for (const v of [m.query,m.email,m.finance,m.getInvoice,m.invoiceSubmit,m.ap]) v.mockReset();
   m.currentCompany = 1; m.userActive = true;
-  m.userId = "admin-otp-1"; m.userRole = "super_admin";
+  m.userId = "admin-otp-1"; m.userRole = "super_admin"; m.duplicateIdentity=false;
   m.codeHash = "";m.consumed = false;m.attempts=0;m.scopedCalls.length=0;
   m.email.mockResolvedValue(undefined);
   m.query.mockImplementation(async (q:string, args?:unknown[]) => {
@@ -105,11 +106,19 @@ beforeEach(() => {
     }
     if (q.includes("from public.companies where id=$1")) return { rows:[{id:args?.[0]}] };
     if (q.includes("insert into public.audit_logs") && q.includes("finance_company_scope_selected")) return { rowCount:1,rows:[] };
-    if (q.includes("to_jsonb(u)")) return { rows:[{user_data:{
-      id:m.userId,email:"admin-otp@example.invalid",role:m.userRole,
-      status:m.userActive?"active":"inactive",
-      is_active:m.userActive,company_id:m.currentCompany,
-    }}] };
+    if (q.includes("to_jsonb(u)")) {
+      const first = {user_data:{
+        id:m.userId,email:"admin-otp@example.invalid",role:m.userRole,
+        status:m.userActive?"active":"inactive",
+        is_active:m.userActive,company_id:m.currentCompany,
+      }};
+      const duplicate = {user_data:{
+        id:"duplicate-admin",email:"ADMIN-OTP@example.invalid",role:"admin",
+        status:"active",is_active:true,company_id:null,
+      }};
+      return {rows: m.duplicateIdentity ? [first,duplicate] : [first]};
+    }
+    if (q.includes("insert into public.bizportal_email_otp_codes")) return {rows:[],rowCount:1};
     throw new Error("Unexpected DB query in isolated OTP test");
   });
   m.finance.mockImplementation(async (companyId:number,work:(tx:any)=>Promise<unknown>) => {
@@ -237,6 +246,29 @@ describe("signed Super Admin OTP -> canonical Finance route integrated HTTP boun
     expect(invalid.headers.get("set-cookie")).toBeNull();
     expect((await getInvoice()).status).toBe(401);
     expect(m.finance).not.toHaveBeenCalled();
+  });
+});
+
+describe("Issue #76 duplicate normalized Admin email identity regression", () => {
+  it("does not send an OTP when normalized email matches multiple active roles", async () => {
+    m.duplicateIdentity = true;
+    const response = await fetch(origin + "/api/auth/email-otp/send", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({email:"admin-otp@example.invalid"}),
+    });
+    expect(response.status).toBe(202);
+    expect(m.email).not.toHaveBeenCalled();
+    expect(m.finance).not.toHaveBeenCalled();
+    const lookup = m.query.mock.calls.find(([sql]) => String(sql).includes("to_jsonb(u)"));
+    expect(lookup?.[0]).toContain("limit 2");
+  });
+  it("revokes an existing signed Admin session when the email becomes ambiguous", async () => {
+    const cookie = await otpLogin();
+    m.duplicateIdentity = true;
+    const response = await getInvoice(cookie);
+    expect(response.status).toBe(403);
+    expect(m.finance).not.toHaveBeenCalled();
+    expect(m.getInvoice).not.toHaveBeenCalled();
   });
 });
 

@@ -42,6 +42,22 @@ Server checks the signed session, current user/role/active status in DB, global 
 
 For every canonical Finance request, a global account must still pass current Super Admin authorization, both allowlists, the cookie's signature/session binding, and an active-company lookup. Frontend localStorage, query parameters, and `x-company-id` never grant Finance scope. Existing company-bound Super Admin behavior remains unchanged. No company-wide consolidated scope is accepted.
 
+## Normalized email identity uniqueness gate
+
+CST-DEV currently contains two active `public.users` rows that normalize
+to the same Admin email, but have different roles (`admin` and
+`super_admin`). Previously, an OTP query using `lower(email)` plus
+`LIMIT 1` could select either account. For DEV **signed OTP only**,
+both OTP identity lookup and subsequent session authorization now check
+up to two matching rows and **fail closed** if the normalized email is
+not unique. PROD authentication semantics are unchanged.
+
+This does **not** change either historical user, and it does not resolve
+the duplicate for real OTP E2E. An authorized account-identity review
+must reconcile the two rows (preserving role and audit history) before
+using that mailbox for live Super Admin Finance tests. Never auto-promote
+an Admin role or guess which row is authoritative.
+
 ## Remaining release gates
 
 - Implement deliberate selection UX and verify real same-origin browser login; the API contract alone is not a UI cutover.

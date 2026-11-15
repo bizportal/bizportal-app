@@ -55,9 +55,12 @@ async function findUserByEmail(email: string): Promise<RawUser | null> {
     `select to_jsonb(u) as user_data
        from public.users u
       where lower(coalesce(to_jsonb(u)->>'email', '')) = $1
-      limit 1`,
+      limit ${isSignedOtpDevEnabled() ? 2 : 1}`,
     [email],
   );
+  // DEV signed OTP must never pick an arbitrary account when normalized
+  // email resolves to multiple users (e.g. admin and super_admin variants).
+  if (isSignedOtpDevEnabled() && result.rows.length !== 1) return null;
   const data = result.rows[0]?.user_data;
   if (!data || typeof data.id !== "string" || typeof data.email !== "string") return null;
 

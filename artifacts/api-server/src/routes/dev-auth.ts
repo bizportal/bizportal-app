@@ -436,9 +436,12 @@ export async function getProductionUser(session: ProductionSession): Promise<Dev
     `select to_jsonb(u) user_data
      from public.users u
      where lower(coalesce(to_jsonb(u)->>'email', '')) = $1
-     limit 1`,
+     limit ${isSignedOtpDevEnabled() ? 2 : 1}`,
     [session.email],
   );
+  // A signed DEV OTP session must not be accepted if another user now
+  // resolves to the same normalized email; force audited identity repair.
+  if (isSignedOtpDevEnabled() && result.rows.length !== 1) return null;
   const userData = result.rows[0]?.user_data;
   if (!userData) return null;
 
