@@ -15,6 +15,16 @@ All conditions must be true in the **separate DEV candidate process**:
 
 Do **not** enable these on the active legacy DEV service or PROD. No default account or company ID is assumed.
 
+## Preserve server-verified Super Admin role
+
+The existing OTP login form must cache the role returned by the verified
+server session; a previous hardcoded `admin` cache hid `super_admin` in
+the UI. The existing dashboard path and company authorization are retained.
+The change reuses the existing context, login form and route; no new login
+method, roles, company grants or Finance writer were introduced. The
+associated regression asserts server identity propagation and routing.
+This is source-only evidence, not a live Super Admin OTP browser login.
+
 ## Existing BizPortal Vendor Invoice UI (separately gated)
 
 The existing `/purchase/vendor-invoices` page can display an explicit
@@ -104,6 +114,13 @@ accounted for in the eventual drain/cutover plan. Do not switch Nginx,
 systemd, signed OTP, Finance or PROD based on this smoke alone.
 
 ## Actual built API: negative-only authenticated-boundary smoke
+
+Both curl calls in the negative HTTP smoke explicitly use
+`curl -q --noproxy '*' --proxy ''` to disable user curlrc and inherited
+proxy settings. On the isolated VPS, all nine expected HTTP statuses still
+passed even with deliberately incorrect `http_proxy`, `ALL_PROXY`, empty
+`NO_PROXY`, and a hostile curlrc; this is a loopback-only regression, not
+authenticated API proof. The source-contract test enforces both curl flags.
 
 The repeatable `scripts/dev-issue76-finance-unauth-http-smoke.sh` launches
 the **compiled PR #77 API** only on isolated VPS loopback port `19879`

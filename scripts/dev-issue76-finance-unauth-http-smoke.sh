@@ -57,7 +57,7 @@ unset test_signing_key
 ready=false
 for _ in $(seq 1 80); do
   kill -0 "$child" 2>/dev/null || { echo NEGATIVE_HTTP_PROCESS_EXITED; exit 3; }
-  if [[ "$(curl -sS --max-time 1 -o /dev/null -w '%{http_code}' \
+  if [[ "$(curl -q --noproxy '*' --proxy '' -sS --max-time 1 -o /dev/null -w '%{http_code}' \
      "http://127.0.0.1:$PORT/api/health/live" 2>/dev/null || :)" == 200 ]]; then ready=true; break; fi
   sleep 0.2
 done
@@ -67,7 +67,7 @@ check() {
   local expected="$1" label="$2"
   shift 2
   local status
-  status="$(curl --silent --show-error --max-time 5 -o /dev/null -w '%{http_code}' "$@")"
+  status="$(curl -q --noproxy '*' --proxy '' --silent --show-error --max-time 5 -o /dev/null -w '%{http_code}' "$@")"
   [[ "$status" == "$expected" ]] || { echo "${label}_HTTP_$status_EXPECTED_$expected"; exit 5; }
   echo "${label}_HTTP_$expected=PASS"
 }
