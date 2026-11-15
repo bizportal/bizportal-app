@@ -1,6 +1,11 @@
 import { Router } from "express";
 import { createHash } from "node:crypto";
 import { pool } from "@workspace/db";
+import {
+  buildFleetRosterEvidenceSummary, jakartaDay,
+  type FleetRosterSourceRow,
+} from "../lib/fleet-roster-evidence-summary";
+
 import { authenticateAdmin, type AdminRequest } from "./admin-auth";
 import { sendFleetOutstandingReminders } from "../lib/fleet-wa-reminder";
 
@@ -1394,6 +1399,64 @@ router.get("/drivers/:extId/detail", async (req: AdminRequest, res) => {
 router.get("/vehicles", async (req: AdminRequest, res) => {
   try {
     const cid = companyId(req);
+    // Reviewer-only, READ-ONLY projection on existing authenticated Fleet GET.
+    // This never returns plates, driver identities, contact details or credentials.
+    if (req.query.evidence !== undefined) {
+      if (req.query.evidence !== "1") {
+        res.status(400).json({ error: "Unsupported Fleet evidence mode" });
+        return;
+      }
+      const role = String(req.adminUser?.role ?? "").toLowerCase();
+      if (role !== "owner" && role !== "super_admin") {
+        res.status(403).json({ error: "Fleet evidence requires owner or Super Admin" });
+        return;
+      }
+      if (!(await tableExists("fleet_vehicles")) ||
+          !(await tableExists("fleet_drivers")) ||
+          !(await tableExists("fleet_transactions"))) {
+        res.status(503).json({ error: "Fleet evidence source is incomplete" });
+        return;
+      }
+      const evidence = await pool.query<FleetRosterSourceRow>(
+        `WITH scoped_vehicles AS (
+           SELECT v.id AS vehicle_id, v.company_id, v.status AS vehicle_status,
+                  v.driver_id,
+                  NULLIF(UPPER(REGEXP_REPLACE(COALESCE(v.plate, ''),
+                    '[^[:alnum:]]', '', 'g')), '') AS plate_key,
+                  COUNT(*) OVER (PARTITION BY
+                    NULLIF(UPPER(REGEXP_REPLACE(COALESCE(v.plate, ''),
+                      '[^[:alnum:]]', '', 'g')), ''))::int AS plate_occurrences
+             FROM public.fleet_vehicles v
+            WHERE v.company_id=$1
+         ),
+         transactions_by_plate AS (
+           SELECT NULLIF(UPPER(REGEXP_REPLACE(COALESCE(t.vehicle_plate, ''),
+                    '[^[:alnum:]]', '', 'g')), '') AS plate_key,
+                  COUNT(*)::int AS transaction_count,
+                  MAX(t.transaction_date)::text AS last_transaction_date
+             FROM public.fleet_transactions t
+            WHERE t.company_id=$1
+            GROUP BY 1
+         )
+         SELECT v.vehicle_id, v.company_id, v.vehicle_status,
+                d.status AS driver_status, d.applicator_status,
+                d.source_present_in_latest_snapshot,
+                (v.plate_key IS NOT NULL) AS has_plate,
+                v.plate_occurrences,
+                COALESCE(tx.transaction_count,0)::int AS transaction_count,
+                tx.last_transaction_date
+           FROM scoped_vehicles v
+           LEFT JOIN public.fleet_drivers d
+             ON d.id=v.driver_id AND d.company_id=v.company_id::text
+           LEFT JOIN transactions_by_plate tx
+             ON tx.plate_key=v.plate_key AND v.plate_key IS NOT NULL
+          ORDER BY v.vehicle_id`,
+        [cid],
+      );
+      res.setHeader("Cache-Control", "no-store");
+      res.json(buildFleetRosterEvidenceSummary(evidence.rows, cid, jakartaDay(new Date())));
+      return;
+    }
     if (!(await tableExists("fleet_vehicles"))) {
       res.json({ vehicles: [] });
       return;
