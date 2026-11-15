@@ -254,6 +254,15 @@ describe("dedicated Finance DEV database transaction boundary", () => {
     expect(queries.some(query => query.includes("set_config"))).toBe(true);
     expect(queries.some(query => query.includes("current_setting"))).toBe(true);
   });
+  it("never enables the canonical writer helper merely because read-only Finance is on", async () => {
+    delete process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV;
+    process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV = "true";
+    const callback = vi.fn();
+    await expect(withMarketplaceFinanceDevTransaction(1, callback))
+      .rejects.toThrow("DEV_FINANCE_WRITER_DISABLED");
+    expect(callback).not.toHaveBeenCalled();
+    expect(mock.execute).not.toHaveBeenCalled();
+  });
   it("blocks queued after-commit actions in the read-only Finance helper", async () => {
     delete process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV;
     process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV = "true";

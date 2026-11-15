@@ -77,15 +77,23 @@ router.post("/mkt/admin/finance-company-selection", async (req, res) => {
     if (!await isActiveFinanceCompany(companyId)) {
       res.status(404).json({ error: "Company unavailable" }); return;
     }
-    // Fail closed if the audit cannot be persisted. No financial writer is used.
-    await pool.query(
-      "insert into public.audit_logs "
-      + "(user_email,action,entity_type,entity_id,after_data,ip_address,company_id,module) "
-      + "values ($1,'finance_company_scope_selected','company',$2,$3::jsonb,$4,$5,'marketplace_finance')",
-      [user.email, String(companyId),
-        JSON.stringify({ selectedCompanyId: companyId, source: "signed_dev_superadmin" }),
-        req.ip ?? null, String(companyId)],
-    );
+    // The independent read-only GET mode must not write through the auth DB:
+    // this restricted Admin role intentionally lacks the Finance audit INSERT
+    // policy. Retain the existing durable audit contract for the Writer mode.
+    if (process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV !== "true"
+        && process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV === "true") {
+      req.log?.info?.({ companyId, actorId: user.id }, "DEV Finance read-only company selected");
+    } else {
+      // Fail closed if the Writer-mode audit cannot be persisted.
+      await pool.query(
+        "insert into public.audit_logs "
+        + "(user_email,action,entity_type,entity_id,after_data,ip_address,company_id,module) "
+        + "values ($1,'finance_company_scope_selected','company',$2,$3::jsonb,$4,$5,'marketplace_finance')",
+        [user.email, String(companyId),
+          JSON.stringify({ selectedCompanyId: companyId, source: "signed_dev_superadmin" }),
+          req.ip ?? null, String(companyId)],
+      );
+    }
     setFinanceCompanyScopeCookie(res, session, companyId);
     res.json({ ok: true, companyId });
   } catch (error) {

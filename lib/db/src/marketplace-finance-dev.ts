@@ -166,6 +166,12 @@ export async function withMarketplaceFinanceDevTransaction<T>(
   companyId: number, work: (session: ScopedDb) => Promise<T>,
   options: { readOnly?: boolean } = {},
 ): Promise<T> {
+  // A previously initialized Finance pool is not a grant to write. The
+  // independent read-only feature must never activate the writer helper.
+  if (options.readOnly !== true
+      && process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV !== "true") {
+    throw new Error("DEV_FINANCE_WRITER_DISABLED");
+  }
   if (!Number.isSafeInteger(companyId) || companyId <= 0) {
     throw new Error("DEV_FINANCE_COMPANY_INVALID");
   }
