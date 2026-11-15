@@ -45,7 +45,23 @@ router.post("/mkt/admin/finance-company-selection", async (req, res) => {
     // The existing signed session is required, and cross-site browser requests
     // cannot use this endpoint to silently switch the Finance company.
     const fetchSite = req.header("sec-fetch-site");
-    if ((fetchSite && fetchSite !== "same-origin") || !req.is("application/json")) {
+    // A forged or foreign browser Origin must not switch tenant scope even
+    // when Sec-Fetch-Site is missing or spoofed. Use the actual HTTP Host,
+    // not caller-controlled X-Forwarded-Host, as the host reference.
+    const origin = req.header("origin");
+    let validOrigin = true;
+    if (origin) {
+      try {
+        const parsed = new URL(origin);
+        const presentedHost = req.header("host");
+        const forwardedProtocol = req.header("x-forwarded-proto")?.split(",")[0].trim();
+        const requestProtocol = forwardedProtocol || (req.secure ? "https" : "http");
+        validOrigin = parsed.origin === origin
+          && parsed.host.toLowerCase() === presentedHost?.toLowerCase()
+          && parsed.protocol === requestProtocol.toLowerCase() + ":";
+      } catch { validOrigin = false; }
+    }
+    if (!validOrigin || (fetchSite && fetchSite !== "same-origin") || !req.is("application/json")) {
       res.status(403).json({ error: "Same-origin JSON request required" }); return;
     }
     const body = req.body;

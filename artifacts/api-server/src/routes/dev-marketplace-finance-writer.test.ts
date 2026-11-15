@@ -85,6 +85,37 @@ describe("Issue #76 DEV global Super Admin Finance company selection", () => {
     expect(cross.status).toBe(403);
     expect(mock.companyQuery).not.toHaveBeenCalled();
   });
+  it("rejects forged foreign Origin and forwarded Host even if Fetch Metadata says same-origin", async () => {
+    const select = (origin: string, extra: Record<string,string>={}) => fetch(
+      base+"/api/mkt/admin/finance-company-selection", {
+        method:"POST",
+        headers:{"Content-Type":"application/json","Origin":origin,
+          "Sec-Fetch-Site":"same-origin",...extra},
+        body:JSON.stringify({companyId:1}),
+      });
+    expect((await select("https://attacker.example")).status).toBe(403);
+    expect((await select("null")).status).toBe(403);
+    expect((await select(base.replace("127.0.0.1","localhost"))).status).toBe(403);
+    expect((await select("https://attacker.example",{
+      "X-Forwarded-Host":"attacker.example",
+    })).status).toBe(403);
+    expect(mock.companyQuery).not.toHaveBeenCalled();
+    expect(mock.setScopeCookie).not.toHaveBeenCalled();
+  });
+  it("accepts matching browser Origin through the intended HTTPS proxy", async () => {
+    mock.companyQuery.mockResolvedValueOnce({rows:[{id:1}]})
+      .mockResolvedValueOnce({rowCount:1,rows:[]});
+    const response=await fetch(base+"/api/mkt/admin/finance-company-selection", {
+      method:"POST",
+      headers:{"Content-Type":"application/json",
+        "Origin":base.replace("http://","https://"),
+        "X-Forwarded-Proto":"https","Sec-Fetch-Site":"same-origin"},
+      body:JSON.stringify({companyId:1}),
+    });
+    expect(response.status).toBe(200);
+    expect(mock.companyQuery).toHaveBeenCalledTimes(2);
+    expect(mock.setScopeCookie).toHaveBeenCalledOnce();
+  });
   it("checks the live company, writes audit before issuing scoped cookie", async () => {
     mock.companyQuery.mockResolvedValueOnce({rows:[{id:1}]})
       .mockResolvedValueOnce({rowCount:1,rows:[]});
