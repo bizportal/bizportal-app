@@ -18,6 +18,7 @@ vi.mock("@workspace/db", () => ({
 vi.mock("../lib/smtp", () => ({ sendAdminLoginOtpEmail: vi.fn() }));
 
 import { createDevAuthRouter, isFinanceGlobalScopeDevEnabled } from "./dev-auth";
+import { authenticateAdmin, type AdminRequest } from "./admin-auth";
 import localProductionAuthRouter from "./local-production-auth";
 
 const EMAIL = "admin.test@example.invalid";
@@ -54,6 +55,10 @@ describe("one existing Super Admin password -> signed DEV session (PR81 opt-in o
     });
     app.use("/api", createDevAuthRouter());
     app.use("/api", localProductionAuthRouter);
+    app.get("/api/test/protected-admin", authenticateAdmin, (request, response) => {
+      const actor = (request as AdminRequest).adminUser;
+      response.json({ ok: true, role: actor?.role, companyId: actor?.companyId });
+    });
     app.use((_request, response) => { response.status(404).json({ error: "Not found" }); });
     server = app.listen(0, "127.0.0.1");
     await new Promise<void>((resolve) => server.once("listening", resolve));
@@ -144,6 +149,32 @@ describe("one existing Super Admin password -> signed DEV session (PR81 opt-in o
     const { response } = await post("/api/auth/email-login", { email: EMAIL, password: PASS });
     expect(response.status).toBe(401);
     expect(response.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("accepts a signed password session in the existing Admin middleware", async () => {
+    const login = await post("/api/auth/email-login", { email: EMAIL, password: PASS });
+    expect(login.response.status).toBe(200);
+    const cookie = (login.response.headers.get("set-cookie") ?? "").split(";")[0];
+    const protectedRoute = await req("/api/test/protected-admin", { headers: { Cookie: cookie } });
+    expect(protectedRoute.response.status).toBe(200);
+    expect(protectedRoute.data).toMatchObject({ ok: true, role: "super_admin", companyId: null });
+  });
+
+  it.each([
+    ["role downgraded", () => { mock.userRole = "admin"; }],
+    ["status changed", () => { mock.userStatus = "suspended"; }],
+    ["company attached", () => { mock.companyId = 3; }],
+    ["account suspended", () => { mock.userActive = false; }],
+    ["same-email active duplicate", () => { mock.duplicateActive = true; }],
+  ])("revokes both current-user and shared Admin sessions when %s after login", async (_label, change) => {
+    const login = await post("/api/auth/email-login", { email: EMAIL, password: PASS });
+    expect(login.response.status).toBe(200);
+    const cookie = (login.response.headers.get("set-cookie") ?? "").split(";")[0];
+    change();
+    const me = await req("/api/auth/user", { headers: { Cookie: cookie } });
+    expect(me.response.status).toBe(403);
+    const protectedRoute = await req("/api/test/protected-admin", { headers: { Cookie: cookie } });
+    expect(protectedRoute.response.status).toBe(401);
   });
 
   it("revokes previously signed session after account deactivation", async () => {

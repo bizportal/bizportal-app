@@ -4,7 +4,7 @@ import {
   getProductionSession,
   getProductionUser,
   isDevelopmentEnvironment,
-  isSignedOtpDevEnabled,
+  isSignedDevAuthEnabled,
   type DevAuthUser,
 } from "./dev-auth";
 
@@ -19,7 +19,7 @@ export async function authenticateAdmin(
 ): Promise<void> {
   try {
     const devActor = isDevelopmentEnvironment() ? getDevSession(request) : null;
-    const signedSession = (!isDevelopmentEnvironment() || isSignedOtpDevEnabled())
+    const signedSession = (!isDevelopmentEnvironment() || isSignedDevAuthEnabled())
       ? getProductionSession(request)
       : null;
     // Prefer the DB-verified signed identity when both DEV cookies coexist.

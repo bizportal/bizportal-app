@@ -527,6 +527,15 @@ export async function getProductionUser(session: ProductionSession): Promise<Dev
   const parsedCompanyId = rawCompanyId === null || rawCompanyId === undefined
     ? null
     : Number(rawCompanyId);
+  // A password-authenticated DEV global Super Admin must lose access as soon
+  // as its role, active status or global company scope is changed. Recheck on
+  // every protected request rather than trusting the original signed cookie.
+  if (isSignedPasswordDevEnabled() && (
+    role !== "super_admin"
+    || accountStatus !== "active"
+    || userData.is_active !== true
+    || parsedCompanyId !== null
+  )) return null;
   return {
     id: session.id,
     email,

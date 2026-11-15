@@ -24,7 +24,7 @@ vi.mock("./admin-auth", () => ({
 
 vi.mock("./dev-auth", () => ({
   isDevelopmentEnvironment: () => true,
-  isSignedOtpDevEnabled: () => state.otpEnabled,
+  isSignedDevAuthEnabled: () => state.otpEnabled,
   getProductionSession: () => state.signedSession
     ? { id: "signed-test", email: "test@example.invalid", expiresAt: Date.now() + 60_000 }
     : null,

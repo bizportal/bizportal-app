@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { pool } from "@workspace/db";
 import { authenticateAdmin, type AdminRequest } from "./admin-auth";
-import { getProductionSession, isDevelopmentEnvironment, isSignedOtpDevEnabled } from "./dev-auth";
+import { getProductionSession, isDevelopmentEnvironment, isSignedDevAuthEnabled } from "./dev-auth";
 import { buildCustomerArMatchPreview, type CustomerArInvoiceEvidence, type IncomingBankMutationEvidence } from "../lib/reconciliation/customerArMatchPreview";
 
 const router: IRouter = Router();
@@ -62,7 +62,7 @@ router.get("/sales/customer-invoices/auto-match-preview", async (request, respon
   // Customer AR read. authenticateAdmin has already DB-verified any signed OTP
   // identity before this handler is reached.
   const crossesCompany = actor?.companyId == null || actor.companyId !== companyId;
-  if (isPrivileged && crossesCompany && isSignedOtpDevEnabled() &&
+  if (isPrivileged && crossesCompany && isSignedDevAuthEnabled() &&
       !getProductionSession(request)) {
     response.status(403).json({
       error: "Akses lintas perusahaan membutuhkan sesi Admin terverifikasi.",
