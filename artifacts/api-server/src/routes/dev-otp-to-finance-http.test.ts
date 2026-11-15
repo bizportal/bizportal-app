@@ -8,6 +8,8 @@ const m = vi.hoisted(() => ({
   query: vi.fn(), email: vi.fn(), finance: vi.fn(), getInvoice: vi.fn(),
   invoiceSubmit: vi.fn(), ap: vi.fn(), currentCompany: 1, userActive: true,
   userId: "admin-otp-1", userRole: "super_admin", codeHash: "",
+  duplicateIdentity: false, duplicateIdentityInactive: false,
+  duplicateIdentityPaddedActive: false,
   consumed: false, attempts: 0, scopedCalls: [] as {sql:string;params:unknown[]}[],
 }));
 vi.mock("@workspace/db", () => ({
@@ -40,6 +42,9 @@ const KEYS = [
   "BIZPORTAL_SIGNED_OTP_ENABLED_DEV",
   "BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV",
   "BIZPORTAL_MARKETPLACE_ACCOUNTING_HANDOFF_ENABLED_DEV",
+  "BIZPORTAL_FINANCE_GLOBAL_SCOPE_ENABLED_DEV",
+  "BIZPORTAL_FINANCE_GLOBAL_SUPERADMIN_EMAILS_DEV",
+  "BIZPORTAL_FINANCE_GLOBAL_COMPANY_IDS_DEV",
 ] as const;
 const originals = Object.fromEntries(KEYS.map(k => [k, process.env[k]]));
 const dialect = new PgDialect();
@@ -71,9 +76,13 @@ beforeEach(() => {
   process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
   process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV = "true";
   delete process.env.BIZPORTAL_MARKETPLACE_ACCOUNTING_HANDOFF_ENABLED_DEV;
+  delete process.env.BIZPORTAL_FINANCE_GLOBAL_SCOPE_ENABLED_DEV;
+  delete process.env.BIZPORTAL_FINANCE_GLOBAL_SUPERADMIN_EMAILS_DEV;
+  delete process.env.BIZPORTAL_FINANCE_GLOBAL_COMPANY_IDS_DEV;
   for (const v of [m.query,m.email,m.finance,m.getInvoice,m.invoiceSubmit,m.ap]) v.mockReset();
   m.currentCompany = 1; m.userActive = true;
-  m.userId = "admin-otp-1"; m.userRole = "super_admin";
+  m.userId = "admin-otp-1"; m.userRole = "super_admin"; m.duplicateIdentity=false;
+  m.duplicateIdentityInactive=false; m.duplicateIdentityPaddedActive=false;
   m.codeHash = "";m.consumed = false;m.attempts=0;m.scopedCalls.length=0;
   m.email.mockResolvedValue(undefined);
   m.query.mockImplementation(async (q:string, args?:unknown[]) => {
@@ -97,11 +106,28 @@ beforeEach(() => {
       if (m.consumed) return {rowCount:0,rows:[]};
       m.consumed = true;return {rowCount:1,rows:[{id:"otp-test-1"}]};
     }
-    if (q.includes("to_jsonb(u)")) return { rows:[{user_data:{
-      id:m.userId,email:"admin-otp@example.invalid",role:m.userRole,
-      status:m.userActive?"active":"inactive",
-      is_active:m.userActive,company_id:m.currentCompany,
-    }}] };
+    if (q.includes("from public.companies where id=$1")) return { rows:[{id:args?.[0]}] };
+    if (q.includes("insert into public.audit_logs") && q.includes("finance_company_scope_selected")) return { rowCount:1,rows:[] };
+    if (q.includes("to_jsonb(u)")) {
+      const first = {user_data:{
+        id:m.userId,email:"admin-otp@example.invalid",role:m.userRole,
+        status:m.userActive?"active":"inactive",
+        is_active:m.userActive,company_id:m.currentCompany,
+      }};
+      const duplicate = {user_data:{
+        id:"duplicate-admin",email:"ADMIN-OTP@example.invalid",role:"admin",
+        status:m.duplicateIdentityPaddedActive ? " active " : "active",
+        is_active:true,company_id:null,
+      }};
+      const activeOnlySql = q.includes("u.is_active = true") && q.includes("lower(btrim(u.status))");
+      // Reflect PostgreSQL semantics: lower(status) alone excludes a padded
+      // but JS-eligible active account, masking a duplicate identity.
+      const untrimmedSqlWouldMissDuplicate = m.duplicateIdentityPaddedActive
+        && q.includes("lower(u.status)") && !activeOnlySql;
+      return { rows: m.duplicateIdentity && !(m.duplicateIdentityInactive && activeOnlySql)
+        && !untrimmedSqlWouldMissDuplicate ? [first, duplicate] : [first] };
+    }
+    if (q.includes("insert into public.bizportal_email_otp_codes")) return {rows:[],rowCount:1};
     throw new Error("Unexpected DB query in isolated OTP test");
   });
   m.finance.mockImplementation(async (companyId:number,work:(tx:any)=>Promise<unknown>) => {
@@ -229,5 +255,121 @@ describe("signed Super Admin OTP -> canonical Finance route integrated HTTP boun
     expect(invalid.headers.get("set-cookie")).toBeNull();
     expect((await getInvoice()).status).toBe(401);
     expect(m.finance).not.toHaveBeenCalled();
+  });
+});
+
+describe("Issue #76 duplicate normalized Admin email identity regression", () => {
+  it("permits a unique active identity after the historical shadow is disabled", async () => {
+    m.duplicateIdentity = true;
+    m.duplicateIdentityInactive = true;
+    const cookie = await otpLogin();
+    expect((await getInvoice(cookie)).status).toBe(200);
+    expect(m.finance).toHaveBeenCalledOnce();
+    const lookups = m.query.mock.calls.filter(([sql]) => String(sql).includes("to_jsonb(u)"));
+    expect(lookups.length).toBeGreaterThan(1);
+    for (const [sql] of lookups) {
+      expect(String(sql)).toContain("u.is_active = true");
+      expect(String(sql)).toContain("limit 2");
+    }
+  });
+  it("does not send an OTP when normalized email matches multiple active roles", async () => {
+    m.duplicateIdentity = true;
+    const response = await fetch(origin + "/api/auth/email-otp/send", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({email:"admin-otp@example.invalid"}),
+    });
+    expect(response.status).toBe(202);
+    expect(m.email).not.toHaveBeenCalled();
+    expect(m.finance).not.toHaveBeenCalled();
+    const lookup = m.query.mock.calls.find(([sql]) => String(sql).includes("to_jsonb(u)"));
+    expect(lookup?.[0]).toContain("limit 2");
+  });
+  it("rejects a whitespace-padded active duplicate instead of sending OTP", async () => {
+    m.duplicateIdentity = true;
+    m.duplicateIdentityPaddedActive = true;
+    const result = await fetch(origin+"/api/auth/email-otp/send", {
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({email:"admin-otp@example.invalid"}),
+    });
+    expect(result.status).toBe(202);
+    expect(m.email).not.toHaveBeenCalled();
+    expect(m.finance).not.toHaveBeenCalled();
+    const lookups=m.query.mock.calls.filter(([sql])=>String(sql).includes("to_jsonb(u)"));
+    expect(lookups).toHaveLength(1);
+    expect(String(lookups[0][0])).toContain("lower(btrim(u.status))");
+  });
+  it("invalidates an existing signed session if a padded active duplicate is added", async () => {
+    const cookie=await otpLogin();
+    m.duplicateIdentity=true;
+    m.duplicateIdentityPaddedActive=true;
+    expect((await getInvoice(cookie)).status).toBe(403);
+    expect(m.finance).not.toHaveBeenCalled();
+    expect(m.getInvoice).not.toHaveBeenCalled();
+  });
+  it("revokes an existing signed Admin session when the email becomes ambiguous", async () => {
+    const cookie = await otpLogin();
+    m.duplicateIdentity = true;
+    const response = await getInvoice(cookie);
+    expect(response.status).toBe(403);
+    expect(m.finance).not.toHaveBeenCalled();
+    expect(m.getInvoice).not.toHaveBeenCalled();
+  });
+});
+
+describe("Issue #76 genuine signed OTP HTTP -> global Finance selection", () => {
+  const enableGlobal = () => {
+    process.env.BIZPORTAL_FINANCE_GLOBAL_SCOPE_ENABLED_DEV = "true";
+    process.env.BIZPORTAL_FINANCE_GLOBAL_SUPERADMIN_EMAILS_DEV = "admin-otp@example.invalid";
+    process.env.BIZPORTAL_FINANCE_GLOBAL_COMPANY_IDS_DEV = "1,3";
+  };
+  const choose = (otpCookie: string, companyId: number) => fetch(
+    origin + "/api/mkt/admin/finance-company-selection", {
+      method: "POST",
+      headers: { Cookie: otpCookie, "Content-Type": "application/json" },
+      body: JSON.stringify({ companyId }),
+    },
+  );
+  it("binds a global Admin to an audited company and scopes canonical Finance SQL", async () => {
+    const otp = await otpLogin();
+    m.currentCompany = null as unknown as number;
+    enableGlobal();
+    expect((await getInvoice(otp)).status).toBe(403);
+    const selected = await choose(otp, 1);
+    expect(selected.status).toBe(200);
+    const scoped = (selected.headers.get("set-cookie") ?? "").split(";")[0];
+    expect(scoped).toContain("bizportal_finance_company_scope=");
+    expect((selected.headers.get("set-cookie") ?? "")).toContain("HttpOnly");
+    const auth = otp + "; " + scoped;
+    const response = await getInvoice(auth);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok:true, data:{id:77,companyId:1} });
+    expect(m.finance.mock.calls[0][0]).toBe(1);
+    expect(m.scopedCalls[0].params).toEqual([77,1,1]);
+  });
+  it("rejects revoked allowlist and cross-company access under real cookie cryptography", async () => {
+    const otp = await otpLogin();
+    m.currentCompany = null as unknown as number;
+    enableGlobal();
+    const selected = await choose(otp, 3);
+    expect(selected.status).toBe(200);
+    const scoped = (selected.headers.get("set-cookie") ?? "").split(";")[0];
+    const auth = otp + "; " + scoped;
+    const other = await getInvoice(auth);
+    expect(other.status).toBe(404);
+    expect(m.scopedCalls[0].params).toEqual([77,3,3]);
+    expect(m.getInvoice).not.toHaveBeenCalled();
+    process.env.BIZPORTAL_FINANCE_GLOBAL_COMPANY_IDS_DEV = "1";
+    expect((await getInvoice(auth)).status).toBe(403);
+    process.env.BIZPORTAL_FINANCE_GLOBAL_COMPANY_IDS_DEV = "1,3";
+    m.userRole = "owner";
+    expect((await getInvoice(auth)).status).toBe(403);
+  });
+  it("keeps global selection hidden without explicit approval", async () => {
+    const otp = await otpLogin();
+    m.currentCompany = null as unknown as number;
+    expect((await choose(otp,1)).status).toBe(404);
+    enableGlobal();
+    process.env.BIZPORTAL_FINANCE_GLOBAL_SUPERADMIN_EMAILS_DEV = "different@example.invalid";
+    expect((await choose(otp,1)).status).toBe(403);
   });
 });
