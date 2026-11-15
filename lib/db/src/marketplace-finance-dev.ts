@@ -65,8 +65,27 @@ export async function resolveMarketplaceFinanceDevDatabaseUrl(
   const trustedUser = username === EXPECTED_ROLE ||
     username === `${EXPECTED_ROLE}.${EXPECTED_PROJECT}`;
   const projectBound = hostname.includes(EXPECTED_PROJECT) || username.includes(EXPECTED_PROJECT);
-  if (!["require", "verify-ca", "verify-full"].includes(url.searchParams.get("sslmode") ?? "")) {
+  const sslmode = url.searchParams.get("sslmode");
+  if (!sslmode) {
     throw new Error("DEV_FINANCE_DATABASE_SSL_REQUIRED");
+  }
+  // pg-connection-string uses the LAST duplicate query parameter, whereas
+  // URLSearchParams.get() returns the FIRST. Query params such as host, user,
+  // sslmode or ssl can override validated authority/role or disable TLS.
+  // Finance needs only these two SSL parameters; reject every extra key and
+  // both duplicates BEFORE passing the unchanged URL to pg.Pool.
+  const allowedParams = new Set(["sslmode", "sslrootcert"]);
+  if ([...url.searchParams.keys()].some(key => !allowedParams.has(key)) ||
+      url.searchParams.getAll("sslmode").length !== 1 ||
+      url.searchParams.getAll("sslrootcert").length > 1) {
+    throw new Error("DEV_FINANCE_DATABASE_QUERY_PARAMS_INVALID");
+  }
+  // pg-connection-string v2 currently treats sslmode=require and verify-ca
+  // as aliases for verify-full; its v3/libpq semantics do not. Require CA
+  // and hostname verification explicitly to prevent dependency downgrade.
+  const sslrootcert = url.searchParams.get("sslrootcert");
+  if (sslmode !== "verify-full" || !sslrootcert?.startsWith("/")) {
+    throw new Error("DEV_FINANCE_DATABASE_VERIFIED_CA_REQUIRED");
   }
   if (!["postgres:", "postgresql:"].includes(url.protocol) ||
       !trustedHost || !trustedUser || !projectBound || !url.password ||

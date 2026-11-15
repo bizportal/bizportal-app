@@ -239,7 +239,9 @@ function decodeSignedCookie<T>(request: Request, cookieName: string): T | null {
 }
 
 export function getDevSession(request: Request): DevAuthUser | null {
-  if (!isDevelopmentEnvironment()) return null;
+  // Once signed DEV OTP is explicitly enabled, a legacy email-only cookie
+  // must never act as fallback authentication for protected routes.
+  if (!isDevelopmentEnvironment() || isSignedOtpDevEnabled()) return null;
 
   const secret = getSessionSecret();
   const raw = getCookie(request, DEV_SESSION_COOKIE);
@@ -473,12 +475,19 @@ export function createDevAuthRouter(): Router {
   });
 
   router.get("/auth/dev-users", (_request, response) => {
-    if (!isDevelopmentEnvironment()) return response.status(404).json({ error: "Not found" });
+    // DEV-only identity enumeration is not part of signed OTP auth.
+    if (!isDevelopmentEnvironment() || isSignedOtpDevEnabled()) {
+      return response.status(404).json({ error: "Not found" });
+    }
     return response.json({ users: getDevUsers() });
   });
 
   router.post("/auth/dev-login", async (request, response) => {
-    if (!isDevelopmentEnvironment()) return response.status(404).json({ error: "Not found" });
+    // Never issue an email-only DEV session when signed OTP is required.
+    // Legacy local/test login remains unchanged while OTP is OFF.
+    if (!isDevelopmentEnvironment() || isSignedOtpDevEnabled()) {
+      return response.status(404).json({ error: "Not found" });
+    }
 
     const email =
       typeof request.body?.email === "string"
