@@ -2,6 +2,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
 import * as schema from "./schema";
 import { resolveDatabaseUrl } from "./connection";
+import { computeDatabasePoolMax } from "./pool-limits";
 
 const { Pool } = pg;
 
@@ -13,13 +14,7 @@ async function createConcretePool(): Promise<InstanceType<typeof Pool>> {
   resolvedRuntimeDatabaseUrl = databaseUrl;
 
   const isProduction = process.env.NODE_ENV === "production";
-  const configuredPoolMax = Number(process.env.DB_POOL_MAX);
-  const poolMax =
-    Number.isFinite(configuredPoolMax) && configuredPoolMax > 0
-      ? Math.max(1, Math.min(5, Math.floor(configuredPoolMax)))
-      : isProduction
-        ? 2
-        : 5;
+  const poolMax = computeDatabasePoolMax(databaseUrl, process.env);
 
   return new Pool({
     connectionString: databaseUrl,
@@ -102,6 +97,7 @@ export async function getRuntimeDatabaseUrl(): Promise<string> {
 }
 
 export * from "./schema";
+export { computeDatabasePoolMax } from "./pool-limits";
 export { getDatabaseUrl, resolveDatabaseUrl } from "./connection";
 export { withMarketplaceFinanceDevTransaction, onMarketplaceFinanceCommit, resolveMarketplaceFinanceDevDatabaseUrl } from "./marketplace-finance-dev";
 export { getDatabaseSecretName, readSecret } from "./gcp-database-secret";
