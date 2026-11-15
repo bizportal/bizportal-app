@@ -40,6 +40,9 @@ const KEYS = [
   "BIZPORTAL_SIGNED_OTP_ENABLED_DEV",
   "BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV",
   "BIZPORTAL_MARKETPLACE_ACCOUNTING_HANDOFF_ENABLED_DEV",
+  "BIZPORTAL_FINANCE_GLOBAL_SCOPE_ENABLED_DEV",
+  "BIZPORTAL_FINANCE_GLOBAL_SUPERADMIN_EMAILS_DEV",
+  "BIZPORTAL_FINANCE_GLOBAL_COMPANY_IDS_DEV",
 ] as const;
 const originals = Object.fromEntries(KEYS.map(k => [k, process.env[k]]));
 const dialect = new PgDialect();
@@ -71,6 +74,9 @@ beforeEach(() => {
   process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
   process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV = "true";
   delete process.env.BIZPORTAL_MARKETPLACE_ACCOUNTING_HANDOFF_ENABLED_DEV;
+  delete process.env.BIZPORTAL_FINANCE_GLOBAL_SCOPE_ENABLED_DEV;
+  delete process.env.BIZPORTAL_FINANCE_GLOBAL_SUPERADMIN_EMAILS_DEV;
+  delete process.env.BIZPORTAL_FINANCE_GLOBAL_COMPANY_IDS_DEV;
   for (const v of [m.query,m.email,m.finance,m.getInvoice,m.invoiceSubmit,m.ap]) v.mockReset();
   m.currentCompany = 1; m.userActive = true;
   m.userId = "admin-otp-1"; m.userRole = "super_admin";
@@ -97,6 +103,8 @@ beforeEach(() => {
       if (m.consumed) return {rowCount:0,rows:[]};
       m.consumed = true;return {rowCount:1,rows:[{id:"otp-test-1"}]};
     }
+    if (q.includes("from public.companies where id=$1")) return { rows:[{id:args?.[0]}] };
+    if (q.includes("insert into public.audit_logs") && q.includes("finance_company_scope_selected")) return { rowCount:1,rows:[] };
     if (q.includes("to_jsonb(u)")) return { rows:[{user_data:{
       id:m.userId,email:"admin-otp@example.invalid",role:m.userRole,
       status:m.userActive?"active":"inactive",
@@ -229,5 +237,63 @@ describe("signed Super Admin OTP -> canonical Finance route integrated HTTP boun
     expect(invalid.headers.get("set-cookie")).toBeNull();
     expect((await getInvoice()).status).toBe(401);
     expect(m.finance).not.toHaveBeenCalled();
+  });
+});
+
+describe("Issue #76 genuine signed OTP HTTP -> global Finance selection", () => {
+  const enableGlobal = () => {
+    process.env.BIZPORTAL_FINANCE_GLOBAL_SCOPE_ENABLED_DEV = "true";
+    process.env.BIZPORTAL_FINANCE_GLOBAL_SUPERADMIN_EMAILS_DEV = "admin-otp@example.invalid";
+    process.env.BIZPORTAL_FINANCE_GLOBAL_COMPANY_IDS_DEV = "1,3";
+  };
+  const choose = (otpCookie: string, companyId: number) => fetch(
+    origin + "/api/mkt/admin/finance-company-selection", {
+      method: "POST",
+      headers: { Cookie: otpCookie, "Content-Type": "application/json" },
+      body: JSON.stringify({ companyId }),
+    },
+  );
+  it("binds a global Admin to an audited company and scopes canonical Finance SQL", async () => {
+    const otp = await otpLogin();
+    m.currentCompany = null as unknown as number;
+    enableGlobal();
+    expect((await getInvoice(otp)).status).toBe(403);
+    const selected = await choose(otp, 1);
+    expect(selected.status).toBe(200);
+    const scoped = (selected.headers.get("set-cookie") ?? "").split(";")[0];
+    expect(scoped).toContain("bizportal_finance_company_scope=");
+    expect((selected.headers.get("set-cookie") ?? "")).toContain("HttpOnly");
+    const auth = otp + "; " + scoped;
+    const response = await getInvoice(auth);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok:true, data:{id:77,companyId:1} });
+    expect(m.finance.mock.calls[0][0]).toBe(1);
+    expect(m.scopedCalls[0].params).toEqual([77,1,1]);
+  });
+  it("rejects revoked allowlist and cross-company access under real cookie cryptography", async () => {
+    const otp = await otpLogin();
+    m.currentCompany = null as unknown as number;
+    enableGlobal();
+    const selected = await choose(otp, 3);
+    expect(selected.status).toBe(200);
+    const scoped = (selected.headers.get("set-cookie") ?? "").split(";")[0];
+    const auth = otp + "; " + scoped;
+    const other = await getInvoice(auth);
+    expect(other.status).toBe(404);
+    expect(m.scopedCalls[0].params).toEqual([77,3,3]);
+    expect(m.getInvoice).not.toHaveBeenCalled();
+    process.env.BIZPORTAL_FINANCE_GLOBAL_COMPANY_IDS_DEV = "1";
+    expect((await getInvoice(auth)).status).toBe(403);
+    process.env.BIZPORTAL_FINANCE_GLOBAL_COMPANY_IDS_DEV = "1,3";
+    m.userRole = "owner";
+    expect((await getInvoice(auth)).status).toBe(403);
+  });
+  it("keeps global selection hidden without explicit approval", async () => {
+    const otp = await otpLogin();
+    m.currentCompany = null as unknown as number;
+    expect((await choose(otp,1)).status).toBe(404);
+    enableGlobal();
+    process.env.BIZPORTAL_FINANCE_GLOBAL_SUPERADMIN_EMAILS_DEV = "different@example.invalid";
+    expect((await choose(otp,1)).status).toBe(403);
   });
 });
