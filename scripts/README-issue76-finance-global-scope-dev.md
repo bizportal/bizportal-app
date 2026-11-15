@@ -15,6 +15,23 @@ All conditions must be true in the **separate DEV candidate process**:
 
 Do **not** enable these on the active legacy DEV service or PROD. No default account or company ID is assumed.
 
+## Existing BizPortal Vendor Invoice UI (separately gated)
+
+The existing `/purchase/vendor-invoices` page can display an explicit
+**Verifikasi Perusahaan Finance (DEV)** panel only when the independent
+build-time flag `VITE_BIZPORTAL_FINANCE_GLOBAL_SCOPE_UI_DEV=true` is set.
+It stays hidden by default and does **not** automatically call the Finance API.
+The panel uses the currently selected company from `CompanyContext` only as
+a selection suggestion; the server verifies the signed OTP, both allowlists,
+active company, and writes the audit event. The consolidated/all-company
+selection is disabled. Company changes reset local confirmation, and there
+is no automatic payment, posting or AP mutation. Errors are displayed
+without exposing response bodies or credentials.
+
+The panel is **not** proof of end-to-end browser authentication. It must
+be verified on an isolated HTTPS candidate with a genuine authorized
+Super Admin OTP before enabling any live Finance feature flags.
+
 ## HTTP selection contract
 
 After the existing genuine signed Super Admin OTP, an explicitly allowlisted global user may request:
