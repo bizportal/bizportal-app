@@ -5,17 +5,14 @@ const router = Router();
 
 async function requireBizPortalUser(req: any, res: any, next: any) {
   try {
-    if (isDevelopmentEnvironment()) {
-      if (!getDevSession(req)?.email) {
-        res.status(401).json({ error: "Unauthorized" });
-        return;
-      }
-    } else {
-      const session = getProductionSession(req);
-      if (!session || !(await getProductionUser(session))) {
-        res.status(401).json({ error: "Unauthorized" });
-        return;
-      }
+    // Retain the legacy DEV identity and support the canonical opt-in signed session.
+    // getProductionSession() returns null in DEV when the signed OTP bridge is OFF.
+    const devActor = isDevelopmentEnvironment() ? getDevSession(req) : null;
+    const signedSession = devActor ? null : getProductionSession(req);
+    const signedActor = signedSession ? await getProductionUser(signedSession) : null;
+    if (!devActor && !signedActor) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
     }
     next();
   } catch (error) {

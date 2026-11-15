@@ -24,6 +24,20 @@ describe("standalone BizPortal API boundary", () => {
 
 
 
+  it("mounts the original Purchase PDF binary route only behind the DEV document gate", () => {
+    const pdfRouteSource = readFileSync(
+      new URL("../routes/dev-purchase-pdf.ts", import.meta.url), "utf8",
+    );
+    expect(routeSource).toContain('import("./dev-purchase-pdf")');
+    expect(routeSource).toContain('process.env.BIZPORTAL_DOCUMENT_TEMPLATES_ENABLED_DEV !== "true"');
+    expect(routeSource.indexOf('import("./dev-purchase-pdf")')).toBeLessThan(
+      routeSource.indexOf("router.use(purchaseWorkflowRouter);"),
+    );
+    expect(pdfRouteSource).toContain('router.get("/purchase/documents/:id/pdf"');
+    expect(pdfRouteSource).toContain("await authenticateAdmin(req, res, next)");
+    expect(pdfRouteSource).toContain("buildInvoicePdfBuffer(data)");
+  });
+
   it("keeps Vendor Invoice AP endpoints owned by the standalone BizPortal backend", () => {
     const purchaseWorkflowSource = readFileSync(
       new URL("../routes/purchase-workflow.ts", import.meta.url),

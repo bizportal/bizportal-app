@@ -103,7 +103,24 @@ export default function PurchaseDocumentEditorPage() {
   const downloadPdf = async () => {
     if (!id) return;
     try {
-      const res = await fetch(`/api/purchase/documents/${id}/pdf`);
+      const res = await fetch(`/api/purchase/documents/${id}/pdf`, { credentials: "include" });
+      // The standalone DEV API does not implement the legacy PDF binary endpoint.
+      // Reuse the already verified company-scoped A4 template as a print-to-PDF
+      // fallback, without changing successful legacy PDF downloads.
+      if (res.status === 404 && doc?.kind === "order") {
+        const previewPath = `/api/settings/documents/po/transaction-preview/${id}`;
+        const preview = await fetch(previewPath, { credentials: "include" });
+        if (preview.ok && preview.headers.get("content-type")?.includes("text/html")) {
+          const link = document.createElement("a");
+          link.href = previewPath;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          return;
+        }
+      }
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         toast({ title: t.common.error, description: (err as any)?.message ?? `Error ${res.status}`, variant: "destructive" });

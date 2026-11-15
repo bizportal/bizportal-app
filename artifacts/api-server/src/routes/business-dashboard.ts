@@ -30,13 +30,13 @@ function optionalPositiveInteger(value: unknown, field: string): number | null {
 function scopedCompanyId(request: LocalRequest): number | null {
   const requested = optionalPositiveInteger(request.query.companyId, "company_id");
   const userCompanyId = request.localUser?.companyId ?? null;
-  if (
-    requested !== null
-    && userCompanyId !== null
-    && requested !== userCompanyId
-    && !["admin", "owner", "super_admin", "finance", "accounting"].includes(request.localUser?.role ?? "")
-  ) {
+  // A verified company binding is authoritative, even for finance/admin.
+  // Only an explicitly unscoped owner/Super Admin may request consolidated data.
+  if (userCompanyId !== null && requested !== null && requested !== userCompanyId) {
     throw new Error("COMPANY_FORBIDDEN");
+  }
+  if (userCompanyId === null && !["owner", "super_admin"].includes(request.localUser?.role?.toLowerCase() ?? "")) {
+    throw new Error("COMPANY_SCOPE_MISSING");
   }
   return requested ?? userCompanyId;
 }
@@ -57,8 +57,11 @@ function numberValue(value: unknown): number {
 }
 
 function requestError(request: Request, response: Response, error: unknown): void {
-  if (error instanceof Error && error.message === "COMPANY_FORBIDDEN") {
-    response.status(403).json({ error: "Akses perusahaan tidak diizinkan." });
+  if (error instanceof Error && (error.message === "COMPANY_FORBIDDEN" || error.message === "COMPANY_SCOPE_MISSING")) {
+    response.status(403).json({
+      error: "Akses perusahaan tidak diizinkan.",
+      code: error.message === "COMPANY_SCOPE_MISSING" ? "COMPANY_SCOPE_MISSING" : "COMPANY_SCOPE_MISMATCH",
+    });
     return;
   }
   if (error instanceof Error && error.message.startsWith("INVALID_")) {
