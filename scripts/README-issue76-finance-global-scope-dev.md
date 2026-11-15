@@ -44,15 +44,23 @@ For every canonical Finance request, a global account must still pass current Su
 
 ## Normalized email identity uniqueness gate
 
-CST-DEV currently contains two active `public.users` rows that normalize
-to the same Admin email, but have different roles (`admin` and
-`super_admin`). Previously, an OTP query using `lower(email)` plus
-`LIMIT 1` could select either account. For DEV **signed OTP only**,
-both OTP identity lookup and subsequent session authorization now check
-up to two **eligible active** accounts (and require exactly one).
-Two active accounts fail closed. An inactive historical shadow cannot
-silently regain access; changing its status to active immediately makes
-the identity ambiguous again. PROD authentication semantics are unchanged.
+Historical Issue #76 finding: CST-DEV previously had two `public.users`
+identities sharing a case-insensitive Admin email, with different roles
+(`admin` and `super_admin`). The earlier email-only `LIMIT 1` lookup
+could select the wrong identity. **A fresh aggregate-only read on
+15 Nov 2026** found one active eligible `super_admin` and one disabled
+historical identity, **not two simultaneously active identities**.
+This source-only review did not change either account. Do not infer
+when, how or by whom any account state changed.
+
+In signed DEV OTP mode, the session is pinned to the account ID and email.
+The database uniqueness guard refuses **any second `is_active=true`
+account** sharing the normalized email regardless of inconsistent status
+text or whitespace; the selected account must still pass the existing
+TypeScript active-status check. An `is_active=false` historical shadow
+does not block the sole active identity. PROD authentication semantics
+are unchanged. No identity or role should be modified as part of this
+source-review candidate.
 
 Read-only identity audit: the older `super_admin` account has a recorded
 recent login and password, while the later `admin` account has no
@@ -84,10 +92,40 @@ closes the HTTP listener and idle connections and bounds termination to
 gracefully**. The old PR #50 baseline may require forced shutdown; the
 test script uses a limited fallback only for those unchanged baseline runs.
 
+A new isolated compiled-API negative HTTP smoke was also run against the
+integrated candidate using the PR #77 script: nine liveness, anonymous,
+forged-cookie/header and denied Accounting handoff expectations PASS.
+No real database, OTP, user identities or money-moving routes were used;
+the active VPS service and Nginx SHA remained unchanged.
+
 This is **not** a complete real Admin/DB rollback rehearsal. The existing
 live legacy service also has the old SIGTERM behavior, which must be
 accounted for in the eventual drain/cutover plan. Do not switch Nginx,
 systemd, signed OTP, Finance or PROD based on this smoke alone.
+
+## Actual built API: negative-only authenticated-boundary smoke
+
+The repeatable `scripts/dev-issue76-finance-unauth-http-smoke.sh` launches
+the **compiled PR #77 API** only on isolated VPS loopback port `19879`
+with a sanitized environment, a fresh ephemeral random test signing key,
+only `.invalid` synthetic allowlisted email, and no DB, GCP or SMTP
+credentials. OTP, Finance and global-company feature flags are enabled
+**only in the temporary process** to exercise the runtime authentication
+guards; no sign-in or OTP endpoint is called.
+
+Expected responses:
+- `/api/health/live` returns 200.
+- Unauthenticated `/api/companies`, Finance Vendor Invoice and AP
+  detail endpoints return 401.
+- Forged `x-company-id` and forged production session cookie cannot
+  authorize Finance: 401.
+- Anonymous / forged-cookie Finance company selection POSTs return 401.
+- Anonymous Accounting Handoff POST returns 401.
+
+The smoke also checks unchanged active systemd service PID, source SHA,
+Nginx SHA-256, and no leftover local listener. It cannot demonstrate
+genuine SMTP OTP delivery, valid signed Admin session, live RLS-backed
+HTTP response, or successful financial transaction.
 
 ## Remaining release gates
 
