@@ -6,6 +6,9 @@ import { resolve } from "node:path";
 // rather than install a second competing pair of process signal handlers.
 const entry = readFileSync(resolve(process.cwd(), "src/index.ts"), "utf8");
 const helper = readFileSync(resolve(process.cwd(), "src/lib/graceful-shutdown.ts"), "utf8");
+const financeNegativeSmoke = readFileSync(
+  resolve(process.cwd(), "../../scripts/dev-issue76-finance-unauth-http-smoke.sh"), "utf8",
+);
 
 describe("Issue #76 safe rollback uses existing graceful shutdown", () => {
   it("binds SIGTERM/SIGINT exactly once through the existing helper", () => {
@@ -14,6 +17,13 @@ describe("Issue #76 safe rollback uses existing graceful shutdown", () => {
     expect(helper).toContain('signalSource.once("SIGINT", shutdown)');
     expect(entry).not.toContain("shutdownApi(");
     expect(helper).toContain("stopBackgroundTimers()");
+  });
+  it("forces Finance negative HTTP smoke to bypass inherited proxies and curlrc", () => {
+    expect(financeNegativeSmoke).toContain("curl -q --noproxy '*' --proxy '' -sS");
+    expect(financeNegativeSmoke).toContain("curl -q --noproxy '*' --proxy '' --silent");
+    expect(financeNegativeSmoke).toContain('base="http://127.0.0.1:$PORT/api"');
+    expect(financeNegativeSmoke).not.toContain("$(curl -sS");
+    expect(financeNegativeSmoke).not.toContain("$(curl --silent");
   });
   it("drains the HTTP server with a bounded fallback, retaining error handling", () => {
     expect(helper).toContain("server.close((error) =>");
