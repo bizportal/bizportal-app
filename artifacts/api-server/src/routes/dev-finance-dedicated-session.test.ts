@@ -171,14 +171,14 @@ describe("dedicated Finance DEV database transaction boundary", () => {
   });
   it("rejects verify-ca and relative CA paths that do not verify hostname reliably", async () => {
     const base="postgresql://bizportal_marketplace_finance_login_dev.xssrfshdrtdfupgqwfdw:synthetic@aws-0-ap-southeast-2.pooler.supabase.com:6543/postgres";
-    for (const query of [
-      "sslmode=verify-ca&sslrootcert=/trusted/synthetic-supabase-ca.crt",
-      "sslmode=verify-full&sslrootcert=relative-ca.crt",
-      "sslmode=require&uselibpqcompat=true&sslrootcert=/trusted/synthetic-supabase-ca.crt",
+    for (const [query, code] of [
+      ["sslmode=verify-ca&sslrootcert=/trusted/synthetic-supabase-ca.crt", "DEV_FINANCE_DATABASE_VERIFIED_CA_REQUIRED"],
+      ["sslmode=verify-full&sslrootcert=relative-ca.crt", "DEV_FINANCE_DATABASE_VERIFIED_CA_REQUIRED"],
+      ["sslmode=require&uselibpqcompat=true&sslrootcert=/trusted/synthetic-supabase-ca.crt", "DEV_FINANCE_DATABASE_QUERY_PARAMS_INVALID"],
     ]) {
       process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV = base+"?"+query;
       await expect(resolveMarketplaceFinanceDevDatabaseUrl())
-        .rejects.toThrow("DEV_FINANCE_DATABASE_VERIFIED_CA_REQUIRED");
+        .rejects.toThrow(code);
     }
     expect(mock.options).not.toHaveBeenCalled();
   });
@@ -187,6 +187,23 @@ describe("dedicated Finance DEV database transaction boundary", () => {
     const parsed = new URL(url);
     expect(parsed.searchParams.get("sslmode")).toBe("verify-full");
     expect(parsed.searchParams.get("sslrootcert")).toBe("/trusted/synthetic-supabase-ca.crt");
+    expect(mock.options).not.toHaveBeenCalled();
+  });
+  it("rejects duplicated TLS settings and any driver-level host/user override", async () => {
+    const base="postgresql://bizportal_marketplace_finance_login_dev.xssrfshdrtdfupgqwfdw:synthetic@aws-0-ap-southeast-2.pooler.supabase.com:6543/postgres";
+    for (const suffix of [
+      "sslmode=verify-full&sslrootcert=/trusted/synthetic-supabase-ca.crt&sslmode=disable",
+      "sslmode=verify-full&sslrootcert=/trusted/synthetic-supabase-ca.crt&sslmode=no-verify",
+      "sslmode=verify-full&sslrootcert=/trusted/synthetic-supabase-ca.crt&sslrootcert=/dev/null",
+      "sslmode=verify-full&sslrootcert=/trusted/synthetic-supabase-ca.crt&user=postgres.xssrfshdrtdfupgqwfdw",
+      "sslmode=verify-full&sslrootcert=/trusted/synthetic-supabase-ca.crt&host=db.nzdweipzckfszczzqtuw.supabase.co",
+      "sslmode=verify-full&sslrootcert=/trusted/synthetic-supabase-ca.crt&ssl=0",
+      "sslmode=verify-full&sslrootcert=/trusted/synthetic-supabase-ca.crt&uselibpqcompat=true",
+    ]) {
+      process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV = base+"?"+suffix;
+      await expect(resolveMarketplaceFinanceDevDatabaseUrl())
+        .rejects.toThrow("DEV_FINANCE_DATABASE_QUERY_PARAMS_INVALID");
+    }
     expect(mock.options).not.toHaveBeenCalled();
   });
   it("never opens Finance in PROD, regardless of its feature flag", async () => {

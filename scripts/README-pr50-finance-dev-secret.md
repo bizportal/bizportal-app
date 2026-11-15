@@ -26,8 +26,10 @@ The CA must be the genuine project-specific certificate downloaded from the
 CST-DEV Supabase Dashboard (Database > Settings > SSL Configuration),
 installed securely on the real DEV host. Do not trust a certificate copied
 only from an unverified TLS connection or disable rejectUnauthorized.
-sslmode=require, verify-ca, a missing CA, and relative CA paths now fail
-closed. Node-postgres v8 currently aliases require to verify-full, but
+sslmode=require, verify-ca, a missing CA, relative CA paths, duplicate
+TLS parameters and all extra URL query keys (especially host/user/ssl
+overrides) now fail closed. Node-postgres v8 currently aliases require to
+verify-full, but
 pg-connection-string explicitly warns this becomes weaker in v3.
 No CA file has been installed in active Hostinger by this source change.
 Any missing, conflicting, wrong-role, PROD, or invalid configuration fails

@@ -69,6 +69,17 @@ export async function resolveMarketplaceFinanceDevDatabaseUrl(
   if (!sslmode) {
     throw new Error("DEV_FINANCE_DATABASE_SSL_REQUIRED");
   }
+  // pg-connection-string uses the LAST duplicate query parameter, whereas
+  // URLSearchParams.get() returns the FIRST. Query params such as host, user,
+  // sslmode or ssl can override validated authority/role or disable TLS.
+  // Finance needs only these two SSL parameters; reject every extra key and
+  // both duplicates BEFORE passing the unchanged URL to pg.Pool.
+  const allowedParams = new Set(["sslmode", "sslrootcert"]);
+  if ([...url.searchParams.keys()].some(key => !allowedParams.has(key)) ||
+      url.searchParams.getAll("sslmode").length !== 1 ||
+      url.searchParams.getAll("sslrootcert").length > 1) {
+    throw new Error("DEV_FINANCE_DATABASE_QUERY_PARAMS_INVALID");
+  }
   // pg-connection-string v2 currently treats sslmode=require and verify-ca
   // as aliases for verify-full; its v3/libpq semantics do not. Require CA
   // and hostname verification explicitly to prevent dependency downgrade.
