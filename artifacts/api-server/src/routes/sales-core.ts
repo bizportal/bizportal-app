@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { pool } from "@workspace/db";
 import { authenticateAdmin, type AdminRequest } from "./admin-auth";
-import { getProductionSession, isDevelopmentEnvironment, isSignedOtpDevEnabled } from "./dev-auth";
+import { getProductionSession, isDevelopmentEnvironment, isSignedDevAuthEnabled } from "./dev-auth";
 
 const router: IRouter = Router();
 
@@ -39,7 +39,7 @@ router.get("/sales/ai-drafts", async (request, response): Promise<void> => {
   // when signed OTP is explicitly enabled. The middleware already DB-verifies
   // a present signed session before letting this route run.
   if (companyId === null && isGlobalActor &&
-      isDevelopmentEnvironment() && isSignedOtpDevEnabled() &&
+      isDevelopmentEnvironment() && isSignedDevAuthEnabled() &&
       !getProductionSession(request)) {
     response.status(403).json({
       error: "Akses lintas perusahaan membutuhkan sesi Admin terverifikasi.",

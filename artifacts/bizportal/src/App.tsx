@@ -31,6 +31,9 @@ const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
 const appRootPath = basePath ? `${basePath}/` : "/";
 // Opt-in presentation only for the isolated DEV preview build. Never alters authentication.
 const OTP_ONLY_PREVIEW = import.meta.env.VITE_BIZPORTAL_OTP_ONLY_PREVIEW === "true";
+// Separate opt-in: preserves the existing OTP-only preview when enabled.
+const PASSWORD_ONLY_PREVIEW =
+  import.meta.env.VITE_BIZPORTAL_DEV_PASSWORD_ONLY === "true" && !OTP_ONLY_PREVIEW;
 
 const ROLE_CACHE_KEY = "biz_user_role_v1";
 function readRoleCache() {
@@ -369,6 +372,7 @@ function WaLoginSection() {
 
 function EmailLoginSection() {
   const { signInWithEmail, sendEmailOtp, verifyEmailOtp, devLogin } = useSupabaseAuth();
+  const passwordOnlyPreview = PASSWORD_ONLY_PREVIEW;
   const [mode, setMode] = React.useState<"password" | "otp">(OTP_ONLY_PREVIEW ? "otp" : "password");
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
@@ -433,12 +437,12 @@ function EmailLoginSection() {
       }
       setDevUsers(availableDevUsers);
     }
-    const loginMode = resolveEmailLoginMode({
+    const loginMode = passwordOnlyPreview ? "password" : resolveEmailLoginMode({
       email,
       password,
       devEmails: availableDevUsers?.map((user) => user.email) ?? [],
     });
-    const result = loginMode === "dev"
+    const result: { error: string | null; user?: { role?: string } } = loginMode === "dev"
       ? await devLogin(email)
       : await signInWithEmail(email, password);
     if (result.error) {
@@ -448,7 +452,9 @@ function EmailLoginSection() {
       const devUser = availableDevUsers?.find(
         (user) => user.email.trim().toLowerCase() === email.trim().toLowerCase(),
       );
-      writeRoleCache(loginMode === "dev" ? devUser?.role ?? null : "admin");
+      writeRoleCache(loginMode === "dev"
+        ? devUser?.role ?? null
+        : result.user?.role ?? null);
       window.location.href = appRootPath;
     }
   };
@@ -496,13 +502,15 @@ function EmailLoginSection() {
           >
             Password
           </button>
-          <button
-            type="button"
-            onClick={() => { setMode("otp"); setError(null); }}
-            className={`flex-1 rounded-md py-2 text-xs font-medium transition-all ${mode === "otp" ? "bg-indigo-600 text-white shadow" : "text-slate-400 hover:text-white"}`}
-          >
-            OTP Email
-          </button>
+          {!passwordOnlyPreview && (
+            <button
+              type="button"
+              onClick={() => { setMode("otp"); setError(null); }}
+              className={`flex-1 rounded-md py-2 text-xs font-medium transition-all ${mode === "otp" ? "bg-indigo-600 text-white shadow" : "text-slate-400 hover:text-white"}`}
+            >
+              OTP Email
+            </button>
+          )}
         </div>
       )}
       <input
@@ -520,13 +528,13 @@ function EmailLoginSection() {
           <input
             type="password"
             aria-label="Password admin"
-            placeholder="Password (kosong untuk DEV)"
+            placeholder={passwordOnlyPreview ? "Password Super Admin" : "Password (kosong untuk DEV)"}
             value={password}
             onChange={(event) => setPassword(event.target.value)}
             autoComplete="current-password"
             className="rounded-lg bg-slate-800/70 border border-slate-700 px-3 py-2.5 text-sm text-slate-300 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
           />
-          {resolveEmailLoginMode({
+          {!passwordOnlyPreview && resolveEmailLoginMode({
             email,
             password,
             devEmails: devUsers?.map((user) => user.email) ?? [],
@@ -622,7 +630,7 @@ function LoginScreen() {
 
       {/* Private preview uses one existing login method: admin email OTP. */}
       {!OTP_ONLY_PREVIEW && (
-        <div className="flex rounded-lg bg-slate-800 p-1 gap-1 w-72">
+        <div className={PASSWORD_ONLY_PREVIEW ? "hidden" : "flex rounded-lg bg-slate-800 p-1 gap-1 w-72"}>
           <button
             onClick={() => setLoginMode("email")}
             className={`flex-1 rounded-md py-2 text-xs font-medium transition-all ${loginMode === "email" ? "bg-indigo-600 text-white shadow" : "text-slate-400 hover:text-white"}`}

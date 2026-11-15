@@ -17,7 +17,7 @@ const { access, queries } = vi.hoisted(() => ({
 vi.mock("@workspace/db", () => ({ pool: { query: queries } }));
 vi.mock("./dev-auth", () => ({
   isDevelopmentEnvironment: () => access.dev,
-  isSignedOtpDevEnabled: () => access.otpEnabled,
+  isSignedDevAuthEnabled: () => access.otpEnabled,
   getProductionSession: () => access.signedSession
     ? { id: "signed-test", email: "verified@example.invalid", expiresAt: Date.now() + 60_000 }
     : null,
