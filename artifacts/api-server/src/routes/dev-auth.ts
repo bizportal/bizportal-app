@@ -331,7 +331,8 @@ interface FinanceCompanyScope {
 
 export function isFinanceGlobalScopeDevEnabled(): boolean {
   return isSignedDevAuthEnabled()
-    && process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV === "true"
+    && (process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV === "true"
+      || process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV === "true")
     && process.env.BIZPORTAL_FINANCE_GLOBAL_SCOPE_ENABLED_DEV === "true";
 }
 

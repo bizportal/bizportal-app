@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import { db, pool, withMarketplaceFinanceDevTransaction } from "@workspace/db";
+import { db, pool, withMarketplaceFinanceDevTransaction, withMarketplaceFinanceDevReadOnlyTransaction } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import {
   getProductionSession, getProductionUser, isDevelopmentEnvironment,
@@ -94,10 +94,12 @@ router.post("/mkt/admin/finance-company-selection", async (req, res) => {
   }
 });
 
-async function authorize(req: Request, res: Response): Promise<VerifiedFinanceActor | null> {
-  // Bundled DEV uses NODE_ENV=production; APP_ENV alone chooses the DB target.
-  // Never allow this writer on an inferred DEV or the actual PROD application.
-  if (!isDevelopmentEnvironment() || process.env.APP_ENV?.trim().toLowerCase() !== "development" || process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV !== "true") {
+async function authorize(req: Request, res: Response, readOnly = false): Promise<VerifiedFinanceActor | null> {
+  // Separate opt-in GET-only gate; POST actions still require the Writer flag.
+  const writerEnabled = process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV === "true";
+  const readerEnabled = readOnly && process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV === "true";
+  if (!isDevelopmentEnvironment() || process.env.APP_ENV?.trim().toLowerCase() !== "development"
+    || (!writerEnabled && !readerEnabled)) {
     res.status(404).json({ error: "Not found" });
     return null;
   }
@@ -172,12 +174,12 @@ async function verifiedAp(id: number, companyId: number, scopedDb: typeof db) {
 }
 
 router.get("/mkt/admin/vendor-invoices/:id", async (req, res) => {
-  const actor = await authorize(req, res);
+  const actor = await authorize(req, res, true);
   if (!actor) return;
   const id=validId(String(req.params.id ?? ""));
   if (!id) { res.status(400).json({ error: "Invalid invoice ID" }); return; }
   try {
-    const detail=await withMarketplaceFinanceDevTransaction(actor.companyId, scopedDb => verifiedInvoice(id, actor.companyId, scopedDb));
+    const detail=await withMarketplaceFinanceDevReadOnlyTransaction(actor.companyId, scopedDb => verifiedInvoice(id, actor.companyId, scopedDb));
     if (!detail) { res.status(404).json({ error: "Invoice not linked to a valid company-scoped Marketplace PO" }); return; }
     res.json({ ok:true, data:(await invoiceService()).safeMarketplaceVendorInvoiceView(detail.invoice,detail.lines) });
   } catch(error) { req.log?.error({error},"Marketplace invoice read failed");res.status(503).json({error:"Invoice unavailable"}); }
@@ -224,12 +226,12 @@ router.post("/mkt/admin/vendor-invoices/:id/ap-preparation", async (req,res) => 
 });
 
 router.get("/mkt/admin/ap-preparations/:id",async(req,res)=>{
-  const actor = await authorize(req, res);
+  const actor = await authorize(req, res, true);
   if (!actor) return;
   const id=validId(String(req.params.id ?? ""));
   if (!id) {res.status(400).json({error:"Invalid AP ID"});return;}
   try {
-    const ap=await withMarketplaceFinanceDevTransaction(actor.companyId, scopedDb => verifiedAp(id, actor.companyId, scopedDb));
+    const ap=await withMarketplaceFinanceDevReadOnlyTransaction(actor.companyId, scopedDb => verifiedAp(id, actor.companyId, scopedDb));
     if (!ap) {res.status(404).json({error:"AP not found"});return;}
     res.json({ok:true,data:(await apService()).safeApView(ap)});
   } catch(error) {req.log?.error({error},"Marketplace AP read failed");res.status(503).json({error:"AP unavailable"});}

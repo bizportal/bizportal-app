@@ -10,6 +10,7 @@ const envKeys = [
   "APP_ENV", "NODE_ENV", "SESSION_SECRET", "BIZPORTAL_SESSION_SECRET",
   "BIZPORTAL_SIGNED_OTP_ENABLED_DEV",
   "BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV",
+  "BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV",
   "BIZPORTAL_FINANCE_GLOBAL_SCOPE_ENABLED_DEV",
   "BIZPORTAL_FINANCE_GLOBAL_SUPERADMIN_EMAILS_DEV",
   "BIZPORTAL_FINANCE_GLOBAL_COMPANY_IDS_DEV",
@@ -26,6 +27,7 @@ beforeEach(() => {
   delete process.env.BIZPORTAL_SESSION_SECRET;
   process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
   process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV = "true";
+  delete process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV;
   process.env.BIZPORTAL_FINANCE_GLOBAL_SCOPE_ENABLED_DEV = "true";
   process.env.BIZPORTAL_FINANCE_GLOBAL_SUPERADMIN_EMAILS_DEV = "admin@example.test";
   process.env.BIZPORTAL_FINANCE_GLOBAL_COMPANY_IDS_DEV = "1,3";
@@ -51,6 +53,15 @@ function issued(companyId: number, identity = session()) {
 }
 
 describe("Issue76 DEV Finance scope signature and session binding", () => {
+  it("permits signed scoped company in GET-only mode while Writer remains OFF", () => {
+    delete process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV;
+    process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV = "true";
+    expect(isFinanceGlobalScopeDevEnabled()).toBe(true);
+    const { req } = issued(1);
+    expect(getFinanceCompanyScope(req, session())).toBe(1);
+    delete process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV;
+    expect(isFinanceGlobalScopeDevEnabled()).toBe(false);
+  });
   it("is disabled by default and requires a signed OTP session", () => {
     delete process.env.BIZPORTAL_FINANCE_GLOBAL_SCOPE_ENABLED_DEV;
     expect(isFinanceGlobalScopeDevEnabled()).toBe(false);

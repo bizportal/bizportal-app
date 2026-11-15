@@ -5,7 +5,7 @@ import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } 
 import { PgDialect } from "drizzle-orm/pg-core";
 
 const m = vi.hoisted(() => ({
-  query: vi.fn(), email: vi.fn(), finance: vi.fn(), getInvoice: vi.fn(),
+  query: vi.fn(), email: vi.fn(), finance: vi.fn(), financeReadOnly: vi.fn(), getInvoice: vi.fn(),
   invoiceSubmit: vi.fn(), ap: vi.fn(), currentCompany: 1, userActive: true,
   userId: "admin-otp-1", userRole: "super_admin", codeHash: "",
   duplicateIdentity: false, duplicateIdentityInactive: false,
@@ -16,6 +16,7 @@ vi.mock("@workspace/db", () => ({
   pool: { query: m.query },
   getRuntimeDatabaseUrl: vi.fn(),
   withMarketplaceFinanceDevTransaction: m.finance,
+  withMarketplaceFinanceDevReadOnlyTransaction: m.financeReadOnly,
 }));
 vi.mock("../lib/smtp", () => ({ sendAdminLoginOtpEmail: m.email }));
 vi.mock("../lib/services/mktVendorInvoiceService.js", () => ({
@@ -43,6 +44,7 @@ const KEYS = [
   "BIZPORTAL_SIGNED_OTP_ACCOUNT_ID_DEV",
   "BIZPORTAL_SIGNED_OTP_ACCOUNT_EMAIL_DEV",
   "BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV",
+  "BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV",
   "BIZPORTAL_MARKETPLACE_ACCOUNTING_HANDOFF_ENABLED_DEV",
   "BIZPORTAL_FINANCE_GLOBAL_SCOPE_ENABLED_DEV",
   "BIZPORTAL_FINANCE_GLOBAL_SUPERADMIN_EMAILS_DEV",
@@ -79,11 +81,12 @@ beforeEach(() => {
   process.env.BIZPORTAL_SIGNED_OTP_ACCOUNT_ID_DEV = "admin-otp-1";
   process.env.BIZPORTAL_SIGNED_OTP_ACCOUNT_EMAIL_DEV = "admin-otp@example.invalid";
   process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV = "true";
+  delete process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV;
   delete process.env.BIZPORTAL_MARKETPLACE_ACCOUNTING_HANDOFF_ENABLED_DEV;
   delete process.env.BIZPORTAL_FINANCE_GLOBAL_SCOPE_ENABLED_DEV;
   delete process.env.BIZPORTAL_FINANCE_GLOBAL_SUPERADMIN_EMAILS_DEV;
   delete process.env.BIZPORTAL_FINANCE_GLOBAL_COMPANY_IDS_DEV;
-  for (const v of [m.query,m.email,m.finance,m.getInvoice,m.invoiceSubmit,m.ap]) v.mockReset();
+  for (const v of [m.query,m.email,m.finance,m.financeReadOnly,m.getInvoice,m.invoiceSubmit,m.ap]) v.mockReset();
   m.currentCompany = 1; m.userActive = true;
   m.userId = "admin-otp-1"; m.userRole = "super_admin"; m.duplicateIdentity=false; m.duplicateIdentityInactive=false;
   m.primaryStatus = "active"; m.duplicateStatus = "active";
@@ -144,6 +147,7 @@ beforeEach(() => {
     };
     return work(scoped);
   });
+  m.financeReadOnly.mockImplementation(m.finance.getMockImplementation()!);
   m.getInvoice.mockResolvedValue({invoice:{
     id:77,companyId:1,mktPurchaseOrderId:12,supplierId:5,
   },lines:[]});
@@ -188,7 +192,7 @@ describe("signed Super Admin OTP -> canonical Finance route integrated HTTP boun
     const res=await getInvoice(cookie);
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ok:true,data:{id:77,companyId:1}});
-    expect(m.finance.mock.calls[0][0]).toBe(1);
+    expect(m.financeReadOnly.mock.calls[0][0]).toBe(1);
     expect(m.scopedCalls).toHaveLength(1);
     expect(m.scopedCalls[0].sql).toContain("p.company_id=$2");
     expect(m.scopedCalls[0].params).toEqual([77,1,1]);
@@ -201,7 +205,7 @@ describe("signed Super Admin OTP -> canonical Finance route integrated HTTP boun
     m.currentCompany=3;
     const res=await getInvoice(cookie);
     expect(res.status).toBe(404);
-    expect(m.finance.mock.calls[0][0]).toBe(3);
+    expect(m.financeReadOnly.mock.calls[0][0]).toBe(3);
     expect(m.scopedCalls[0].params).toEqual([77,3,3]);
     expect(m.getInvoice).not.toHaveBeenCalled();
   });
@@ -296,7 +300,7 @@ describe("Issue #76 duplicate normalized Admin email identity regression", () =>
     m.duplicateIdentityInactive = true;
     const cookie = await otpLogin();
     expect((await getInvoice(cookie)).status).toBe(200);
-    expect(m.finance).toHaveBeenCalledOnce();
+    expect(m.financeReadOnly).toHaveBeenCalledOnce();
     const lookups = m.query.mock.calls.filter(([sql]) => String(sql).includes("to_jsonb(u)"));
     expect(lookups.length).toBeGreaterThan(1);
     for (const [sql] of lookups) {
@@ -355,7 +359,7 @@ describe("Issue #76 genuine signed OTP HTTP -> global Finance selection", () => 
     const response = await getInvoice(auth);
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ ok:true, data:{id:77,companyId:1} });
-    expect(m.finance.mock.calls[0][0]).toBe(1);
+    expect(m.financeReadOnly.mock.calls[0][0]).toBe(1);
     expect(m.scopedCalls[0].params).toEqual([77,1,1]);
   });
   it("rejects revoked allowlist and cross-company access under real cookie cryptography", async () => {

@@ -4,7 +4,7 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { PgDialect } from "drizzle-orm/pg-core";
 const mock=vi.hoisted(()=>({
-  session:vi.fn(),user:vi.fn(),isDev:vi.fn(),query:vi.fn(),roleCheck:vi.fn(),finance:vi.fn(),
+  session:vi.fn(),user:vi.fn(),isDev:vi.fn(),query:vi.fn(),roleCheck:vi.fn(),finance:vi.fn(),financeReadOnly:vi.fn(),
   companyQuery:vi.fn(),globalAllowed:vi.fn(),allowedCompany:vi.fn(),globalEnabled:vi.fn(),signedScope:vi.fn(),setScopeCookie:vi.fn(),
   getInvoice:vi.fn(),submitInvoice:vi.fn(),createAp:vi.fn(),getAp:vi.fn(),reviewAp:vi.fn(),waitingAp:vi.fn(),handoffAp:vi.fn(),
 }));
@@ -14,6 +14,7 @@ vi.mock("./dev-auth",()=>({getProductionSession:mock.session,getProductionUser:m
   getFinanceCompanyScope:mock.signedScope,setFinanceCompanyScopeCookie:mock.setScopeCookie}));
 vi.mock("@workspace/db",()=>({
   withMarketplaceFinanceDevTransaction: mock.finance,
+  withMarketplaceFinanceDevReadOnlyTransaction: mock.financeReadOnly,
   pool: { query: mock.companyQuery },
 }));
 vi.mock("../lib/services/mktVendorInvoiceService.js",()=>({getMarketplaceVendorInvoice:mock.getInvoice,submitMarketplaceVendorInvoice:mock.submitInvoice,safeMarketplaceVendorInvoiceView:vi.fn(()=>({id:77}))}));
@@ -43,14 +44,58 @@ beforeEach(()=>{
     };
     return fn(scopedDb);
   });
+  mock.financeReadOnly.mockImplementation(mock.finance.getMockImplementation()!);
   mock.getInvoice.mockResolvedValue({invoice:{id:77,mktPurchaseOrderId:12,companyId:1,supplierId:5},lines:[]});
   process.env.APP_ENV="development";
   delete process.env.NODE_ENV;
   process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV="true";
+  delete process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV;
   delete process.env.BIZPORTAL_MARKETPLACE_ACCOUNTING_HANDOFF_ENABLED_DEV;
 });
 const get=(path:string)=>fetch(base+path);
 const post=(path:string,body:any={})=>fetch(base+path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+describe("DEV Finance independent read-only GET boundary", () => {
+  it("allows signed Super Admin GET while every Finance Writer action remains disabled", async () => {
+    delete process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV;
+    process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV = "true";
+    mock.getAp.mockResolvedValue({
+      id:88,companyId:1,mktPurchaseOrderId:12,mktGoodsReceiptId:51,vendorInvoiceId:77,
+    });
+    expect((await get("/api/mkt/admin/vendor-invoices/77")).status).toBe(200);
+    expect((await get("/api/mkt/admin/ap-preparations/88")).status).toBe(200);
+    expect(mock.financeReadOnly).toHaveBeenCalledTimes(2);
+    expect(mock.finance).not.toHaveBeenCalled();
+    for (const path of [
+      "/api/mkt/admin/vendor-invoices/77/match",
+      "/api/mkt/admin/vendor-invoices/77/ap-preparation",
+      "/api/mkt/admin/ap-preparations/88/finance-review",
+      "/api/mkt/admin/ap-preparations/88/waiting-payment",
+      "/api/mkt/admin/ap-preparations/88/accounting-handoff",
+    ]) expect((await post(path)).status).toBe(404);
+    expect(mock.submitInvoice).not.toHaveBeenCalled();
+    expect(mock.createAp).not.toHaveBeenCalled();
+    expect(mock.reviewAp).not.toHaveBeenCalled();
+    expect(mock.waitingAp).not.toHaveBeenCalled();
+    expect(mock.handoffAp).not.toHaveBeenCalled();
+  });
+  it("rejects anonymous/unscoped, non-DEV and disabled read-only requests", async () => {
+    delete process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV;
+    process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV = "true";
+    mock.session.mockReturnValue(null);
+    expect((await get("/api/mkt/admin/vendor-invoices/77")).status).toBe(401);
+    mock.session.mockReturnValue({id:"signed"});
+    mock.user.mockResolvedValue({email:"global@test.dev",role:"super_admin",companyId:null});
+    expect((await get("/api/mkt/admin/vendor-invoices/77")).status).toBe(403);
+    mock.user.mockResolvedValue({email:"admin@test.dev",role:"super_admin",companyId:1});
+    process.env.APP_ENV="production";
+    expect((await get("/api/mkt/admin/vendor-invoices/77")).status).toBe(404);
+    process.env.APP_ENV="development";
+    delete process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV;
+    expect((await get("/api/mkt/admin/vendor-invoices/77")).status).toBe(404);
+    expect(mock.financeReadOnly).not.toHaveBeenCalled();
+    expect(mock.finance).not.toHaveBeenCalled();
+  });
+});
 describe("Issue #76 DEV global Super Admin Finance company selection", () => {
   beforeEach(() => {
     mock.user.mockResolvedValue({email:"global@test.dev",role:"super_admin",companyId:null});
@@ -143,7 +188,7 @@ describe("Issue #76 DEV global Super Admin Finance company selection", () => {
       headers:{"x-company-id":"3"},
     });
     expect(ok.status).toBe(200);
-    expect(mock.finance.mock.calls[0][0]).toBe(1);
+    expect(mock.financeReadOnly.mock.calls[0][0]).toBe(1);
     expect(mock.query).toHaveBeenCalledWith(expect.stringContaining("p.company_id=$2"),[77,1,1]);
     mock.globalAllowed.mockReturnValue(false);
     expect((await get("/api/mkt/admin/vendor-invoices/77")).status).toBe(403);

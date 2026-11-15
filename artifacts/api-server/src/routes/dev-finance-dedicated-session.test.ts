@@ -28,11 +28,12 @@ vi.mock("drizzle-orm/node-postgres", () => ({
   }),
 }));
 
-import { withMarketplaceFinanceDevTransaction, onMarketplaceFinanceCommit, resolveMarketplaceFinanceDevDatabaseUrl } from "@workspace/db";
+import { withMarketplaceFinanceDevTransaction, withMarketplaceFinanceDevReadOnlyTransaction, onMarketplaceFinanceCommit, resolveMarketplaceFinanceDevDatabaseUrl } from "@workspace/db";
 
 const KEYS = [
   "APP_ENV",
   "BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV",
+  "BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV",
   "BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV",
   "BIZPORTAL_MARKETPLACE_FINANCE_GCP_SECRET_NAME_DEV",
 ] as const;
@@ -43,6 +44,7 @@ describe("dedicated Finance DEV database transaction boundary", () => {
     for (const key of KEYS) delete process.env[key];
     process.env.APP_ENV = "development";
     process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV = "true";
+    delete process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV;
     process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV =
       "postgresql://bizportal_marketplace_finance_login_dev:synthetic@db.xssrfshdrtdfupgqwfdw.supabase.co:5432/postgres?sslmode=verify-full&sslrootcert=/opt/cst-dev-finance-tls/supabase-root-2021.crt";
     mock.options.mockClear();
@@ -53,6 +55,9 @@ describe("dedicated Finance DEV database transaction boundary", () => {
     mock.rls = true;
     mock.execute.mockImplementation(async (query: unknown) => {
       const statement = new PgDialect().sqlToQuery(query as any);
+      if (statement.sql.trim().toUpperCase() === "SET TRANSACTION READ ONLY") {
+        return { rows: [] };
+      }
       if (statement.sql.includes("current_user::text")) {
         return { rows: [{
           db_role: mock.role, login_role: mock.role,
@@ -236,6 +241,34 @@ describe("dedicated Finance DEV database transaction boundary", () => {
     expect(options).not.toHaveProperty("connectionString");
     expect(options.ssl.ca).toContain("-----END CERTIFICATE-----");
     expect(mock.execute).toHaveBeenCalledTimes(3);
+  });
+  it("enforces read-only SQL as the FIRST query even when the Writer flag is OFF", async () => {
+    delete process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV;
+    process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV = "true";
+    const result = await withMarketplaceFinanceDevReadOnlyTransaction(1, async () => "read-ok");
+    expect(result).toBe("read-ok");
+    const queries = mock.execute.mock.calls.map(([query]) =>
+      new PgDialect().sqlToQuery(query as any).sql);
+    expect(queries[0].trim().toUpperCase()).toBe("SET TRANSACTION READ ONLY");
+    expect(queries[1]).toContain("current_user::text");
+    expect(queries.some(query => query.includes("set_config"))).toBe(true);
+    expect(queries.some(query => query.includes("current_setting"))).toBe(true);
+  });
+  it("blocks queued after-commit actions in the read-only Finance helper", async () => {
+    delete process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV;
+    process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV = "true";
+    const notify = vi.fn();
+    await expect(withMarketplaceFinanceDevReadOnlyTransaction(1, async (session) => {
+      onMarketplaceFinanceCommit(session, notify);
+      return true;
+    })).rejects.toThrow("DEV_FINANCE_READ_ONLY_SIDE_EFFECT_DENIED");
+    expect(notify).not.toHaveBeenCalled();
+  });
+  it("rejects all Finance bootstrap when both independent flags are OFF", async () => {
+    delete process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV;
+    delete process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV;
+    await expect(resolveMarketplaceFinanceDevDatabaseUrl())
+      .rejects.toThrow("DEV_FINANCE_DISABLED");
   });
   it("runs deferred Finance audit only after the outer transaction succeeds", async () => {
     const events: string[] = [];
