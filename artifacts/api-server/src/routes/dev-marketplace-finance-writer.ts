@@ -1,7 +1,11 @@
 import { Router, type Request, type Response } from "express";
-import { db, withMarketplaceFinanceDevTransaction } from "@workspace/db";
+import { db, pool, withMarketplaceFinanceDevTransaction } from "@workspace/db";
 import { sql } from "drizzle-orm";
-import { getProductionSession, getProductionUser, isDevelopmentEnvironment } from "./dev-auth";
+import {
+  getProductionSession, getProductionUser, isDevelopmentEnvironment,
+  getFinanceCompanyScope, isApprovedFinanceGlobalSuperAdmin, isApprovedFinanceGlobalCompany,
+  isFinanceGlobalScopeDevEnabled, setFinanceCompanyScopeCookie,
+} from "./dev-auth";
 // Load canonical services only after the DEV flag and verified session pass.
 // Startup of PROD must not initialize Marketplace finance dependencies.
 const invoiceService = () => import("../lib/services/mktVendorInvoiceService.js");
@@ -15,6 +19,80 @@ const validId = (s: string): number | null => /^[1-9]\d{0,9}$/.test(s) ? Number(
 
 type VerifiedFinanceActor = { email: string; companyId: number };
 
+async function isActiveFinanceCompany(companyId: number): Promise<boolean> {
+  const result = await pool.query<{ id: number }>(
+    "select id from public.companies where id=$1 and coalesce(is_active,true)=true limit 1",
+    [companyId],
+  );
+  return result.rows.length === 1;
+}
+
+// Explicit, audited company selection only for allowlisted GLOBAL Super Admin.
+// A frontend localStorage value, query string or x-company-id header is never a grant.
+router.post("/mkt/admin/finance-company-selection", async (req, res) => {
+  if (!isDevelopmentEnvironment() || process.env.APP_ENV?.trim().toLowerCase() !== "development"
+    || !isFinanceGlobalScopeDevEnabled()) {
+    res.status(404).json({ error: "Not found" }); return;
+  }
+  const session = getProductionSession(req);
+  if (!session) { res.status(401).json({ error: "Unauthorized" }); return; }
+  try {
+    const user = await getProductionUser(session);
+    if (!user || user.role.toLowerCase() !== "super_admin"
+      || user.companyId !== null || !isApprovedFinanceGlobalSuperAdmin(user.email)) {
+      res.status(403).json({ error: "Global Finance access not approved" }); return;
+    }
+    // The existing signed session is required, and cross-site browser requests
+    // cannot use this endpoint to silently switch the Finance company.
+    const fetchSite = req.header("sec-fetch-site");
+    // Browsers set Origin for JSON POSTs. A forged/foreign Origin must not
+    // switch the tenant even if a caller omits or spoofs Sec-Fetch-Site.
+    const origin = req.header("origin");
+    let validOrigin = true;
+    if (origin) {
+      try {
+        const parsed = new URL(origin);
+        // Compare with the actual request Host, not a spoofable X-Forwarded-Host.
+        const presentedHost = req.header("host");
+        const forwardedProtocol = req.header("x-forwarded-proto")?.split(",")[0].trim();
+        const requestProtocol = forwardedProtocol || (req.secure ? "https" : "http");
+        validOrigin = parsed.origin === origin
+          && parsed.host.toLowerCase() === presentedHost?.toLowerCase()
+          && parsed.protocol === requestProtocol.toLowerCase() + ":";
+      } catch { validOrigin = false; }
+    }
+    if (!validOrigin || (fetchSite && fetchSite !== "same-origin") || !req.is("application/json")) {
+      res.status(403).json({ error: "Same-origin JSON request required" }); return;
+    }
+    const body = req.body;
+    const companyId = body?.companyId;
+    if (!body || typeof body !== "object" || Array.isArray(body)
+      || Object.keys(body).length !== 1
+      || !Number.isSafeInteger(companyId) || companyId <= 0) {
+      res.status(422).json({ error: "Invalid company selection" }); return;
+    }
+    if (!isApprovedFinanceGlobalCompany(companyId)) {
+      res.status(403).json({ error: "Finance company not in allowlist" }); return;
+    }
+    if (!await isActiveFinanceCompany(companyId)) {
+      res.status(404).json({ error: "Company unavailable" }); return;
+    }
+    // Fail closed if the audit cannot be persisted. No financial writer is used.
+    await pool.query(
+      "insert into public.audit_logs "
+      + "(user_email,action,entity_type,entity_id,after_data,ip_address,company_id,module) "
+      + "values ($1,'finance_company_scope_selected','company',$2,$3::jsonb,$4,$5,'marketplace_finance')",
+      [user.email, String(companyId),
+        JSON.stringify({ selectedCompanyId: companyId, source: "signed_dev_superadmin" }),
+        req.ip ?? null, String(companyId)],
+    );
+    setFinanceCompanyScopeCookie(res, session, companyId);
+    res.json({ ok: true, companyId });
+  } catch (error) {
+    req.log?.error({ error }, "Global Finance company selection unavailable");
+    res.status(503).json({ error: "Finance company selection unavailable" });
+  }
+});
 
 async function authorize(req: Request, res: Response): Promise<VerifiedFinanceActor | null> {
   // Bundled DEV uses NODE_ENV=production; APP_ENV alone chooses the DB target.
@@ -30,9 +108,16 @@ async function authorize(req: Request, res: Response): Promise<VerifiedFinanceAc
     if (!user || user.role.toLowerCase() !== "super_admin") {
       res.status(403).json({ error: "Forbidden" }); return null;
     }
-    // Never authorize finance access through a role-only or unscoped identity.
-    // Super Admin approvals remain single-step, but must belong to a verified company.
-    const companyId = user.companyId;
+    // Existing company-bound Super Admin continues unchanged. Only explicitly
+    // allowlisted global Super Admin may use a time-limited, session-bound scope.
+    let companyId = user.companyId;
+    if (companyId === null && isApprovedFinanceGlobalSuperAdmin(user.email)) {
+      const selected = getFinanceCompanyScope(req, session);
+      if (selected !== null && isApprovedFinanceGlobalCompany(selected)
+        && await isActiveFinanceCompany(selected)) {
+        companyId = selected;
+      }
+    }
     if (typeof companyId !== "number" || !Number.isSafeInteger(companyId) || companyId <= 0) {
       res.status(403).json({ error: "Company scope not verified" }); return null;
     }

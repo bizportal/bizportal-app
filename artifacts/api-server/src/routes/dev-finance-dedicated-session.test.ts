@@ -94,7 +94,7 @@ describe("dedicated Finance DEV database transaction boundary", () => {
     process.env.BIZPORTAL_MARKETPLACE_FINANCE_GCP_SECRET_NAME_DEV =
       "bizportal-marketplace-finance-dev-unit";
     const reader=vi.fn(async()=>
-      "postgresql://bizportal_marketplace_finance_login_dev.xssrfshdrtdfupgqwfdw:synthetic@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres?sslmode=require");
+      "postgresql://bizportal_marketplace_finance_login_dev.xssrfshdrtdfupgqwfdw:synthetic@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres?sslmode=verify-full&sslrootcert=/trusted/synthetic-supabase-ca.crt");
     const url=await resolveMarketplaceFinanceDevDatabaseUrl(reader);
     expect(new URL(url).username).toBe("bizportal_marketplace_finance_login_dev.xssrfshdrtdfupgqwfdw");
     expect(reader).toHaveBeenCalledWith("bizportal-marketplace-finance-dev-unit");
@@ -143,7 +143,7 @@ describe("dedicated Finance DEV database transaction boundary", () => {
   });
   it("rejects privileged postgres as a finance credential", async () => {
     process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV =
-      "postgresql://postgres.xssrfshdrtdfupgqwfdw:fake@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres?sslmode=require";
+      "postgresql://postgres.xssrfshdrtdfupgqwfdw:fake@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres?sslmode=verify-full&sslrootcert=/trusted/synthetic-supabase-ca.crt";
     await expect(withMarketplaceFinanceDevTransaction(1, async () => 1))
       .rejects.toThrow("DEV_FINANCE_DATABASE_IDENTITY_INVALID");
     expect(mock.options).not.toHaveBeenCalled();
@@ -153,6 +153,57 @@ describe("dedicated Finance DEV database transaction boundary", () => {
       "postgresql://bizportal_marketplace_finance_login_dev.xssrfshdrtdfupgqwfdw:synthetic@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres";
     await expect(withMarketplaceFinanceDevTransaction(1, async () => 1))
       .rejects.toThrow("DEV_FINANCE_DATABASE_SSL_REQUIRED");
+    expect(mock.options).not.toHaveBeenCalled();
+  });
+  it("rejects sslmode=require even though pg v8 currently aliases it to verify-full", async () => {
+    process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV =
+      "postgresql://bizportal_marketplace_finance_login_dev.xssrfshdrtdfupgqwfdw:synthetic@aws-0-ap-southeast-2.pooler.supabase.com:6543/postgres?sslmode=require";
+    await expect(resolveMarketplaceFinanceDevDatabaseUrl())
+      .rejects.toThrow("DEV_FINANCE_DATABASE_VERIFIED_CA_REQUIRED");
+    expect(mock.options).not.toHaveBeenCalled();
+  });
+  it("rejects verify-full without an explicit trusted server CA path", async () => {
+    process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV =
+      "postgresql://bizportal_marketplace_finance_login_dev.xssrfshdrtdfupgqwfdw:synthetic@aws-0-ap-southeast-2.pooler.supabase.com:6543/postgres?sslmode=verify-full";
+    await expect(resolveMarketplaceFinanceDevDatabaseUrl())
+      .rejects.toThrow("DEV_FINANCE_DATABASE_VERIFIED_CA_REQUIRED");
+    expect(mock.options).not.toHaveBeenCalled();
+  });
+  it("rejects verify-ca and relative CA paths that do not verify hostname reliably", async () => {
+    const base="postgresql://bizportal_marketplace_finance_login_dev.xssrfshdrtdfupgqwfdw:synthetic@aws-0-ap-southeast-2.pooler.supabase.com:6543/postgres";
+    for (const [query, code] of [
+      ["sslmode=verify-ca&sslrootcert=/trusted/synthetic-supabase-ca.crt", "DEV_FINANCE_DATABASE_VERIFIED_CA_REQUIRED"],
+      ["sslmode=verify-full&sslrootcert=relative-ca.crt", "DEV_FINANCE_DATABASE_VERIFIED_CA_REQUIRED"],
+      ["sslmode=require&uselibpqcompat=true&sslrootcert=/trusted/synthetic-supabase-ca.crt", "DEV_FINANCE_DATABASE_QUERY_PARAMS_INVALID"],
+    ]) {
+      process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV = base+"?"+query;
+      await expect(resolveMarketplaceFinanceDevDatabaseUrl())
+        .rejects.toThrow(code);
+    }
+    expect(mock.options).not.toHaveBeenCalled();
+  });
+  it("accepts explicit verify-full and absolute CA path only for the CST-DEV Finance role", async () => {
+    const url = await resolveMarketplaceFinanceDevDatabaseUrl();
+    const parsed = new URL(url);
+    expect(parsed.searchParams.get("sslmode")).toBe("verify-full");
+    expect(parsed.searchParams.get("sslrootcert")).toBe("/opt/cst-dev-finance-tls/supabase-root-2021.crt");
+    expect(mock.options).not.toHaveBeenCalled();
+  });
+  it("rejects duplicated TLS settings and any driver-level host/user override", async () => {
+    const base="postgresql://bizportal_marketplace_finance_login_dev.xssrfshdrtdfupgqwfdw:synthetic@aws-0-ap-southeast-2.pooler.supabase.com:6543/postgres";
+    for (const suffix of [
+      "sslmode=verify-full&sslrootcert=/trusted/synthetic-supabase-ca.crt&sslmode=disable",
+      "sslmode=verify-full&sslrootcert=/trusted/synthetic-supabase-ca.crt&sslmode=no-verify",
+      "sslmode=verify-full&sslrootcert=/trusted/synthetic-supabase-ca.crt&sslrootcert=/dev/null",
+      "sslmode=verify-full&sslrootcert=/trusted/synthetic-supabase-ca.crt&user=postgres.xssrfshdrtdfupgqwfdw",
+      "sslmode=verify-full&sslrootcert=/trusted/synthetic-supabase-ca.crt&host=db.nzdweipzckfszczzqtuw.supabase.co",
+      "sslmode=verify-full&sslrootcert=/trusted/synthetic-supabase-ca.crt&ssl=0",
+      "sslmode=verify-full&sslrootcert=/trusted/synthetic-supabase-ca.crt&uselibpqcompat=true",
+    ]) {
+      process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV = base+"?"+suffix;
+      await expect(resolveMarketplaceFinanceDevDatabaseUrl())
+        .rejects.toThrow("DEV_FINANCE_DATABASE_QUERY_PARAMS_INVALID");
+    }
     expect(mock.options).not.toHaveBeenCalled();
   });
   it("never opens Finance in PROD, regardless of its feature flag", async () => {
@@ -222,7 +273,7 @@ describe("dedicated Finance DEV database transaction boundary", () => {
     // A prior test already initialized the session pool with the synthetic
     // dedicated identity; changing the credential must require a restart.
     process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV =
-      "postgresql://bizportal_marketplace_finance_login_dev.xssrfshdrtdfupgqwfdw:synthetic-rotated@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres?sslmode=require";
+      "postgresql://bizportal_marketplace_finance_login_dev.xssrfshdrtdfupgqwfdw:synthetic-rotated@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres?sslmode=verify-full&sslrootcert=/trusted/synthetic-supabase-ca.crt";
     const writer = vi.fn();
     await expect(withMarketplaceFinanceDevTransaction(1, writer))
       .rejects.toThrow("DEV_FINANCE_CREDENTIAL_CHANGED_RESTART_REQUIRED");

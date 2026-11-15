@@ -477,7 +477,7 @@ function EmailLoginSection() {
       setLoading(false);
       return;
     }
-    writeRoleCache("admin");
+    writeRoleCache(result.user?.role ?? null);
     window.location.href = appRootPath;
   };
 

@@ -61,6 +61,24 @@ router.use((req, res, next) => {
 });
 
 
+// Restore the original Purchase PDF binary contract without changing its
+// canonical transaction tables or the existing authenticated HTML fallback.
+// DEV-only and OFF by default; never initializes PDFKit on PROD startup.
+router.use((req,res,next) => {
+  if (!req.path.startsWith("/purchase/documents/") || !req.path.endsWith("/pdf")) return next();
+  if (process.env.APP_ENV?.trim().toLowerCase() !== "development" ||
+      !isDevelopmentEnvironment() ||
+      process.env.BIZPORTAL_DOCUMENT_TEMPLATES_ENABLED_DEV !== "true") {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  void import("./dev-purchase-pdf").then(({default: handler}) =>
+    handler(req,res,next)).catch(error => {
+      req.log?.error?.({error}, "DEV Purchase native PDF unavailable");
+      if (!res.headersSent) res.status(503).json({error:"Purchase PDF unavailable"});
+    });
+});
+
 // Read-only Customer AR preview imported from the historical BizPortal source.
 // Deliberately OFF until tenant-scope and canonical DEV runtime parity are proven.
 router.use((req, res, next) => {
@@ -81,7 +99,7 @@ router.use((req, res, next) => {
 // Canonical vendor invoice/AP services: DEV-only, feature flags OFF by default.
 // Standalone runtime does not create GL journals or execute payments.
 router.use((req,res,next) => {
-  if (req.path.startsWith('/mkt/admin/vendor-invoices/') || req.path.startsWith('/mkt/admin/ap-preparations/')) {
+  if (req.path.startsWith('/mkt/admin/vendor-invoices/') || req.path.startsWith('/mkt/admin/ap-preparations/') || req.path === '/mkt/admin/finance-company-selection') {
     void import('./dev-marketplace-finance-writer').then(({default: handler})=>handler(req,res,next)).catch(error=>{
       req.log?.error({error},'Canonical Marketplace finance router unavailable');
       if (!res.headersSent) res.status(503).json({error:'Marketplace finance temporarily unavailable'});

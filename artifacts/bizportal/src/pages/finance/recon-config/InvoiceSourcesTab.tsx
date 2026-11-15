@@ -1,3 +1,4 @@
+import { isPaymentEvidenceSubject } from "@/lib/gmail-payment-evidence";
 import {
   useCallback,
   useEffect,
@@ -1171,10 +1172,12 @@ export default function InvoiceSourcesTab() {
                     (candidate) => {
                       const importAction =
                         `import:${candidate.id}`;
+                      const paymentEvidence = isPaymentEvidenceSubject(candidate.subject);
                       const canImport =
                         candidate.status ===
                           "ready" &&
-                        !candidate.vendorInvoiceId;
+                        !candidate.vendorInvoiceId &&
+                        !paymentEvidence;
 
                       return (
                         <tr
@@ -1197,6 +1200,11 @@ export default function InvoiceSourcesTab() {
                             <p className="mt-1 truncate text-xs text-slate-500">
                               {candidate.fileName}
                             </p>
+                            {paymentEvidence && (
+                              <p className="mt-1 text-xs text-amber-300">
+                                Bukti pembayaran — review Finance/AR, bukan tagihan vendor
+                              </p>
+                            )}
                           </td>
 
                           <td className="max-w-[220px] px-3 py-3">

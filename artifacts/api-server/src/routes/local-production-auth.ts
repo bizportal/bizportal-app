@@ -51,23 +51,36 @@ function createSession(user: { id: string; email: string }): ProductionSession {
 }
 
 async function findUserByEmail(email: string, exactId?: string): Promise<RawUser | null> {
-  // PROD and normal login retain the original email-only query.
-  // Signed OTP in DEV can bind a single, explicitly approved account ID.
+  // PROD and normal login retain original email-only semantics.
+  // DEV signed OTP must pin the account ID and reject a competing active
+  // account with the same normalized email.
+  const signedDev = isSignedOtpDevEnabled();
+  const activeOnly = signedDev
+    ? " and u.is_active = true"
+    : "";
   const result = exactId
     ? await pool.query<{ user_data: Record<string, unknown> }>(
       `select to_jsonb(u) as user_data
          from public.users u
         where u.id = $1 and lower(coalesce(to_jsonb(u)->>'email', '')) = $2
+          and u.is_active = true
+          and not exists (
+            select 1 from public.users dupe
+             where dupe.id <> u.id
+               and lower(coalesce(to_jsonb(dupe)->>'email', '')) = $2
+               and dupe.is_active = true
+          )
         limit 1`,
       [exactId, email],
     )
     : await pool.query<{ user_data: Record<string, unknown> }>(
       `select to_jsonb(u) as user_data
          from public.users u
-        where lower(coalesce(to_jsonb(u)->>'email', '')) = $1
-        limit 1`,
+        where lower(coalesce(to_jsonb(u)->>'email', '')) = $1${activeOnly}
+        limit ${signedDev ? 2 : 1}`,
       [email],
     );
+  if (signedDev && result.rows.length !== 1) return null;
   const data = result.rows[0]?.user_data;
   if (!data || typeof data.id !== "string" || typeof data.email !== "string") return null;
 

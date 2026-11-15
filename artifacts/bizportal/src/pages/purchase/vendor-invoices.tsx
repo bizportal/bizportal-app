@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useCompany } from "@/contexts/CompanyContext";
+import { FinanceCompanyScopeCard } from "./FinanceCompanyScopeCard";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Plus, Trash2, Eye, ChevronLeft, ChevronRight, Send, CheckCircle, FileText, Bot, Banknote, RotateCcw, RefreshCw, Wrench, Split } from "lucide-react";
 import { toast } from "sonner";
@@ -404,6 +405,10 @@ export function VendorInvoicesListPage() {
             </Link>
           </div>
         </div>
+
+        {import.meta.env.VITE_BIZPORTAL_FINANCE_GLOBAL_SCOPE_UI_DEV === "true" && (
+          <FinanceCompanyScopeCard />
+        )}
 
         {/* Dialog konfirmasi hapus */}
         {confirmDeleteId !== null && confirmTarget && (
