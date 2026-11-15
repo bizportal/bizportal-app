@@ -81,3 +81,20 @@ and mocked OAuth/Secret Manager responses via
 No real bootstrap JSON, OTP, SMTP password, or database DSN should appear in
 this PR, the example unit file, logs or GitHub Actions. This addition is
 source-only; no systemd drop-in, secret file or service restart was performed.
+
+## Restricted OTP login connection budget
+
+The dedicated CST-DEV `bizportal_pr81_otp_login_dev` PostgreSQL role has
+`CONNECTION LIMIT 1`. When this exact role (or its Supavisor
+`role.project_ref` variant) is selected through the authorized DEV-only
+application database URL, the common BizPortal database pool is now capped
+at **1** regardless of the ordinary `DB_POOL_MAX` setting. This prevents
+the default Node production pool (2 connections) exceeding the restricted
+role's connection budget. All other roles and PROD preserve existing pool
+limits. This is **not** a credential or login mechanism.
+
+One concurrent DB connection is appropriate for the one-admin private OTP
+preview but limits throughput; keep the preview isolated, avoid multiple
+replicas of that role, and validate actual concurrency after approved
+credential provisioning. Do not increase `rolconnlimit`, reuse a broad
+database login, or weaken RLS to bypass connection errors.
