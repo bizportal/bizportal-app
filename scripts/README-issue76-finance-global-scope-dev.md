@@ -89,6 +89,30 @@ live legacy service also has the old SIGTERM behavior, which must be
 accounted for in the eventual drain/cutover plan. Do not switch Nginx,
 systemd, signed OTP, Finance or PROD based on this smoke alone.
 
+## Actual built API: negative-only authenticated-boundary smoke
+
+The repeatable `scripts/dev-issue76-finance-unauth-http-smoke.sh` launches
+the **compiled PR #77 API** only on isolated VPS loopback port `19879`
+with a sanitized environment, a fresh ephemeral random test signing key,
+only `.invalid` synthetic allowlisted email, and no DB, GCP or SMTP
+credentials. OTP, Finance and global-company feature flags are enabled
+**only in the temporary process** to exercise the runtime authentication
+guards; no sign-in or OTP endpoint is called.
+
+Expected responses:
+- `/api/health/live` returns 200.
+- Unauthenticated `/api/companies`, Finance Vendor Invoice and AP
+  detail endpoints return 401.
+- Forged `x-company-id` and forged production session cookie cannot
+  authorize Finance: 401.
+- Anonymous / forged-cookie Finance company selection POSTs return 401.
+- Anonymous Accounting Handoff POST returns 401.
+
+The smoke also checks unchanged active systemd service PID, source SHA,
+Nginx SHA-256, and no leftover local listener. It cannot demonstrate
+genuine SMTP OTP delivery, valid signed Admin session, live RLS-backed
+HTTP response, or successful financial transaction.
+
 ## Remaining release gates
 
 - Implement deliberate selection UX and verify real same-origin browser login; the API contract alone is not a UI cutover.
