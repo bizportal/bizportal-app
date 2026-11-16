@@ -57,6 +57,7 @@ const actor={actorType:"vendor" as const,actorId:"10",actorName:"Synthetic Vendo
 function invoice(poId:number,grId:number,supplierId:number,poLineId:number,companyId:number,ref:string){
  return {
   poId,grId,supplierId,companyId,poLineId,createdBy:"synthetic-only",
+  vendorToken:companyId===1?"a".repeat(64):"b".repeat(64),
   vendorInvoiceRef:ref,invoiceDate:new Date("2026-11-16T00:00:00Z"),currency:"IDR",
   totalAmount:100,taxAmount:0,grandTotal:100,supplierName:"Synthetic Supplier",
   lines:[{poLineId,quantity:1,unitPrice:100,subtotal:100,name:"Synthetic Item"}],
@@ -82,7 +83,7 @@ async function main(){
   await exec(tx,"CREATE TYPE vi_status AS ENUM ('draft','submitted','posted','matched','ready_for_ap','paid','cancelled')");
   for(const table of tables)await exec(tx,ddl(table));
   await exec(tx,"CREATE UNIQUE INDEX ci_pr102_invoice_dedup ON public.vendor_invoices(supplier_id,vendor_invoice_ref,mkt_purchase_order_id)");
-  await exec(tx,"INSERT INTO public.mkt_purchase_orders(id,po_number,rfq_id,quote_id,company_id,vendor_id,status,total_amount,tax_amount,grand_total) VALUES (11,'CI-CST-PO',1,1,1,10,'confirmed',100,0,100),(31,'CI-DIVA-PO',3,3,3,35,'confirmed',100,0,100)");
+  await exec(tx,"INSERT INTO public.mkt_purchase_orders(id,po_number,rfq_id,quote_id,company_id,vendor_id,status,total_amount,tax_amount,grand_total,vendor_token) VALUES (11,'CI-CST-PO',1,1,1,10,'confirmed',100,0,100,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),(31,'CI-DIVA-PO',3,3,3,35,'confirmed',100,0,100,'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')");
   await exec(tx,"INSERT INTO public.mkt_po_shipments(id,po_id,shipment_number,shipment_status) VALUES (12,11,'CI-CST-SHIP','delivered'),(32,31,'CI-DIVA-SHIP','delivered')");
   await exec(tx,"INSERT INTO public.mkt_po_goods_receipts(id,shipment_id,receipt_number,receipt_type,inspection_status) VALUES (13,12,'CI-CST-GR','full','passed'),(33,32,'CI-DIVA-GR','full','passed')");
   await exec(tx,"INSERT INTO public.mkt_purchase_order_lines(id,po_id,item_name,qty,unit_price,subtotal) VALUES (21,11,'CI-CST-ITEM',1,100,100),(41,31,'CI-DIVA-ITEM',1,100,100)");
@@ -123,12 +124,12 @@ async function main(){
   }
   await exec(tx,"CREATE POLICY owner_select_shipment ON public.mkt_po_shipments FOR SELECT TO "+owner+" USING(EXISTS(SELECT 1 FROM public.mkt_purchase_orders po WHERE po.id=po_id AND po.company_id="+tenant+"))");
   await exec(tx,vendorParentLockFunctionSql);
-  await exec(tx,"REVOKE ALL ON FUNCTION public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer) FROM PUBLIC");
-  await exec(tx,"ALTER FUNCTION public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer) OWNER TO "+owner);
-  await exec(tx,"GRANT EXECUTE ON FUNCTION public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer) TO "+finance);
+  await exec(tx,"REVOKE ALL ON FUNCTION public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text) FROM PUBLIC");
+  await exec(tx,"ALTER FUNCTION public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text) OWNER TO "+owner);
+  await exec(tx,"GRANT EXECUTE ON FUNCTION public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text) TO "+finance);
   await exec(tx,"SET LOCAL ROLE "+finance);
   await exec(tx,"SELECT set_config('app.marketplace_company_id','1',true)");
-  const check=await exec(tx,"SELECT current_user::text role,has_any_column_privilege(current_user,'public.mkt_purchase_orders','UPDATE') po_update,has_any_column_privilege(current_user,'public.mkt_po_goods_receipts','UPDATE') gr_update,has_function_privilege(current_user,'public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer)','EXECUTE') may_lock");
+  const check=await exec(tx,"SELECT current_user::text role,has_any_column_privilege(current_user,'public.mkt_purchase_orders','UPDATE') po_update,has_any_column_privilege(current_user,'public.mkt_po_goods_receipts','UPDATE') gr_update,has_function_privilege(current_user,'public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text)','EXECUTE') may_lock");
   assert.equal(check.rows[0].role,finance);
   assert.equal(check.rows[0].po_update,false);
   assert.equal(check.rows[0].gr_update,false);
@@ -150,6 +151,19 @@ async function main(){
   const one=await exec(tx,"SELECT count(*)::integer n FROM public.vendor_invoices");
   assert.equal(Number(one.rows[0].n),1);
   console.log("CANONICAL_VENDOR_INVOICE_IDEMPOTENT_REPLAY_PASS");
+  // Simulated token rotation between route revalidation and row locking.
+  await exec(tx,"RESET ROLE");
+  await exec(tx,"UPDATE public.mkt_purchase_orders SET vendor_token='cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc' WHERE id=11");
+  await exec(tx,"SET LOCAL ROLE "+finance);
+  const rotated=await createMarketplaceVendorInvoice(cst,actor,tx as unknown as typeof db);
+  assert.deepEqual(rotated,{ok:false,code:"PO_NOT_FOUND"});
+  console.log("ROTATED_VENDOR_TOKEN_REVALIDATION_UNDER_PO_LOCK_PASS");
+  await exec(tx,"RESET ROLE");
+  await exec(tx,"UPDATE public.mkt_purchase_orders SET vendor_token='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', vendor_token_expires_at=(now() AT TIME ZONE 'UTC') - interval '1 minute' WHERE id=11");
+  await exec(tx,"SET LOCAL ROLE "+finance);
+  const expired=await createMarketplaceVendorInvoice(cst,actor,tx as unknown as typeof db);
+  assert.deepEqual(expired,{ok:false,code:"PO_NOT_FOUND"});
+  console.log("EXPIRED_VENDOR_TOKEN_REJECTED_UNDER_PO_LOCK_PASS");
   await exec(tx,"SELECT set_config('app.marketplace_company_id','3',true)");
   const denied=await createMarketplaceVendorInvoice(cst,actor,tx as unknown as typeof db);
   assert.deepEqual(denied,{ok:false,code:"PO_NOT_FOUND"});
@@ -174,7 +188,7 @@ async function main(){
   // Unrelated DB role may not execute the definer routine.
   await exec(tx,"SET LOCAL ROLE "+stranger);
   let privilegeError:unknown;
-  try{await tx.transaction(async(inner:any)=>{await exec(inner,"SELECT public.mkt_finance_lock_vendor_invoice_parents_dev(11,13,10)")})}catch(e){privilegeError=e}
+  try{await tx.transaction(async(inner:any)=>{await exec(inner,"SELECT public.mkt_finance_lock_vendor_invoice_parents_dev(11,13,10,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')")})}catch(e){privilegeError=e}
   assert.equal(pgCode(privilegeError),"42501");
   console.log("UNAUTHORIZED_DEF_INER_EXECUTE_DENIED_PASS");
   assert(afterCommitActions.length>=2);

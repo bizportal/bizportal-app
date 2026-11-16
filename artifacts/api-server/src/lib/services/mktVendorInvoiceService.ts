@@ -37,6 +37,7 @@ export interface CreateMarketplaceVendorInvoiceInput {
   poId: number;
   grId: number;
   vendorInvoiceRef: string;
+  vendorToken?: string; // passed only by the verified vendor-token route
   invoiceDate: Date;
   currency: string;
   totalAmount: number;
@@ -189,7 +190,8 @@ export async function createMarketplaceVendorInvoice(
         // checks are missing. Never silently substitute unlocked SELECT.
         const lock = await tx.execute(sql`
           SELECT public.mkt_finance_lock_vendor_invoice_parents_dev(
-            ${input.poId}::integer, ${input.grId}::integer, ${input.supplierId}::integer
+            ${input.poId}::integer, ${input.grId}::integer, ${input.supplierId}::integer,
+            ${input.vendorToken ?? null}::text
           ) AS locked
         `);
         if (lock.rows[0]?.locked !== true)

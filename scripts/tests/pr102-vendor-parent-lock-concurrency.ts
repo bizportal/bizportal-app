@@ -20,10 +20,10 @@ async function setup(){
  const id=await q("SELECT current_database()::text db,current_user::text role");
  assert.equal(id.rows[0].db,"cst_pr81_writer_ci");
  assert.equal(id.rows[0].role,"postgres");
- await q("CREATE TABLE public.mkt_purchase_orders (id integer PRIMARY KEY,company_id integer NOT NULL,vendor_id integer NOT NULL,status text NOT NULL)");
+ await q("CREATE TABLE public.mkt_purchase_orders (id integer PRIMARY KEY,company_id integer NOT NULL,vendor_id integer NOT NULL,status text NOT NULL,vendor_token text NOT NULL,vendor_token_expires_at timestamp)");
  await q("CREATE TABLE public.mkt_po_shipments (id integer PRIMARY KEY,po_id integer NOT NULL)");
  await q("CREATE TABLE public.mkt_po_goods_receipts (id integer PRIMARY KEY,shipment_id integer NOT NULL,inspection_status text NOT NULL)");
- await q("INSERT INTO public.mkt_purchase_orders VALUES (11,1,10,'confirmed'),(31,3,35,'confirmed')");
+ await q("INSERT INTO public.mkt_purchase_orders VALUES (11,1,10,'confirmed','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',NULL),(31,3,35,'confirmed','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',NULL)");
  await q("INSERT INTO public.mkt_po_shipments VALUES (12,11),(32,31)");
  await q("INSERT INTO public.mkt_po_goods_receipts VALUES (13,12,'passed'),(33,32,'passed')");
  await q("CREATE ROLE "+finance+" NOLOGIN NOINHERIT NOBYPASSRLS");
@@ -42,9 +42,9 @@ async function setup(){
  await q("CREATE POLICY owner_gr_upd ON public.mkt_po_goods_receipts FOR UPDATE TO "+owner+" USING("+grScope+") WITH CHECK("+grScope+")");
  await q("CREATE POLICY owner_ship_sel ON public.mkt_po_shipments FOR SELECT TO "+owner+" USING(EXISTS(SELECT 1 FROM public.mkt_purchase_orders po WHERE po.id=po_id AND po.company_id="+tenant+"))");
  await q(vendorParentLockFunctionSql);
- await q("REVOKE ALL ON FUNCTION public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer) FROM PUBLIC");
- await q("ALTER FUNCTION public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer) OWNER TO "+owner);
- await q("GRANT EXECUTE ON FUNCTION public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer) TO "+finance);
+ await q("REVOKE ALL ON FUNCTION public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text) FROM PUBLIC");
+ await q("ALTER FUNCTION public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text) OWNER TO "+owner);
+ await q("GRANT EXECUTE ON FUNCTION public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text) TO "+finance);
 }
 async function blockedWriter(client:pg.PoolClient,statement:string,label:string){
  await client.query("BEGIN");
@@ -57,7 +57,7 @@ async function blockedWriter(client:pg.PoolClient,statement:string,label:string)
 }
 async function cleanup(){
  // All objects are synthetic, uniquely named and live in a destroyed container.
- await q("DROP FUNCTION IF EXISTS public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer)");
+ await q("DROP FUNCTION IF EXISTS public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text)");
  for(const name of ["mkt_po_goods_receipts","mkt_po_shipments","mkt_purchase_orders"])
   await q("DROP TABLE IF EXISTS public."+name);
  await q("REVOKE USAGE ON SCHEMA public FROM "+finance+","+owner);
@@ -78,20 +78,22 @@ async function main(){
   await a.query("BEGIN");
   await a.query("SET LOCAL ROLE "+finance);
   await a.query("SELECT set_config('app.marketplace_company_id','1',true)");
-  const allowed=await a.query("SELECT public.mkt_finance_lock_vendor_invoice_parents_dev(11,13,10) AS ok");
+  const allowed=await a.query("SELECT public.mkt_finance_lock_vendor_invoice_parents_dev(11,13,10,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa') AS ok");
   assert.equal(allowed.rows[0].ok,true);
-  const denied=await a.query("SELECT public.mkt_finance_lock_vendor_invoice_parents_dev(31,33,35) AS ok");
+  const denied=await a.query("SELECT public.mkt_finance_lock_vendor_invoice_parents_dev(31,33,35,'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb') AS ok");
   assert.equal(denied.rows[0].ok,false);
   console.log("DEF_INER_FUNCTION_TENANT_BOUND_LOCK_PASS");
   await Promise.all([
-   blockedWriter(b,"UPDATE public.mkt_purchase_orders SET status='cancelled' WHERE id=11","PO_INDEPENDENT_WRITER"),
+   blockedWriter(b,"UPDATE public.mkt_purchase_orders SET vendor_token='cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc' WHERE id=11","PO_TOKEN_ROTATION_WRITER"),
    blockedWriter(c,"UPDATE public.mkt_po_goods_receipts SET inspection_status='failed' WHERE id=13","GR_INDEPENDENT_WRITER")
   ]);
   await a.query("ROLLBACK");
-  const changedPo=await b.query("UPDATE public.mkt_purchase_orders SET status='cancelled' WHERE id=11 RETURNING id");
+  const changedPo=await b.query("UPDATE public.mkt_purchase_orders SET vendor_token='cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc' WHERE id=11 RETURNING id");
   const changedGr=await c.query("UPDATE public.mkt_po_goods_receipts SET inspection_status='failed' WHERE id=13 RETURNING id");
   assert.equal(changedPo.rowCount,1);
   assert.equal(changedGr.rowCount,1);
+  const rotated=await q("SELECT vendor_token FROM public.mkt_purchase_orders WHERE id=11");
+  assert.equal(rotated.rows[0].vendor_token,"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc");
   const other=await q("SELECT (SELECT status FROM public.mkt_purchase_orders WHERE id=31) po,(SELECT inspection_status FROM public.mkt_po_goods_receipts WHERE id=33) gr");
   assert.equal(other.rows[0].po,"confirmed");
   assert.equal(other.rows[0].gr,"passed");
