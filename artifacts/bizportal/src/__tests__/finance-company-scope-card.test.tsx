@@ -46,6 +46,12 @@ describe("Issue #76 deliberate Finance selection in existing Vendor Invoice UI",
     );
   });
 
+  it("describes signed Super Admin access without wrongly requiring OTP", () => {
+    render(<FinanceCompanyScopeCard />);
+    expect(screen.getByText(/sesi Super Admin yang sah/)).toBeTruthy();
+    expect(screen.queryByText(/sesi OTP Super Admin/)).toBeNull();
+  });
+
   it("disables selection when in all-company consolidated mode", () => {
     companyState.activeCompanyId = 0;
     companyState.isConsolidated = true;

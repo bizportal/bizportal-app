@@ -55,7 +55,7 @@ export function FinanceCompanyScopeCard() {
       <CardContent className="space-y-3 text-sm">
         <p className="text-muted-foreground">
           Gunakan perusahaan yang dipilih di BizPortal. Verifikasi ini membutuhkan
-          sesi OTP Super Admin dan izin Finance di server; tidak melakukan pembayaran
+          sesi Super Admin yang sah dan izin Finance di server; tidak melakukan pembayaran
           atau posting jurnal.
         </p>
         <p>

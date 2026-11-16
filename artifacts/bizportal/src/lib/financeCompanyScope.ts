@@ -1,7 +1,7 @@
 /**
  * Presentation-layer request for a Finance company selection.
- * This does not authorize the company: the server verifies the signed OTP
- * session, global Super Admin allowlists, the live company and audit write.
+ * This does not authorize the company: the server verifies the signed Super
+ * Admin session, allowlisted live company, and selected Finance mode.
  */
 export function isSelectableFinanceCompanyId(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
@@ -26,7 +26,7 @@ export async function requestFinanceCompanyScope(
   if (!response.ok) {
     switch (response.status) {
       case 401:
-        throw new Error("Login ulang dengan OTP Super Admin untuk menggunakan Finance.");
+        throw new Error("Login ulang sebagai Super Admin untuk menggunakan Finance.");
       case 403:
         throw new Error("Akun atau perusahaan ini belum diizinkan untuk Finance.");
       case 404:

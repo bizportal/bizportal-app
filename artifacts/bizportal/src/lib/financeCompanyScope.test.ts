@@ -44,6 +44,11 @@ describe("Finance company selection UI contract — Issue #76", () => {
     }))).rejects.toThrow("tidak mengonfirmasi");
   });
 
+  it("uses the existing signed Super Admin session without requiring OTP", async () => {
+    await expect(requestFinanceCompanyScope(1, fetchStub(401)))
+      .rejects.toThrow("Login ulang sebagai Super Admin untuk menggunakan Finance.");
+  });
+
   it("fails closed for unauthenticated, denied, disabled, and invalid selection", async () => {
     for (const status of [401, 403, 404, 422, 503]) {
       await expect(requestFinanceCompanyScope(1, fetchStub(status))).rejects.toThrow();
