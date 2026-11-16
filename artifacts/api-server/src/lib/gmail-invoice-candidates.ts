@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { GmailProviderRateLimitError } from "./gmail-invoice-rate-limit";
 import { pool } from "@workspace/db";
 import {
   downloadAttachment,
@@ -178,7 +179,7 @@ async function processAttachment(args: {
   actorEmail: string;
   message: GmailInvoiceMessage;
   attachment: GmailAttachment;
-}): Promise<"ready" | "manual_review" | "duplicate" | "failed" | "existing"> {
+}): Promise<"ready" | "manual_review" | "duplicate" | "failed" | "existing" | "deferred"> {
   let candidate = await upsertShell(args);
 
   if (
@@ -420,6 +421,8 @@ async function processAttachment(args: {
 
     return status;
   } catch (error) {
+    // Quota backpressure is transient. Preserve pending candidate for retry.
+    if (error instanceof GmailProviderRateLimitError) return "deferred";
     await markFailed(candidate.id, error);
     return "failed";
   }
@@ -440,6 +443,7 @@ export async function syncGmailInvoiceCandidates(args: {
     duplicates: 0,
     failed: 0,
     existing: 0,
+    deferred: 0,
   };
 
   let newWork = 0;
@@ -454,6 +458,10 @@ export async function syncGmailInvoiceCandidates(args: {
         attachment,
       });
 
+      if (status === "deferred") {
+        counts.deferred += 1;
+        break scan;
+      }
       if (status === "ready") counts.ready += 1;
       else if (status === "manual_review") counts.manualReview += 1;
       else if (status === "duplicate") counts.duplicates += 1;
