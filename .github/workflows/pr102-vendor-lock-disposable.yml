@@ -1,0 +1,59 @@
+name: PR102 Vendor Invoice Scoped Parent Lock Disposable PG16
+on:
+  pull_request:
+    branches: [main, develop, test/finance-pr79-pr80-integration-20261115, test/pr81-vendor-lock-disposable-20261116]
+    paths:
+      - 'artifacts/api-server/src/lib/services/mktVendorInvoiceService.ts'
+      - 'artifacts/api-server/src/routes/mktVendorInvoice.ts'
+      - 'artifacts/api-server/src/routes/dev-vendor-finance-session.test.ts'
+      - 'scripts/tests/pr102-*'
+      - 'scripts/sql/20261116_pr102_finance_parent_lock_dev_*REVIEW_ONLY.sql'
+      - 'scripts/tests/README-pr102-vendor-lock-design.md'
+      - '.github/workflows/pr102-vendor-lock-disposable.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  vendor-parent-lock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install frozen dependencies without scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Resolve canonical Drizzle schema module for isolated bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -e lib/db/node_modules/drizzle-zod
+          if test ! -e artifacts/api-server/node_modules/drizzle-zod; then
+            ln -s ../../../lib/db/node_modules/drizzle-zod artifacts/api-server/node_modules/drizzle-zod
+          fi
+          test -e artifacts/api-server/node_modules/drizzle-zod
+      - name: Typecheck API and DB workspaces
+        run: pnpm --dir artifacts/api-server run typecheck
+      - name: Test vendor token is passed to the canonical service
+        run: pnpm --dir artifacts/api-server exec vitest run src/routes/dev-vendor-finance-session.test.ts
+      - name: Bundle real Vendor Invoice service and shared scoped-lock SQL
+        run: |
+          node scripts/tests/pr102-build-vendor-definer.cjs
+          node scripts/tests/pr102-build-vendor-concurrency.cjs
+      - name: Prove canonical service scoped create/replay, RLS and complete rollback
+        run: bash scripts/tests/pr102-run-vendor-definer.sh
+      - name: Prove genuine PO and GR row locks against unrelated concurrent writers
+        run: bash scripts/tests/pr102-run-vendor-concurrency.sh
+      - name: Validate staged install and rollback remain blocked, then prove disposable SQL parity
+        run: bash scripts/tests/pr102-run-review-sql-disposable.sh
+      - name: Ensure test executions did not edit source or lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- artifacts/api-server/src/lib/services/mktVendorInvoiceService.ts artifacts/api-server/src/routes/mktVendorInvoice.ts lib/db/src/schema pnpm-lock.yaml

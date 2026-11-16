@@ -100,6 +100,7 @@ describe("DEV vendor token invoice is restricted to Finance transaction",()=>{
     expect(mocks.findPo).toHaveBeenCalledTimes(3);
     expect(mocks.upload).toHaveBeenCalledOnce();
     expect(mocks.create.mock.calls[0][2]).toBe(scopedDb);
+    expect(mocks.create.mock.calls[0][0].vendorToken).toBe("valid-token");
   });
   it("cleans uploaded proof if vendor token rotates before canonical create",async()=>{
     mocks.includeFile=true;

@@ -169,6 +169,7 @@ router.post("/:token", tokenPostRateLimiter, upload.single("file"), async (req, 
     const result = await withVendorFinance(token, po, scopedDb =>
       createMarketplaceVendorInvoice({
       poId: po.id,
+      vendorToken: token,
       grId: parsed.data.grId,
       vendorInvoiceRef: parsed.data.vendorInvoiceRef,
       invoiceDate: parsed.data.invoiceDate,
