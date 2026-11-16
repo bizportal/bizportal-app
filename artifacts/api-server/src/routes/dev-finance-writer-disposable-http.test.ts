@@ -23,7 +23,8 @@ function disposableUrl(): URL {
   const u = new URL(RAW);
   if (u.protocol !== "postgresql:" || u.hostname !== "127.0.0.1" ||
       u.port !== "65432" || u.pathname !== "/payroll_ci" ||
-      u.username !== "postgres.xssrfshdrtdfupgqwfdw")
+      u.username !== "postgres.xssrfshdrtdfupgqwfdw" ||
+      u.search !== "" || u.hash !== "")
     throw new Error("REFUSE_WRONG_FINANCE_HTTP_DB");
   return u;
 }
@@ -33,7 +34,8 @@ vi.mock("@workspace/db", async (originalFactory) => {
       process.env.CI !== "true" || process.env.GITHUB_ACTIONS !== "true") return actual;
   const u = new URL(process.env.FINANCE_RELATION_PG_E2E_URL);
   if (u.hostname !== "127.0.0.1" || u.port !== "65432" ||
-      u.pathname !== "/payroll_ci" || u.username !== "postgres.xssrfshdrtdfupgqwfdw")
+      u.pathname !== "/payroll_ci" || u.username !== "postgres.xssrfshdrtdfupgqwfdw" ||
+      u.search !== "" || u.hash !== "")
     throw new Error("REFUSE_TEST_FINANCE_DB_OVERRIDE");
   const driver = (await import("pg")).default;
   const { drizzle } = await import("drizzle-orm/node-postgres");
@@ -79,9 +81,17 @@ function typeFor(raw: string) {
 }
 describe.skipIf(!enabled)("PR81 signed HTTP Finance Writer over disposable PostgreSQL", () => {
   let root: pg.Client; let connected = false; let server: Server | undefined;
+  // Cleanup may remove only objects that this test successfully created.
+  // A failed identity/collision preflight must never delete preexisting objects.
+  const createdTables: string[] = [];
+  const createdRoles: string[] = [];
+  async function createOwnedTable(name: string, ddl: string) {
+    await root.query(ddl);
+    createdTables.push(name);
+  }
   let origin = ""; let session = ""; let scope1 = ""; let apId = 0;
   beforeAll(async () => {
-    disposableUrl();
+    const checkedUrl = disposableUrl();
     Object.assign(process.env, {
       APP_ENV: "development", NODE_ENV: "production",
       SESSION_SECRET: "ci-finance-local-session-secret-for-tests-only-2026",
@@ -96,7 +106,12 @@ describe.skipIf(!enabled)("PR81 signed HTTP Finance Writer over disposable Postg
     });
     delete process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV;
     delete process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV;
-    root = new pg.Client({ connectionString: RAW, connectionTimeoutMillis: 5000 });
+    root = new pg.Client({
+      host: "127.0.0.1", port: 65432, database: "payroll_ci",
+      user: "postgres.xssrfshdrtdfupgqwfdw",
+      password: decodeURIComponent(checkedUrl.password),
+      ssl: false, connectionTimeoutMillis: 5000,
+    });
     await root.connect(); connected = true;
     const identity = await root.query("SELECT current_database() AS db,current_user AS role");
     expect(identity.rows[0]).toEqual({ db:"payroll_ci", role:"postgres.xssrfshdrtdfupgqwfdw" });
@@ -104,17 +119,24 @@ describe.skipIf(!enabled)("PR81 signed HTTP Finance Writer over disposable Postg
       if ((await root.query("SELECT 1 FROM pg_roles WHERE rolname=$1", [role])).rowCount)
         throw new Error("DISPOSABLE_DB_NOT_EMPTY");
     }
+    const fixtureNames = ["companies", "users", "audit_logs", ...tables.map(t => getTableConfig(t).name)];
+    for (const name of fixtureNames) {
+      if ((await root.query("SELECT to_regclass($1) AS existing", ["public." + name])).rows[0]?.existing)
+        throw new Error("DISPOSABLE_TABLE_ALREADY_EXISTS:" + name);
+    }
     await root.query("CREATE ROLE " + AUTH_ROLE + " LOGIN NOINHERIT NOBYPASSRLS PASSWORD 'ci-auth-local-only'");
+    createdRoles.push(AUTH_ROLE);
     await root.query("CREATE ROLE " + FIN_ROLE + " LOGIN NOINHERIT NOBYPASSRLS PASSWORD 'ci-finance-local-only'");
-    await root.query("CREATE TABLE public.companies(id integer PRIMARY KEY,is_active boolean NOT NULL DEFAULT true)");
-    await root.query("CREATE TABLE public.users(id text PRIMARY KEY,email text,password_hash text,role text,status text,is_active boolean,company_id integer)");
-    await root.query("CREATE TABLE public.audit_logs(user_email text,action text NOT NULL,entity_type text,entity_id text,after_data jsonb,company_id text,module text,ip_address text)");
+    createdRoles.push(FIN_ROLE);
+    await createOwnedTable("companies", "CREATE TABLE public.companies(id integer PRIMARY KEY,is_active boolean NOT NULL DEFAULT true)");
+    await createOwnedTable("users", "CREATE TABLE public.users(id text PRIMARY KEY,email text,password_hash text,role text,status text,is_active boolean,company_id integer)");
+    await createOwnedTable("audit_logs", "CREATE TABLE public.audit_logs(user_email text,action text NOT NULL,entity_type text,entity_id text,after_data jsonb,company_id text,module text,ip_address text)");
     for (const t of tables) {
       const info = getTableConfig(t);
       const columns = info.columns.map(c => quote(c.name) + " " + typeFor(c.getSQLType()) +
         (c.name === "id" ? " PRIMARY KEY" : "") +
         (["created_at","updated_at"].includes(c.name) ? " DEFAULT now()" : ""));
-      await root.query("CREATE TABLE public." + quote(info.name) + "(" + columns.join(",") + ")");
+      await createOwnedTable(info.name, "CREATE TABLE public." + quote(info.name) + "(" + columns.join(",") + ")");
     }
     for (const index of [
       "CREATE UNIQUE INDEX ci_ap_invoice ON public.mkt_ap_preparations(vendor_invoice_id)",
@@ -190,11 +212,10 @@ describe.skipIf(!enabled)("PR81 signed HTTP Finance Writer over disposable Postg
     if (server) await new Promise<void>(ok => server!.close(() => ok()));
     await testPools.auth?.end(); await testPools.finance?.end();
     if (connected) {
-      for (const t of [...tables].reverse())
-        await root.query("DROP TABLE IF EXISTS public." + quote(getTableConfig(t).name) + " CASCADE").catch(() => {});
-      for (const t of ["audit_logs","users","companies"])
-        await root.query("DROP TABLE IF EXISTS public." + t + " CASCADE").catch(() => {});
-      for (const role of [FIN_ROLE,AUTH_ROLE]) {
+      // Never delete preexisting fixtures after a refused startup. No CASCADE.
+      for (const name of [...createdTables].reverse())
+        await root.query("DROP TABLE IF EXISTS public." + quote(name)).catch(() => {});
+      for (const role of [...createdRoles].reverse()) {
         await root.query("REVOKE USAGE ON SCHEMA public FROM " + role).catch(() => {});
         await root.query("DROP ROLE IF EXISTS " + role).catch(() => {});
       }
