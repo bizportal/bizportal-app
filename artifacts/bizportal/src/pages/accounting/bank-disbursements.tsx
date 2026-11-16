@@ -237,6 +237,10 @@ interface OutstandingInvoice {
 }
 
 interface OutstandingInvoicesResponse {
+  // DEV canonical reader returns review-only balances, not payment authorization.
+  reviewOnly?: boolean;
+  canPay?: boolean;
+  coverage?: string;
   apAccountId: number | null;
   apAccountName: string | null;
   invoices: OutstandingInvoice[];
@@ -2696,6 +2700,10 @@ function CreateDisbDialog({
   const whtAccounts = accountsByType["tax_payment"]?.filter((a) => a.type === "liability") ?? [];
 
   const handleSubmit = async () => {
+    if (paymentMode === "vendor_invoice" && outstandingData?.reviewOnly) {
+      toast({ title: "Invoice hanya untuk pemeriksaan", description: "Data outstanding dari reader DEV tidak mengizinkan pembayaran. Gunakan layanan pembayaran resmi setelah validasi selesai.", variant: "destructive" });
+      return;
+    }
     if (!form.journalId) { toast({ title: "Pilih jurnal bank/kas", variant: "destructive" }); return; }
     if (!form.date) { toast({ title: "Tanggal wajib diisi", variant: "destructive" }); return; }
 
@@ -3165,11 +3173,16 @@ function CreateDisbDialog({
                 </div>
               )}
 
+              {outstandingData?.reviewOnly && (
+                <div role="status" className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                  Data outstanding hanya untuk pemeriksaan. Pembayaran dari daftar ini belum diaktifkan.
+                </div>
+              )}
               {loadingInvoices ? (
                 <div className="flex justify-center py-8"><Loader2 className="h-5 w-5 animate-spin text-slate-400" /></div>
               ) : (
                 <VendorInvoicePanel
-                  allInvoices={outstandingData?.invoices ?? []}
+                  allInvoices={outstandingData?.reviewOnly ? [] : (outstandingData?.invoices ?? [])}
                   allSuppliers={outstandingData?.suppliers}
                   apAccountName={outstandingData?.apAccountName}
                   lines={invoiceLines}
@@ -3403,7 +3416,7 @@ function CreateDisbDialog({
           <Button variant="outline" onClick={() => { onOpenChange(false); resetForm(); }} disabled={saving}>
             Batal
           </Button>
-          <Button onClick={handleSubmit} disabled={saving || isUploadingAttachment} className="bg-orange-500 hover:bg-orange-600">
+          <Button onClick={handleSubmit} disabled={saving || isUploadingAttachment || (paymentMode === "vendor_invoice" && outstandingData?.reviewOnly === true)} className="bg-orange-500 hover:bg-orange-600">
             {saving ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Menyimpan...</> : "Simpan & Post Jurnal"}
           </Button>
         </DialogFooter>
