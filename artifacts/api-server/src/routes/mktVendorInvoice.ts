@@ -112,10 +112,21 @@ async function withVendorFinance<T>(
 }
 
 function vendorFinanceUnavailable(error: unknown): boolean {
-  return error instanceof Error && (
-    error.message.startsWith("DEV_FINANCE_") ||
-    error.message.includes("Authorization unavailable")
-  );
+  // PostgreSQL aborts the transaction when lock contention becomes a
+  // deadlock, a serialization conflict or a lock timeout. The vendor route
+  // must return a temporary-unavailable response after deleting the uploaded
+  // private proof, not treat these as permanent invoice validation failures.
+  // Drizzle may nest the SQLSTATE inside Error.cause.
+  let current: unknown = error;
+  for (let depth = 0; depth < 5; depth++) {
+    if (!(current instanceof Error)) break;
+    const pgCode = (current as Error & { code?: unknown }).code;
+    if (pgCode === "40P01" || pgCode === "40001" || pgCode === "55P03") return true;
+    if (current.message.startsWith("DEV_FINANCE_") ||
+        current.message.includes("Authorization unavailable")) return true;
+    current = (current as Error & { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 // GET /api/mkt/vendor-invoice/:token/invoices — vendor's invoices for this PO

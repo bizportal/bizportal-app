@@ -118,6 +118,24 @@ describe("DEV vendor token invoice is restricted to Finance transaction",()=>{
     expect(mocks.delete).toHaveBeenCalledWith("private/dev-test.pdf");
     expect(mocks.create).not.toHaveBeenCalled();
   });
+  it.each(["40P01","40001","55P03"])(
+    "removes uploaded vendor proof after PostgreSQL contention %s and replies 503 without replay",
+    async(code)=>{
+      mocks.includeFile=true;
+      const pgError=Object.assign(new Error("PostgreSQL transaction was rolled back"),{code});
+      mocks.create.mockRejectedValueOnce(new Error("Drizzle transaction failed",{cause:pgError}));
+      const res=await fetch(base+"/api/mkt/vendor-invoice/valid-token",{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({grId:9,vendorInvoiceRef:"DEV-CONTENTION",invoiceDate:"2026-11-15",
+          currency:"IDR",totalAmount:100,taxAmount:0,grandTotal:100,
+          lines:JSON.stringify([{poLineId:6,quantity:1,unitPrice:100,subtotal:100}])}),
+      });
+      expect(res.status).toBe(503);
+      expect(mocks.upload).toHaveBeenCalledOnce();
+      expect(mocks.create).toHaveBeenCalledOnce();
+      expect(mocks.delete).toHaveBeenCalledWith("private/dev-test.pdf");
+    },
+  );
   it("passes the same scoped transaction to the canonical vendor invoice submit",async()=>{
     const res=await fetch(base+"/api/mkt/vendor-invoice/valid-token/invoices/77/submit",{
       method:"POST",headers:{"Content-Type":"application/json"},body:"{}",
