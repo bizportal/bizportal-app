@@ -142,7 +142,10 @@ describe.skipIf(!enabled)("PR81 signed HTTP Finance Writer over disposable Postg
       await root.query("ALTER TABLE public." + quote(name) + " ENABLE ROW LEVEL SECURITY");
       await root.query("GRANT SELECT ON public." + quote(name) + " TO " + FIN_ROLE);
     }
-    await root.query("GRANT INSERT,UPDATE ON public.mkt_ap_preparations TO " + FIN_ROLE);
+    await root.query("GRANT INSERT ON public.mkt_ap_preparations TO " + FIN_ROLE);
+    // Mirror CST-DEV's existing column-scoped UPDATE grants, not broad table UPDATE.
+    await root.query("GRANT UPDATE(preparation_number,status,finance_reviewed_by,finance_reviewed_at,waiting_payment_at,updated_at,payment_request_id,payment_handoff_at,payment_handoff_by) ON public.mkt_ap_preparations TO " + FIN_ROLE);
+    await root.query("GRANT UPDATE(status,three_way_match_status,match_notes,updated_at) ON public.vendor_invoices TO " + FIN_ROLE);
     await root.query("GRANT INSERT ON public.payment_requests,public.mkt_accounting_handoffs TO " + FIN_ROLE);
     await root.query("GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO " + FIN_ROLE);
     const scope = "nullif(current_setting('app.marketplace_company_id',true),'')::integer";
@@ -152,6 +155,8 @@ describe.skipIf(!enabled)("PR81 signed HTTP Finance Writer over disposable Postg
     for (const name of ["mkt_po_shipments","mkt_po_goods_receipts","vendor_invoice_lines"])
       await root.query("CREATE POLICY ci_select ON public." + name +
         " FOR SELECT TO " + FIN_ROLE + " USING (true)");
+    await root.query("CREATE POLICY ci_invoice_update ON public.vendor_invoices FOR UPDATE TO " + FIN_ROLE +
+      " USING (company_id=" + scope + ") WITH CHECK (company_id=" + scope + ")");
     await root.query("CREATE POLICY ci_ap_insert ON public.mkt_ap_preparations FOR INSERT TO " + FIN_ROLE +
       " WITH CHECK (company_id=" + scope + " AND status='ap_preparation')");
     await root.query("CREATE POLICY ci_ap_update ON public.mkt_ap_preparations FOR UPDATE TO " + FIN_ROLE +
