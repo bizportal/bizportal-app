@@ -15,8 +15,14 @@ const router: IRouter = Router();
 // The existing legacy HRD release is separate. This canonical first slice stays
 // OFF in PROD until dedicated readiness and authenticated parity are proven.
 function hrdReaderEnabled(): boolean {
-  return process.env.APP_ENV?.trim().toLowerCase() === "production" &&
-    process.env.HRD_CANONICAL_READONLY_ENABLED === "true";
+  const environment = process.env.APP_ENV?.trim().toLowerCase();
+  // Preserve production behavior. DEV parity has a separate opt-in and must
+  // never enable the production reader by reclassifying the environment.
+  return (environment === "production" &&
+    process.env.HRD_CANONICAL_READONLY_ENABLED === "true") ||
+    (environment === "development" &&
+    process.env.HRD_CANONICAL_READONLY_ENABLED_DEV === "true" &&
+    process.env.HRD_CANONICAL_READONLY_ENABLED !== "true");
 }
 // Exact owner identity from the verified legacy HRD access contract.
 // A generic owner session does NOT grant document or HRD directory access.
