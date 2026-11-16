@@ -27,3 +27,14 @@ All relevant parent/child RLS policies, column grants, sequences, and `finance_o
 Draft PR103's canonical Vendor Invoice definer acquires PO → GR → Shipment. Draft PR104 proves an external writer that locks Shipment then PO can cause SQLSTATE 40P01; the endpoint now returns HTTP 503 and cleans the uploaded synthetic proof without retry. Review all actual Customer Portal/Marketplace and fulfillment writers for lock order and failure behavior; the current canonical `bizportal/bizportal-app` source does not itself prove every external writer has adopted the same ordering. Do not conflate deterministic deadlock detection with eliminating deadlocks.
 
 **NO-GO:** PR105 remains Draft; no CST-DEV/PROD database role/DDL changes, no feature flags, no Nginx or customer data writes, no real payment/journal. No merge to main or live Writer activation without independent security sign-off and signed HTTPS E2E.
+
+
+## Additional genuine synthetic-login / SECURITY DEFINER integration test
+
+The first test's NOLOGIN roles prove RLS composition. A second independent disposable test creates two real **synthetic LOGIN roles with different synthetic passwords**, uses local TCP SCRAM authentication to connect as each role, and creates a private-schema definer with a third, NOLOGIN/NOBYPASSRLS owner.
+
+Inside the definer, `current_user` becomes the owner; therefore **checking current_user alone inside a SECURITY DEFINER is incorrect**. Its own RLS policies and function authorization bind to `session_user`—the login identity—rather than the caller-settable `app.marketplace_company_id`. The CST login cannot see or lock Diva's PO even with GUC set to 3; Diva cannot see or lock CST's even with GUC set to 1. Attempts to `SET ROLE` or `SET SESSION AUTHORIZATION` from CST to Diva are denied. Both roles have no direct parent UPDATE; all synthetic roles, policies, tables and functions are dropped at the end. Container is `--network none`, with no published ports or live credentials.
+
+This verifies a **feasible security boundary design** for a private definer, but it does not add those logins to CST-DEV, and the canonical Finance transaction helper still requires the single existing generic role. Before deployment, lock-owner RLS policy guards and the private function must consistently validate the actual company-bound login; simply adding two credentials without updating the definer would NOT fix the exploit path.
+
+Official GitHub CI tests both PostgreSQL 16 and 17. Keep staged role/secret migration and signed HTTP integration OFF until a separately authorized review.

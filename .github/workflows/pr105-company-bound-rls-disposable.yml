@@ -24,6 +24,9 @@ jobs:
       - name: Prove per-company roles ignore forged tenant GUCs and deny cross-company reads/writes
         shell: bash
         run: PR105_DISPOSABLE_PG_IMAGE="${{ matrix.pg_image }}" bash scripts/tests/pr105-run-company-bound-rls.sh
+      - name: Prove real isolated DB login identities and SECURITY DEFINER session_user binding
+        shell: bash
+        run: PR105_DISPOSABLE_PG_IMAGE="${{ matrix.pg_image }}" bash scripts/tests/pr105-run-real-login-definer.sh
       - name: Verify no committed credentials, migration or active-service code changes
         shell: bash
         run: |
