@@ -13,8 +13,12 @@ describe("Vendor AP historical evidence — UI fail-closed migration contract", 
   });
 
   it("does not offer the invoice-specific payment shortcut when historical evidence is unresolved", () => {
-    const detailShortcut = source.indexOf('invoiceIds=${vi.id}');
+    // Only the evidence-reviewed invoice detail may link directly to disbursement.
+    // The list-level shortcut must not bypass reversal/orphan checks.
+    expect(source).toContain('<Eye className="h-3 w-3" />Periksa sebelum bayar');
+    const detailShortcut = source.lastIndexOf('invoiceIds=${vi.id}');
     expect(detailShortcut).toBeGreaterThan(-1);
+    expect(source.slice(0, detailShortcut)).not.toContain('<Banknote className="h-3 w-3" />Bayar');
     const nearby = source.slice(Math.max(0, detailShortcut - 420), detailShortcut + 450);
     expect(nearby).toContain('vi.status === "posted"');
     expect(nearby).toContain("outstandingPayment > 0.01");
