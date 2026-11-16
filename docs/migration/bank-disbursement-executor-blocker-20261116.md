@@ -1,0 +1,30 @@
+# Bank Disbursement sole-executor migration blocker — 2026-11-16
+
+**Canonical:** `bizportal/bizportal-app` (PR #95 Draft).
+**Legacy application snapshot:** `Travelintrips/CST-BIZPORTAL`.
+**Legacy upstream archive (source provenance):** `Travelintrips/CST-BIZPORTAL/.upstream-cst-super-app`.
+
+## Verified ownership and lost dependency
+
+1. Canonical frontend `artifacts/bizportal/src/pages/accounting/bank-disbursements.tsx` calls `POST /api/accounting/bank-disbursements`, plus GET list/detail/outstanding, void and metadata routes.
+2. Canonical `artifacts/api-server/src/routes/index.ts` registers `accountingRouter`, but `artifacts/api-server/src/routes/accounting.ts` has no bank-disbursement routes. The trimmed legacy snapshot has the same missing route; this is **not** a normal two-snapshot file mismatch.
+3. The upstream archived super-app contains `artifacts/api-server/src/routes/bankDisbursements.ts`, and its upstream `routes/index.ts` mounts this at `/accounting/bank-disbursements` with `financeAuditMiddleware`, `writeMethodGovernanceGuard`, `bdOcrAuthElevation` and `makeRbacGuard("invoice")`. The old route references shared Drizzle database definitions, `postEntryWithClient`, source guards, accounting seed, WHT and vendor-invoice financial helpers.
+4. `docs/deprecation/bank-disbursement-sole-executor.md` in the upstream archive declares Bank Disbursement the **sole outbound bank payment executor**. Older vendor-payment and kas-transfer writers were deprecated/disabled. Therefore a hand-written lightweight replacement or direct payment POST in the canonical API would risk bypassing the ledger/journal custody rules.
+5. An upstream `bankDisbursementMigration.ts` also exists, but it has historical DDL and must **never** be automatically executed during source migration.
+
+## Safe interpretation
+
+- A successful standalone canonical CI build does **not** prove the old disbursement route is mounted or operational.
+- The PR #95 UI now routes list-level vendor invoice payment requests to the detail review; detail-level reversal and orphan warnings are present. **This is only UI guidance**, not backend idempotency/authorization.
+- The existing public site or reverse proxy could route the missing endpoint to a separate service. Its currently active runtime must be inspected read-only before declaring the feature absent in production.
+- **Cutover blocked** until the executor's ownership (current runtime vs archive), canonical integration approach, API contracts, secrets, role isolation, and rollback are known.
+
+## Required gated recovery
+
+1. Read-only inspect current DEV Nginx proxy, API ownership, and route health without creating transactions or exposing credentials.
+2. Inventory the upstream sole-executor's GET/POST/void contract and transitive imports. Map each dependency to the existing canonical library, and identify behavior that must remain in the approved accounting writer service instead of being transplanted.
+3. Preserve one writer and original journal custody. Require duplicate/replay locks, exact company/supplier/invoice scope, accepted statuses, WHT and reversal rules, and atomic journal/entry-line/allocation/audit commit.
+4. Run disposable PostgreSQL E2E: first payment once, identical replay (no second debit), concurrent replay, crossed company, posted-to-reversed invoice, void and compensation, and invariant on journal count. Tests must not connect to PROD or an active DEV payment queue.
+5. Shadow-deploy on DEV only after CI and API parity pass, then rehearse rollback. Hostinger current site and PROD remain unchanged.
+
+**Scope of this note:** documentation only; no new payment writer route, database DDL, journal write, deployment, or feature-flag change.
