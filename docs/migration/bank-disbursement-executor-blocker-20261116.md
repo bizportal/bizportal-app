@@ -28,3 +28,18 @@
 5. Shadow-deploy on DEV only after CI and API parity pass, then rehearse rollback. Hostinger current site and PROD remain unchanged.
 
 **Scope of this note:** documentation only; no new payment writer route, database DDL, journal write, deployment, or feature-flag change.
+
+
+## Direct VPS DEV runtime evidence (2026-11-16, read-only)
+
+Remote device: `srv1792369`; Nginx site `bizportal-dev.cstlogistic.co.id`.
+
+- Nginx document root: `/opt/cst-bizportal-gmail-dev/dist/public`; API proxy: `http://127.0.0.1:19784`; active service: `cst-bizportal-gmail-dev.service`.
+- Active checkout `/opt/cst-bizportal-gmail-dev`: origin `Travelintrips/CST-BIZPORTAL`, HEAD `2705d4c7`.
+- Pre-existing shadow checkout `/opt/bizportal-pr38-shadow-check-20261114`: origin `bizportal/bizportal-app`, HEAD `b418856`. **This is not PR #95's tested head** and is not the live document root.
+- Local API `GET /api/health/live` returned HTTP 200.
+- Unauthenticated requests to `/api/accounting/bank-disbursements`, `/api/accounting/no-such-endpoint-zz` and `/api/definitely-not-a-route-zz` **all returned HTTP 401**. Thus 401 is a general authentication-layer response and gives **no proof** the disbursement endpoint is registered.
+- Searched the active and shadow API source for bank-disbursement route registration; neither checkout has `artifacts/api-server/src/routes/bankDisbursements.ts` or the standalone registered route. The upstream archived super-app remains the only located implementation.
+- The Nginx vhost also uses HTTP Basic authentication; no authenticated browser/payment request, journal write or manual transfer was attempted.
+
+**Confirmed cutover invariant:** do not replace the active DEV service with a candidate that lacks parity for the Bank Disbursement sole executor. Require source dependency mapping and disposable payment E2E before any live cutover. Do not infer endpoint availability from an unauthenticated 401.
