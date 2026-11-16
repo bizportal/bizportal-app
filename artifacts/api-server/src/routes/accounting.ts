@@ -1705,4 +1705,99 @@ router.get("/accounting/bank-disbursements/:id", async (req, res): Promise<void>
 });
 
 
+// DEV-only, review-only Vendor Invoice outstanding snapshot. It deliberately
+// excludes purchase_documents and payment execution eligibility until their
+// distinct settlement semantics have been independently verified.
+// Mirrors canonical purchase-workflow's reconciled active-allocation CTE.
+router.get("/accounting/bank-disbursements/vendor-invoices/outstanding", async (req, res): Promise<void> => {
+  if (!isDevelopmentEnvironment() ||
+      process.env.BIZPORTAL_DEV_BD_READONLY_ENABLED !== "true") {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  res.setHeader("Cache-Control", "private, no-store");
+  let companyId: number | null;
+  try {
+    companyId = requestedCompanyId(req);
+  } catch {
+    res.status(400).json({ error: "Invalid company" });
+    return;
+  }
+  if (companyId === null) {
+    res.status(400).json({ error: "Company is required" });
+    return;
+  }
+  try {
+    const result = await pool.query<{
+      id: number; invoice_number: string; vendor_invoice_ref: string | null;
+      supplier_id: number | null; supplier_name: string | null;
+      grand_total: string; tax_amount: string; due_date: string | null;
+      withholding_tax_amount: string | null; reconciled_amount_paid: string;
+    }>(
+      `with reconciled_vendor_invoice_payments as (
+        select
+          coalesce(nullif(to_jsonb(pa)->>'vendor_invoice_id', ''),
+                   nullif(to_jsonb(pa)->>'invoice_id', ''))::bigint as invoice_id,
+          nullif(to_jsonb(pa)->>'company_id', '')::bigint as company_id,
+          sum(coalesce(
+            nullif(to_jsonb(pa)->>'amount', '')::numeric,
+            nullif(to_jsonb(pa)->>'allocated_amount', '')::numeric,
+            nullif(to_jsonb(pa)->>'allocation_amount', '')::numeric, 0
+          )) as paid_amount
+        from public.payment_allocations pa
+        left join public.payment_matching_groups pmg
+          on pmg.id = nullif(to_jsonb(pa)->>'group_id', '')::bigint
+        left join public.bank_mutations bm
+          on bm.id = nullif(to_jsonb(pa)->>'mutation_id', '')::bigint
+         and bm.company_id = nullif(to_jsonb(pa)->>'company_id', '')::bigint
+        where nullif(to_jsonb(pa)->>'company_id', '')::bigint = $1
+          and lower(coalesce(to_jsonb(pa)->>'is_active', 'true')) in ('true','t','1')
+          and (
+            lower(coalesce(pmg.status, '')) in ('final','posted','reconciled')
+            or lower(coalesce(to_jsonb(pa)->>'status', '')) in ('final','posted','reconciled')
+            or lower(coalesce(to_jsonb(bm)->>'status', '')) in ('final','posted')
+          )
+        group by 1, 2
+      )
+      select vi.id,vi.invoice_number,vi.vendor_invoice_ref,vi.supplier_id,
+             vi.supplier_name,vi.grand_total::text,vi.tax_amount::text,
+             vi.due_date::text,vi.withholding_tax_amount::text,
+             coalesce(rvip.paid_amount,0)::text reconciled_amount_paid
+        from public.vendor_invoices vi
+        left join reconciled_vendor_invoice_payments rvip
+          on rvip.invoice_id = vi.id and rvip.company_id = vi.company_id
+       where vi.company_id = $1 and vi.cancelled_at is null
+         and vi.status::text in ('posted','matched','paid')
+         and vi.grand_total > coalesce(rvip.paid_amount,0)
+       order by vi.due_date asc nulls last,vi.id asc
+       limit 100`,
+      [companyId],
+    );
+    const invoices = result.rows.map(row => {
+      const grandTotal = Number(row.grand_total);
+      const amountPaid = Number(row.reconciled_amount_paid);
+      const withholdingTaxAmount = Number(row.withholding_tax_amount ?? 0);
+      return {
+        id: row.id, docNumber: row.invoice_number, billNumber: row.invoice_number,
+        vendorInvoiceRef: row.vendor_invoice_ref, supplierId: row.supplier_id,
+        supplierName: row.supplier_name ?? "—", grandTotal, amountPaid,
+        outstanding: Math.max(0, grandTotal - amountPaid),
+        withholdingTaxAmount, payableToSupplier: Math.max(0, grandTotal - withholdingTaxAmount),
+        dueDate: row.due_date, currency: "IDR", source: "vendor_invoice" as const,
+        // Display-only: not a payment authorization or approval.
+        reviewOnly: true as const, canPay: false as const,
+      };
+    });
+    res.json({
+      apAccountId: null, apAccountName: null, invoices, suppliers: [],
+      reviewOnly: true, canPay: false,
+      coverage: "vendor_invoice_only",
+    });
+  } catch (error) {
+    req.log.error({ error }, "DEV outstanding vendor invoice review failed");
+    res.status(503).json({ error: "Vendor outstanding review unavailable" });
+  }
+});
+
+
 export default router;
