@@ -189,7 +189,7 @@ export async function createMarketplaceVendorInvoice(
         // Fail closed if migration, EXECUTE permission, RLS or scoped PO/GR
         // checks are missing. Never silently substitute unlocked SELECT.
         const lock = await tx.execute(sql`
-          SELECT public.mkt_finance_lock_vendor_invoice_parents_dev(
+          SELECT finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(
             ${input.poId}::integer, ${input.grId}::integer, ${input.supplierId}::integer,
             ${input.vendorToken ?? null}::text
           ) AS locked

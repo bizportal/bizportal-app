@@ -1,5 +1,5 @@
 /* Disposable-only prototype. NOT an authorized CST-DEV migration. */
-export const vendorParentLockFunctionSql = String.raw`CREATE FUNCTION public.mkt_finance_lock_vendor_invoice_parents_dev(
+export const vendorParentLockFunctionSql = String.raw`CREATE FUNCTION finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(
       p_po_id integer,p_gr_id integer,p_supplier_id integer,p_vendor_token text)
     RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $func$
     DECLARE v_scope text; v_company integer;
@@ -13,7 +13,7 @@ export const vendorParentLockFunctionSql = String.raw`CREATE FUNCTION public.mkt
       PERFORM 1 FROM public.mkt_purchase_orders po
         WHERE po.id=p_po_id AND po.company_id=v_company AND po.vendor_id=p_supplier_id
           AND po.vendor_token=p_vendor_token
-          AND (po.vendor_token_expires_at IS NULL OR po.vendor_token_expires_at > (pg_catalog.now() AT TIME ZONE 'UTC'))
+          AND (po.vendor_token_expires_at IS NULL OR po.vendor_token_expires_at > (pg_catalog.clock_timestamp() AT TIME ZONE 'UTC'))
         FOR UPDATE OF po;
       IF NOT FOUND THEN RETURN FALSE; END IF;
       PERFORM 1 FROM public.mkt_po_goods_receipts gr

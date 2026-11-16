@@ -41,10 +41,17 @@ async function setup(){
  await q("CREATE POLICY owner_gr_sel ON public.mkt_po_goods_receipts FOR SELECT TO "+owner+" USING("+grScope+")");
  await q("CREATE POLICY owner_gr_upd ON public.mkt_po_goods_receipts FOR UPDATE TO "+owner+" USING("+grScope+") WITH CHECK("+grScope+")");
  await q("CREATE POLICY owner_ship_sel ON public.mkt_po_shipments FOR SELECT TO "+owner+" USING(EXISTS(SELECT 1 FROM public.mkt_purchase_orders po WHERE po.id=po_id AND po.company_id="+tenant+"))");
+ await q("CREATE SCHEMA finance_ops_private AUTHORIZATION postgres");
+ await q("REVOKE ALL ON SCHEMA finance_ops_private FROM PUBLIC");
+ await q("GRANT USAGE ON SCHEMA finance_ops_private TO "+finance+","+owner);
+ await q("GRANT CREATE ON SCHEMA finance_ops_private TO "+owner);
  await q(vendorParentLockFunctionSql);
- await q("REVOKE ALL ON FUNCTION public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text) FROM PUBLIC");
- await q("ALTER FUNCTION public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text) OWNER TO "+owner);
- await q("GRANT EXECUTE ON FUNCTION public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text) TO "+finance);
+ await q("REVOKE ALL ON FUNCTION finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text) FROM PUBLIC");
+ await q("ALTER FUNCTION finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text) OWNER TO "+owner);
+ await q("REVOKE CREATE ON SCHEMA finance_ops_private FROM "+owner);
+ await q("GRANT EXECUTE ON FUNCTION finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text) TO "+finance);
+ const privateOnly=await q("SELECT to_regprocedure('public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text)') AS public_fn");
+ assert.equal(privateOnly.rows[0].public_fn,null);
 }
 async function blockedWriter(client:pg.PoolClient,statement:string,label:string){
  await client.query("BEGIN");
@@ -57,9 +64,10 @@ async function blockedWriter(client:pg.PoolClient,statement:string,label:string)
 }
 async function cleanup(){
  // All objects are synthetic, uniquely named and live in a destroyed container.
- await q("DROP FUNCTION IF EXISTS public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text)");
+ await q("DROP FUNCTION IF EXISTS finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text)");
  for(const name of ["mkt_po_goods_receipts","mkt_po_shipments","mkt_purchase_orders"])
   await q("DROP TABLE IF EXISTS public."+name);
+ await q("DROP SCHEMA finance_ops_private RESTRICT");
  await q("REVOKE USAGE ON SCHEMA public FROM "+finance+","+owner);
  await q("REVOKE "+finance+","+owner+" FROM postgres");
  await q("DROP ROLE "+finance);
@@ -78,9 +86,9 @@ async function main(){
   await a.query("BEGIN");
   await a.query("SET LOCAL ROLE "+finance);
   await a.query("SELECT set_config('app.marketplace_company_id','1',true)");
-  const allowed=await a.query("SELECT public.mkt_finance_lock_vendor_invoice_parents_dev(11,13,10,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa') AS ok");
+  const allowed=await a.query("SELECT finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(11,13,10,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa') AS ok");
   assert.equal(allowed.rows[0].ok,true);
-  const denied=await a.query("SELECT public.mkt_finance_lock_vendor_invoice_parents_dev(31,33,35,'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb') AS ok");
+  const denied=await a.query("SELECT finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(31,33,35,'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb') AS ok");
   assert.equal(denied.rows[0].ok,false);
   console.log("DEF_INER_FUNCTION_TENANT_BOUND_LOCK_PASS");
   await Promise.all([

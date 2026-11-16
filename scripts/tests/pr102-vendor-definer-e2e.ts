@@ -123,13 +123,26 @@ async function main(){
    await exec(tx,"CREATE POLICY owner_update_"+name+" ON public."+name+" FOR UPDATE TO "+owner+" USING("+guard+") WITH CHECK("+guard+")");
   }
   await exec(tx,"CREATE POLICY owner_select_shipment ON public.mkt_po_shipments FOR SELECT TO "+owner+" USING(EXISTS(SELECT 1 FROM public.mkt_purchase_orders po WHERE po.id=po_id AND po.company_id="+tenant+"))");
+  // Private schema not exposed through Supabase/PostgREST. Only the Finance
+  // login can USAGE + EXECUTE the definer; owner has no login or BYPASSRLS.
+  await exec(tx,"CREATE SCHEMA finance_ops_private AUTHORIZATION postgres");
+  await exec(tx,"REVOKE ALL ON SCHEMA finance_ops_private FROM PUBLIC");
+  await exec(tx,"GRANT USAGE ON SCHEMA finance_ops_private TO "+finance+","+owner);
+  await exec(tx,"GRANT CREATE ON SCHEMA finance_ops_private TO "+owner);
   await exec(tx,vendorParentLockFunctionSql);
-  await exec(tx,"REVOKE ALL ON FUNCTION public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text) FROM PUBLIC");
-  await exec(tx,"ALTER FUNCTION public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text) OWNER TO "+owner);
-  await exec(tx,"GRANT EXECUTE ON FUNCTION public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text) TO "+finance);
+  await exec(tx,"REVOKE ALL ON FUNCTION finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text) FROM PUBLIC");
+  await exec(tx,"ALTER FUNCTION finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text) OWNER TO "+owner);
+  await exec(tx,"REVOKE CREATE ON SCHEMA finance_ops_private FROM "+owner);
+  await exec(tx,"GRANT EXECUTE ON FUNCTION finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text) TO "+finance);
+  const privateOnly=await exec(tx,"SELECT to_regprocedure('public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text)') AS public_fn");
+  assert.equal(privateOnly.rows[0].public_fn,null);
+  const outsider=await exec(tx,"SELECT has_schema_privilege('"+stranger+"','finance_ops_private','USAGE') AS schema_usage,has_function_privilege('"+stranger+"','finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text)','EXECUTE') AS may_execute");
+  assert.equal(outsider.rows[0].schema_usage,false);
+  assert.equal(outsider.rows[0].may_execute,false);
+  console.log("PRIVATE_SCHEMA_DENIES_OUTSIDER_EXECUTE_PASS");
   await exec(tx,"SET LOCAL ROLE "+finance);
   await exec(tx,"SELECT set_config('app.marketplace_company_id','1',true)");
-  const check=await exec(tx,"SELECT current_user::text role,has_any_column_privilege(current_user,'public.mkt_purchase_orders','UPDATE') po_update,has_any_column_privilege(current_user,'public.mkt_po_goods_receipts','UPDATE') gr_update,has_function_privilege(current_user,'public.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text)','EXECUTE') may_lock");
+  const check=await exec(tx,"SELECT current_user::text role,has_any_column_privilege(current_user,'public.mkt_purchase_orders','UPDATE') po_update,has_any_column_privilege(current_user,'public.mkt_po_goods_receipts','UPDATE') gr_update,has_function_privilege(current_user,'finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text)','EXECUTE') may_lock");
   assert.equal(check.rows[0].role,finance);
   assert.equal(check.rows[0].po_update,false);
   assert.equal(check.rows[0].gr_update,false);
@@ -188,7 +201,7 @@ async function main(){
   // Unrelated DB role may not execute the definer routine.
   await exec(tx,"SET LOCAL ROLE "+stranger);
   let privilegeError:unknown;
-  try{await tx.transaction(async(inner:any)=>{await exec(inner,"SELECT public.mkt_finance_lock_vendor_invoice_parents_dev(11,13,10,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')")})}catch(e){privilegeError=e}
+  try{await tx.transaction(async(inner:any)=>{await exec(inner,"SELECT finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(11,13,10,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')")})}catch(e){privilegeError=e}
   assert.equal(pgCode(privilegeError),"42501");
   console.log("UNAUTHORIZED_DEF_INER_EXECUTE_DENIED_PASS");
   assert(afterCommitActions.length>=2);
@@ -200,6 +213,8 @@ async function main(){
  const after=await db.execute(sql.raw("SELECT to_regclass('public.mkt_purchase_orders') po,to_regclass('public.mkt_po_goods_receipts') gr,to_regclass('public.vendor_invoices') vi,(SELECT count(*)::integer FROM pg_roles WHERE rolname IN ('ci_pr102_vendor_finance','ci_pr102_parent_lock_owner','ci_pr102_stranger')) roles"));
  assert.equal(after.rows[0].po,null);assert.equal(after.rows[0].gr,null);
  assert.equal(after.rows[0].vi,null);assert.equal(Number(after.rows[0].roles),0);
+ const privateCheck=await db.execute(sql.raw("SELECT to_regnamespace('finance_ops_private') AS schema_name"));
+ assert.equal(privateCheck.rows[0].schema_name,null);
  console.log("PARENT_LOCK_PROTOTYPE_DB_ROLLBACK_PASS");
 }
 main().then(async()=>{await pool.end();console.log("PR102_CANONICAL_VENDOR_INVOICE_SCOPED_DEF_INER_POSTGRES_PASS")})
