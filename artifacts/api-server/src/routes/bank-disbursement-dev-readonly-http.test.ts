@@ -19,6 +19,15 @@ vi.mock("@workspace/db", () => ({
   pool: {
     query: async (sql: string, args: unknown[] = []) => {
       state.calls.push({ sql, args });
+      if (sql.includes("with reconciled_vendor_invoice_payments as")) {
+        return { rowCount: 1, rows: [{
+          id: 31, invoice_number: "VI-DEV-31", vendor_invoice_ref: "INV-31",
+          supplier_id: 2, supplier_name: "Synthetic supplier",
+          grand_total: "120000.00", tax_amount: "0.00",
+          due_date: "2026-11-20", withholding_tax_amount: "20000.00",
+          reconciled_amount_paid: "50000.00",
+        }] };
+      }
       if (sql.includes("from public.bank_disbursement_items item")) {
         return { rowCount: 1, rows: [{
           id: 21, seq: 1, transaction_type: "supplier_payment",
@@ -144,6 +153,41 @@ describe("Bank Disbursement DEV read-only HTTP parity", () => {
     state.headerMissing = true;
     expect((await get("/accounting/bank-disbursements/9?company=1")).status).toBe(404);
     expect(state.calls).toHaveLength(1);
+  });
+
+  it("shows outstanding Vendor Invoice only from reconciled allocation, without permitting payment", async () => {
+    const response = await get("/accounting/bank-disbursements/vendor-invoices/outstanding?company=1");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(await response.json()).toMatchObject({
+      reviewOnly: true, canPay: false, coverage: "vendor_invoice_only",
+      invoices: [{
+        id: 31, source: "vendor_invoice", grandTotal: 120000,
+        amountPaid: 50000, outstanding: 70000, reviewOnly: true, canPay: false,
+      }],
+    });
+    expect(state.calls).toHaveLength(1);
+    expect(state.calls[0].args).toEqual([1]);
+    expect(state.calls[0].sql).toContain("reconciled_vendor_invoice_payments");
+    expect(state.calls[0].sql).toContain("rvip.company_id = vi.company_id");
+    expect(state.calls[0].sql).not.toContain("vi.amount_paid");
+  });
+
+  it("rejects unscoped or cross-company outstanding reads", async () => {
+    expect((await get("/accounting/bank-disbursements/vendor-invoices/outstanding?company=2")).status).toBe(400);
+    state.actor = { role: "finance", companyId: null };
+    expect((await get("/accounting/bank-disbursements/vendor-invoices/outstanding")).status).toBe(400);
+    expect(state.calls).toHaveLength(0);
+  });
+
+  it("keeps outstanding review GET disabled by default and denies POST", async () => {
+    vi.stubEnv("BIZPORTAL_DEV_BD_READONLY_ENABLED", "");
+    expect((await get("/accounting/bank-disbursements/vendor-invoices/outstanding?company=1")).status).toBe(404);
+    vi.stubEnv("BIZPORTAL_DEV_BD_READONLY_ENABLED", "true");
+    expect((await fetch(base + "/api/accounting/bank-disbursements/vendor-invoices/outstanding?company=1", {
+      method: "POST",
+    })).status).toBe(404);
+    expect(state.calls).toHaveLength(0);
   });
 
 });
