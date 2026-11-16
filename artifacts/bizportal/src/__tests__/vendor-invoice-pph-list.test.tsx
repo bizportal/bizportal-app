@@ -1,5 +1,5 @@
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -88,7 +88,27 @@ describe("Vendor Invoice AP PPh list presentation", () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("keeps the isolated Finance Reader preview away from denied legacy invoice APIs", async () => {
+    vi.stubEnv("VITE_BIZPORTAL_FINANCE_READONLY_PREVIEW_DEV", "true");
+    const client = new QueryClient({ defaultOptions: {
+      queries: { retry: false }, mutations: { retry: false },
+    } });
+    render(
+      <QueryClientProvider client={client}>
+        <VendorInvoicesListPage />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText("Finance Reader — preview baca-saja")).toBeTruthy();
+    expect(screen.getByText("Buka pengujian Finance Reader")).toBeTruthy();
+    expect(screen.queryByText("Buat Invoice")).toBeNull();
+    expect(screen.queryByText("Buat Bank Disbursement")).toBeNull();
+    expect(screen.queryByText(/Gagal memuat vendor invoice/)).toBeNull();
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
   });
 
   it("shows PPh amount/type and calculates outstanding from net payable", async () => {
