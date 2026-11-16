@@ -2534,6 +2534,11 @@ function CreateDisbDialog({
 
   // ── Quick-create vendor invoice from OCR data ──────────────────────────────
   const handleQuickCreateVendorInvoice = async () => {
+    // Review-only outstanding data is not permission to create or post invoices.
+    if (outstandingData?.reviewOnly) {
+      toast({ title: "Mode pemeriksaan", description: "Pembuatan invoice melalui panel pembayaran tidak tersedia dalam mode review-only.", variant: "destructive" });
+      return;
+    }
     if (!ocrResult || !activeCompanyId) return;
 
     // Prefer explicit header totals from the OCR breakdown; fall back to the
@@ -3150,7 +3155,7 @@ function CreateDisbDialog({
               <Label className="text-sm font-semibold mb-2 block">Invoice Vendor Outstanding</Label>
 
               {/* Quick-create from OCR — only shown when OCR data is already applied */}
-              {ocrApplied && ocrResult && (outstandingData?.invoices ?? []).length === 0 && !loadingInvoices && (
+              {!outstandingData?.reviewOnly && ocrApplied && ocrResult && (outstandingData?.invoices ?? []).length === 0 && !loadingInvoices && (
                 <div className="mb-3 flex items-center gap-3 rounded-xl px-4 py-3 bg-indigo-50 border border-indigo-200">
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-semibold text-indigo-800">Data OCR sudah tersedia — buat Vendor Invoice langsung?</p>
