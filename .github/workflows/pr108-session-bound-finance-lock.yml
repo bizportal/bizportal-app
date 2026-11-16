@@ -1,0 +1,38 @@
+name: PR108 Finance Session-Bound Vendor Lock PG16/17
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+      - test/pr107-company-rls-grants-20261117
+    paths:
+      - 'scripts/sql/20261117_pr108_*'
+      - 'scripts/tests/pr108-*'
+      - '.github/workflows/pr108-session-bound-finance-lock.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  session-bound-definer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        pg_image: [postgres:16-alpine, postgres:17-alpine]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Keep both PR108 reviewed SQL files non-executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q PR108_SESSION_BOUND_DEFINER_REVIEW_ONLY_DO_NOT_APPLY scripts/sql/20261117_pr108_session_bound_vendor_lock_REVIEW_ONLY.sql
+          grep -q PR108_SESSION_BOUND_DEFINER_ROLLBACK_REVIEW_ONLY_DO_NOT_APPLY scripts/sql/20261117_pr108_session_bound_vendor_lock_ROLLBACK_REVIEW_ONLY.sql
+      - name: Rehearse PR107 staged company roles plus session-bound definer, native locks, denied legacy role and rollback
+        shell: bash
+        run: PR108_DISPOSABLE_PG_IMAGE="${{ matrix.pg_image }}" bash scripts/tests/pr108-run-session-bound-definer-disposable.sh
+      - name: Confirm checked-in SQL and source are unchanged by tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- lib/db artifacts/api-server/src scripts/sql scripts/tests pnpm-lock.yaml
