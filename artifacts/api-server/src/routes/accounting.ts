@@ -1605,4 +1605,104 @@ router.get("/accounting/bank-disbursements", async (req, res): Promise<void> => 
 });
 
 
+// DEV-only historical detail companion to the list adapter above.
+// No payment posting, journal mutation, or void action is enabled.
+router.get("/accounting/bank-disbursements/:id", async (req, res): Promise<void> => {
+  if (!isDevelopmentEnvironment() ||
+      process.env.BIZPORTAL_DEV_BD_READONLY_ENABLED !== "true") {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  res.setHeader("Cache-Control", "private, no-store");
+  const rawId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const id = typeof rawId === "string" && /^[1-9][0-9]*$/.test(rawId)
+    ? Number(rawId) : NaN;
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    res.status(400).json({ error: "Invalid disbursement ID" });
+    return;
+  }
+  let companyId: number | null;
+  try {
+    companyId = requestedCompanyId(req);
+  } catch {
+    res.status(400).json({ error: "Invalid company" });
+    return;
+  }
+  if (companyId === null) {
+    res.status(400).json({ error: "Company is required" });
+    return;
+  }
+  try {
+    const header = await pool.query<{
+      id: number; company_id: number; disbursement_number: string | null;
+      journal_id: number; date: string | Date; ref: string | null;
+      memo: string | null; total_amount: string; status: string;
+      entry_id: number | null; void_entry_id: number | null;
+      void_reason: string | null; created_at: string | Date;
+      attachment_url: string | null; counterparty_name: string | null;
+      counterparty_type: string | null; counterparty_id: number | null;
+      source_module: string | null; source_id: number | null;
+      expense_id: number | null; source_number: string | null;
+    }>(
+      `select id,company_id,disbursement_number,journal_id,date,ref,memo,
+              total_amount,status,entry_id,void_entry_id,void_reason,
+              created_at,attachment_url,counterparty_name,counterparty_type,
+              counterparty_id,source_module,source_id,expense_id,source_number
+         from public.bank_disbursements
+        where id = $1 and company_id = $2`,
+      [id, companyId],
+    );
+    const row = header.rows[0];
+    if (!row) {
+      res.status(404).json({ error: "Not found" });
+      return;
+    }
+    const lines = await pool.query<{
+      id: number; seq: number; transaction_type: string;
+      account_id: number | null; description: string | null;
+      amount: string; notes: string | null; purchase_document_id: number | null;
+      wht_amount: string | null; wht_account_id: number | null;
+      party_name: string | null;
+    }>(
+      `select item.id,item.seq,item.transaction_type,item.account_id,
+              item.description,item.amount,item.notes,item.purchase_document_id,
+              item.wht_amount,item.wht_account_id,item.party_name
+         from public.bank_disbursement_items item
+         join public.bank_disbursements bd
+           on bd.id = item.disbursement_id
+        where bd.id = $1 and bd.company_id = $2
+        order by item.seq,item.id`,
+      [id, companyId],
+    );
+    res.json({
+      id: row.id, companyId: row.company_id,
+      disbursementNumber: row.disbursement_number,
+      journalId: row.journal_id, date: row.date, ref: row.ref,
+      memo: row.memo, totalAmount: Number(row.total_amount),
+      status: row.status, entryId: row.entry_id,
+      voidEntryId: row.void_entry_id, voidReason: row.void_reason,
+      createdAt: row.created_at, attachmentUrl: row.attachment_url,
+      counterpartyName: row.counterparty_name,
+      counterpartyType: row.counterparty_type,
+      counterpartyId: row.counterparty_id, sourceModule: row.source_module,
+      sourceId: row.source_id, expenseId: row.expense_id,
+      sourceNumber: row.source_number,
+      items: lines.rows.map(item => ({
+        id: item.id, seq: item.seq, transactionType: item.transaction_type,
+        accountId: item.account_id, description: item.description,
+        amount: Number(item.amount), notes: item.notes,
+        purchaseDocumentId: item.purchase_document_id,
+        whtAmount: Number(item.wht_amount ?? 0),
+        whtAccountId: item.wht_account_id, partyName: item.party_name,
+      })),
+      // Full journal details require the separately verified Accounting reader.
+      entry: null,
+    });
+  } catch (error) {
+    req.log.error({ error }, "DEV bank disbursement detail read failed");
+    res.status(503).json({ error: "Bank disbursement detail unavailable" });
+  }
+});
+
+
 export default router;
