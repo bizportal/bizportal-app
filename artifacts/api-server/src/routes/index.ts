@@ -61,6 +61,24 @@ router.use((req, res, next) => {
 });
 
 
+// DEV-only canonical Purchase PDF binary; retain existing HTML fallback.
+// Feature flag is OFF by default, and the module is not imported on PROD startup.
+router.use((req, res, next) => {
+  if (!req.path.startsWith("/purchase/documents/") || !req.path.endsWith("/pdf")) return next();
+  if (process.env.APP_ENV?.trim().toLowerCase() !== "development" ||
+      !isDevelopmentEnvironment() ||
+      process.env.BIZPORTAL_DOCUMENT_TEMPLATES_ENABLED_DEV !== "true") {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  void import("./dev-purchase-pdf").then(({ default: handler }) => {
+    handler(req, res, next);
+  }).catch(error => {
+    req.log?.error?.({ error }, "DEV Purchase PDF unavailable");
+    if (!res.headersSent) res.status(503).json({ error: "Purchase PDF unavailable" });
+  });
+});
+
 // Read-only Customer AR preview imported from the historical BizPortal source.
 // Deliberately OFF until tenant-scope and canonical DEV runtime parity are proven.
 router.use((req, res, next) => {
