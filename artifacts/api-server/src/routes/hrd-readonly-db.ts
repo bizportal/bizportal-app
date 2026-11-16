@@ -3,8 +3,9 @@ import type { PoolClient } from "pg";
 
 /**
  * Stage-one HRD reader: no financial or employee/document writes.
- * Uses the legacy PROD HRD role and RLS company scope, but deliberately
- * strengthens the transaction to BEGIN READ ONLY.
+ * Uses the environment-specific existing HRD RLS role, always in
+ * BEGIN READ ONLY. DEV uses bizportal_hrd_dev only behind its opt-in gate.
+ * Production remains pinned to the legacy bizportal_hrd_prod principal.
  * This does NOT replace the existing HRD writer implementation.
  */
 export async function withHrdCompanyReadOnly<T>(
@@ -14,6 +15,10 @@ export async function withHrdCompanyReadOnly<T>(
   if (!Number.isSafeInteger(companyId) || companyId <= 0) {
     throw Error("HRD_READONLY_INVALID_COMPANY");
   }
+  const devMode = process.env.APP_ENV?.trim().toLowerCase() === "development";
+  const role = devMode && process.env.HRD_CANONICAL_READONLY_ENABLED_DEV === "true"
+    ? "bizportal_hrd_dev"
+    : "bizportal_hrd_prod";
   const client = await pool.connect();
   let inTransaction = false;
   let beganAttempt = false;
@@ -22,13 +27,13 @@ export async function withHrdCompanyReadOnly<T>(
     beganAttempt = true;
     await client.query("BEGIN READ ONLY");
     inTransaction = true;
-    await client.query("SET LOCAL ROLE bizportal_hrd_prod");
+    await client.query("SET LOCAL ROLE " + role);
     await client.query("SELECT set_config('app.hrd_company_id',$1,true)", [String(companyId)]);
     const scope = await client.query(
       "SELECT current_user AS role, current_setting('app.hrd_company_id',true) AS company",
     );
     if (scope.rowCount !== 1 ||
-        scope.rows[0]?.role !== "bizportal_hrd_prod" ||
+        scope.rows[0]?.role !== role ||
         scope.rows[0]?.company !== String(companyId)) {
       throw Error("HRD_READONLY_ROLE_SCOPE_MISMATCH");
     }
