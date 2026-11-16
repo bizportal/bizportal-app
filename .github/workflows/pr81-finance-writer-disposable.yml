@@ -1,0 +1,61 @@
+name: PR81 Finance Writer Disposable PostgreSQL
+on:
+  pull_request:
+    branches: [test/finance-pr79-pr80-integration-20261115]
+    paths:
+      - 'scripts/tests/20261116_pr81_writer_disposable.sql'
+      - '.github/workflows/pr81-finance-writer-disposable.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  writer-rollback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: PostgreSQL 16 rollback-only Finance Writer rehearsal (no network)
+        shell: bash
+        run: |
+          set -euo pipefail
+          name=ci-pr81-writer-pg16
+          logfile="$RUNNER_TEMP/pr81-writer-rollback-only.log"
+          cleanup() {
+            docker rm -f "$name" >/dev/null 2>&1 || :
+            rm -f "$logfile"
+          }
+          trap cleanup EXIT
+          test -f scripts/tests/20261116_pr81_writer_disposable.sql
+          docker run --rm -d --name "$name" --network none \
+            --memory 256m --cpus 1 \
+            --tmpfs /var/lib/postgresql/data:rw,nosuid,size=192m \
+            -e POSTGRES_HOST_AUTH_METHOD=trust \
+            -e POSTGRES_DB=cst_pr81_writer_ci -e POSTGRES_USER=postgres \
+            postgres:16-alpine >/dev/null
+          ready=false
+          for _ in $(seq 1 70); do
+            if docker exec "$name" pg_isready -q -U postgres \
+               -d cst_pr81_writer_ci >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 0.3
+          done
+          if test "$ready" != true; then
+            echo "DISPOSABLE_POSTGRES_NOT_READY"
+            exit 2
+          fi
+          # Executes only inside an offline container without mapped ports,
+          # shared volumes, CST-DEV credentials or GitHub secrets.
+          if ! docker exec -i "$name" psql -X -v ON_ERROR_STOP=1 \
+            -U postgres -d cst_pr81_writer_ci \
+            < scripts/tests/20261116_pr81_writer_disposable.sql \
+            > "$logfile" 2>&1; then
+            tail -50 "$logfile"
+            exit 3
+          fi
+          grep -E 'PASS|ERROR' "$logfile" | tail -15
+          grep -q 'PR81_DISPOSABLE_PG16_WRITER_REHEARSAL_PASS_ROLLBACK_CLEAN' "$logfile"
+          docker rm -f "$name" >/dev/null
+          test -z "$(docker ps -a --filter "name=^$name$" --format '{{.Names}}')"
+          echo "PR81_DISPOSABLE_WRITER_CI_FINISHED_AND_CONTAINER_REMOVED=true"
