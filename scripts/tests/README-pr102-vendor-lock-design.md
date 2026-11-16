@@ -36,3 +36,5 @@ The disposable prototype uses a dedicated **NOLOGIN / NOINHERIT / NOBYPASSRLS** 
 - Do **not** apply test SQL, create DB roles/policies/functions on CST-DEV, add direct Finance UPDATE, turn on Writer/Handoff/vendor upload, change Hostinger preview/Nginx, send payments, post GL, or touch PROD.
 - A separately reviewed, exact CST-DEV migration is needed. Reviewers must independently assess definer owner creation/ownership, public EXECUTE revocation, tenant/RLS policy equivalence and possible custom-GUC spoofing, concurrency including Shipment lifecycle, session authorization, and rollback script.
 - Only after that independent review, separate authorization and genuine signed HTTPS service-to-CST-DEV tests could Writer be considered for DEV activation.
+
+**Token lifecycle gate:** Revalidate the vendor token and UTC expiry inside the database function while holding the PO row lock; do not rely solely on the route’s earlier token lookup. Continue to preserve rollback and the default-OFF feature flag.
