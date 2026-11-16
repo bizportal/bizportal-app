@@ -14,6 +14,28 @@ type FinanceDatabase = ReturnType<typeof drizzle<typeof schema>>;
 
 const EXPECTED_PROJECT = "xssrfshdrtdfupgqwfdw";
 const EXPECTED_ROLE = "bizportal_marketplace_finance_login_dev";
+/** Explicit DEV-only company roles. No role or secret can be supplied by a request. */
+const COMPANY_FINANCE_IDENTITIES = {
+  1: { role: "bizportal_finance_cst_login_dev", secret: "bizportal-marketplace-finance-dev-cst" },
+  3: { role: "bizportal_finance_diva_login_dev", secret: "bizportal-marketplace-finance-dev-diva" },
+} as const;
+type CompanyFinanceId = keyof typeof COMPANY_FINANCE_IDENTITIES;
+const COMPANY_MODE_FLAG = "BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV";
+const companyFinancePools = new Map<CompanyFinanceId, {
+  url: string; db: FinanceDatabase; pool: pg.Pool
+}>();
+const companyFinanceSecretCache = new Map<CompanyFinanceId, { value: string; expiresAt: number }>();
+/** A running process cannot change its Finance credential mode without restart. */
+let activeFinanceMode: "legacy" | "company" | null = null;
+
+function companyIdentity(companyId: number) {
+  if (!Number.isSafeInteger(companyId) ||
+      !Object.prototype.hasOwnProperty.call(COMPANY_FINANCE_IDENTITIES, companyId)) {
+    throw new Error("DEV_FINANCE_COMPANY_NOT_ALLOWLISTED");
+  }
+  return COMPANY_FINANCE_IDENTITIES[companyId as CompanyFinanceId];
+}
+
 let financePool: pg.Pool | null = null;
 let financeDb: FinanceDatabase | null = null;
 let activeFinanceConnectionUrl: string | null = null;
@@ -34,42 +56,15 @@ export function onMarketplaceFinanceCommit(session: object, action: PostCommitAc
  * APP_ENV is development; there is never a fallback to the shared DB secret.
  * The existing GCP service account bootstrap remains the only secret reader.
  */
-export async function resolveMarketplaceFinanceDevDatabaseUrl(
-  secretReader: (secretName: string) => Promise<string> = readSecret,
-): Promise<string> {
-  if (process.env.APP_ENV?.trim().toLowerCase() !== "development" ||
-      (process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV !== "true" &&
-       process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV !== "true")) {
-    throw new Error("DEV_FINANCE_DISABLED");
-  }
-  const direct = process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV?.trim();
-  const secretName = process.env.BIZPORTAL_MARKETPLACE_FINANCE_GCP_SECRET_NAME_DEV?.trim();
-  if (direct && secretName) throw new Error("DEV_FINANCE_CREDENTIAL_SOURCE_AMBIGUOUS");
-  if (!direct && !secretName) throw new Error("DEV_FINANCE_CREDENTIAL_NOT_CONFIGURED");
-  if (secretName && !/^bizportal-marketplace-finance-dev(?:-[a-z0-9-]+)?$/.test(secretName)) {
-    throw new Error("DEV_FINANCE_SECRET_NAME_INVALID");
-  }
-
-  let raw = direct;
-  if (secretName) {
-    if (cachedFinanceSecret && cachedFinanceSecret.name === secretName &&
-        cachedFinanceSecret.expiresAt > Date.now()) {
-      raw = cachedFinanceSecret.value;
-    } else {
-      raw = (await secretReader(secretName)).trim();
-      if (!raw) throw new Error("DEV_FINANCE_SECRET_EMPTY");
-      cachedFinanceSecret = { name: secretName, value: raw, expiresAt: Date.now() + 60_000 };
-    }
-  }
-  if (!raw) throw new Error("DEV_FINANCE_CREDENTIAL_NOT_CONFIGURED");
+function validateFinanceDatabaseUrl(raw: string, expectedRole: string): string {
   let url: URL;
   try { url = new URL(raw); } catch { throw new Error("DEV_FINANCE_DATABASE_URL_INVALID"); }
   const username = decodeURIComponent(url.username);
   const hostname = url.hostname.toLowerCase();
   const trustedHost = hostname === `db.${EXPECTED_PROJECT}.supabase.co` ||
     hostname.endsWith(".pooler.supabase.com");
-  const trustedUser = username === EXPECTED_ROLE ||
-    username === `${EXPECTED_ROLE}.${EXPECTED_PROJECT}`;
+  const trustedUser = username === expectedRole ||
+    username === `${expectedRole}.${EXPECTED_PROJECT}`;
   const projectBound = hostname.includes(EXPECTED_PROJECT) || username.includes(EXPECTED_PROJECT);
   const sslmode = url.searchParams.get("sslmode");
   if (!sslmode) {
@@ -101,6 +96,77 @@ export async function resolveMarketplaceFinanceDevDatabaseUrl(
   return raw;
 }
 
+export async function resolveMarketplaceFinanceDevDatabaseUrl(
+  secretReader: (secretName: string) => Promise<string> = readSecret,
+): Promise<string> {
+  if (process.env.APP_ENV?.trim().toLowerCase() !== "development" ||
+      (process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV !== "true" &&
+       process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV !== "true")) {
+    throw new Error("DEV_FINANCE_DISABLED");
+  }
+  if (process.env[COMPANY_MODE_FLAG] === "true") {
+    throw new Error("DEV_FINANCE_LEGACY_ROLE_DISABLED_IN_COMPANY_MODE");
+  }
+  const direct = process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV?.trim();
+  const secretName = process.env.BIZPORTAL_MARKETPLACE_FINANCE_GCP_SECRET_NAME_DEV?.trim();
+  if (direct && secretName) throw new Error("DEV_FINANCE_CREDENTIAL_SOURCE_AMBIGUOUS");
+  if (!direct && !secretName) throw new Error("DEV_FINANCE_CREDENTIAL_NOT_CONFIGURED");
+  if (secretName && !/^bizportal-marketplace-finance-dev(?:-[a-z0-9-]+)?$/.test(secretName)) {
+    throw new Error("DEV_FINANCE_SECRET_NAME_INVALID");
+  }
+
+  let raw = direct;
+  if (secretName) {
+    if (cachedFinanceSecret && cachedFinanceSecret.name === secretName &&
+        cachedFinanceSecret.expiresAt > Date.now()) {
+      raw = cachedFinanceSecret.value;
+    } else {
+      raw = (await secretReader(secretName)).trim();
+      if (!raw) throw new Error("DEV_FINANCE_SECRET_EMPTY");
+      cachedFinanceSecret = { name: secretName, value: raw, expiresAt: Date.now() + 60_000 };
+    }
+  }
+  if (!raw) throw new Error("DEV_FINANCE_CREDENTIAL_NOT_CONFIGURED");
+  return validateFinanceDatabaseUrl(raw, EXPECTED_ROLE);
+}
+
+/** Retrieve only the explicitly pinned company secret; no user/env-driven
+ * credential selection and no shared postgres or generic Finance fallback.
+ * The real live secrets are NOT created by this source-only proposal.
+ */
+export async function resolveMarketplaceFinanceCompanyDevDatabaseUrl(
+  companyId: number,
+  secretReader: (secretName: string) => Promise<string> = readSecret,
+): Promise<string> {
+  if (process.env.APP_ENV?.trim().toLowerCase() !== "development" ||
+      (process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV !== "true" &&
+       process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV !== "true")) {
+    throw new Error("DEV_FINANCE_DISABLED");
+  }
+  if (process.env[COMPANY_MODE_FLAG] !== "true") {
+    throw new Error("DEV_FINANCE_COMPANY_MODE_DISABLED");
+  }
+  const identity = companyIdentity(companyId);
+  if (process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV?.trim() ||
+      process.env.BIZPORTAL_MARKETPLACE_FINANCE_GCP_SECRET_NAME_DEV?.trim()) {
+    throw new Error("DEV_FINANCE_LEGACY_CREDENTIAL_IN_COMPANY_MODE");
+  }
+  const id = companyId as CompanyFinanceId;
+  const cache = companyFinanceSecretCache.get(id);
+  let raw: string;
+  if (cache && cache.expiresAt > Date.now()) {
+    raw = cache.value;
+  } else {
+    raw = (await secretReader(identity.secret)).trim();
+    if (!raw) throw new Error("DEV_FINANCE_COMPANY_SECRET_EMPTY");
+  }
+  const validated = validateFinanceDatabaseUrl(raw, identity.role);
+  if (!cache || cache.value !== validated || cache.expiresAt <= Date.now()) {
+    companyFinanceSecretCache.set(id, { value: validated, expiresAt: Date.now() + 60_000 });
+  }
+  return validated;
+}
+
 /** Hostinger lacks the VPS-only sslrootcert path contained in the DEV DSN.
  * Build explicit pg connection fields so node-postgres never reads that
  * inaccessible path. Direct Supabase connections use the pinned PUBLIC
@@ -108,7 +174,7 @@ export async function resolveMarketplaceFinanceDevDatabaseUrl(
  * Pooler connections use system-trusted CAs, with the same strict TLS checks.
  * No private keys, credentials, or production DB fallback are bundled here.
  */
-function secureFinancePoolOptions(raw: string): pg.PoolConfig {
+function secureFinancePoolOptions(raw: string, expectedRole = EXPECTED_ROLE): pg.PoolConfig {
   const url = new URL(raw);
   const hostname = url.hostname.toLowerCase();
   const directHost = `db.${EXPECTED_PROJECT}.supabase.co`;
@@ -117,7 +183,7 @@ function secureFinancePoolOptions(raw: string): pg.PoolConfig {
   const port = Number(url.port || 5432);
 
   if ((hostname !== directHost && !hostname.endsWith(".pooler.supabase.com")) ||
-      (user !== EXPECTED_ROLE && user !== `${EXPECTED_ROLE}.${EXPECTED_PROJECT}`) ||
+      (user !== expectedRole && user !== `${expectedRole}.${EXPECTED_PROJECT}`) ||
       !Number.isSafeInteger(port) || ![5432, 6543].includes(port) ||
       database !== "postgres" || !url.password) {
     throw new Error("DEV_FINANCE_DATABASE_TARGET_INVALID");
@@ -158,6 +224,22 @@ async function getFinanceDb(): Promise<FinanceDatabase> {
   return financeDb!;
 }
 
+async function getCompanyFinanceDb(companyId: number): Promise<FinanceDatabase> {
+  const identity = companyIdentity(companyId);
+  const id = companyId as CompanyFinanceId;
+  const raw = await resolveMarketplaceFinanceCompanyDevDatabaseUrl(id);
+  const previous = companyFinancePools.get(id);
+  if (previous && previous.url !== raw) {
+    // Existing authenticated pool is never silently reused after secret rotation.
+    throw new Error("DEV_FINANCE_COMPANY_CREDENTIAL_CHANGED_RESTART_REQUIRED");
+  }
+  if (previous) return previous.db;
+  const pool = new pg.Pool(secureFinancePoolOptions(raw, identity.role));
+  const scoped = drizzle(pool, { schema });
+  companyFinancePools.set(id, { url: raw, pool, db: scoped });
+  return scoped;
+}
+
 /** All canonical reads/writes must use this exact transaction connection.
  * Verified company scope is set transaction-locally, never from request payload.
  * Nested canonical service transactions use savepoints on this same client.
@@ -175,7 +257,16 @@ export async function withMarketplaceFinanceDevTransaction<T>(
   if (!Number.isSafeInteger(companyId) || companyId <= 0) {
     throw new Error("DEV_FINANCE_COMPANY_INVALID");
   }
-  const finance = await getFinanceDb();
+  const companyMode = process.env[COMPANY_MODE_FLAG] === "true";
+  const requestedMode = companyMode ? "company" : "legacy";
+  if (activeFinanceMode && activeFinanceMode !== requestedMode) {
+    throw new Error("DEV_FINANCE_CREDENTIAL_MODE_CHANGED_RESTART_REQUIRED");
+  }
+  const expectedRole = companyMode ? companyIdentity(companyId).role : EXPECTED_ROLE;
+  const finance = companyMode
+    ? await getCompanyFinanceDb(companyId)
+    : await getFinanceDb();
+  activeFinanceMode = requestedMode;
   const afterCommit: PostCommitAction[] = [];
   const result = await finance.transaction(async (tx) => {
     // Enforce PostgreSQL READ ONLY before the first query on this transaction.
@@ -200,7 +291,7 @@ export async function withMarketplaceFinanceDevTransaction<T>(
              row_security_active('public.mkt_accounting_handoffs'::regclass) as handoff_rls
     `);
     const role = identity.rows[0];
-    if (role?.db_role !== EXPECTED_ROLE || role?.login_role !== EXPECTED_ROLE ||
+    if (role?.db_role !== expectedRole || role?.login_role !== expectedRole ||
         role?.elevated !== false ||
         role?.po_rls !== true || role?.po_lines_rls !== true ||
         role?.shipments_rls !== true || role?.shipment_items_rls !== true ||
@@ -209,6 +300,44 @@ export async function withMarketplaceFinanceDevTransaction<T>(
         role?.ap_rls !== true || role?.payment_rls !== true ||
         role?.handoff_rls !== true) {
       throw new Error("DEV_FINANCE_ROLE_OR_RLS_UNVERIFIED");
+    }
+    if (companyMode) {
+      // RLS "enabled" alone is not proof of tenant isolation. Require a
+      // company-role RESTRICTIVE policy on EACH canonical Marketplace,
+      // Finance AP and Accounting relation before executing business code.
+      // This is a readiness gate, not a substitute for policy review.
+      const readiness = await tx.execute(sql`
+        SELECT
+          count(DISTINCT c.relname)::integer AS guarded_tables,
+          coalesce((
+            SELECT rolcanlogin AND NOT rolinherit AND NOT rolsuper AND NOT rolbypassrls
+            FROM pg_catalog.pg_roles WHERE rolname=current_user
+          ),false) AS isolated_login,
+          (SELECT count(*)::integer FROM pg_catalog.pg_auth_members m
+             WHERE m.member=(SELECT oid FROM pg_catalog.pg_roles
+                             WHERE rolname=current_user)) AS memberships
+        FROM pg_catalog.pg_policy p
+          JOIN pg_catalog.pg_class c ON c.oid=p.polrelid
+          JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname='public' AND c.relrowsecurity
+          AND NOT p.polpermissive
+          AND p.polcmd='*'  -- FOR ALL: protect reads AND every existing write action
+          AND (SELECT oid FROM pg_catalog.pg_roles WHERE rolname=current_user)
+              = ANY(p.polroles)
+          AND c.relname IN (
+            'mkt_purchase_orders', 'mkt_purchase_order_lines',
+            'mkt_po_shipments', 'mkt_po_shipment_items',
+            'mkt_po_goods_receipts', 'mkt_po_goods_receipt_items',
+            'vendor_invoices', 'vendor_invoice_lines',
+            'mkt_ap_preparations', 'payment_requests',
+            'mkt_accounting_handoffs'
+          )
+      `);
+      if (readiness.rows[0]?.guarded_tables !== 11 ||
+          readiness.rows[0]?.isolated_login !== true ||
+          readiness.rows[0]?.memberships !== 0) {
+        throw new Error("DEV_FINANCE_COMPANY_RLS_GUARD_NOT_READY");
+      }
     }
     await tx.execute(sql`select set_config('app.marketplace_company_id', ${String(companyId)}, true)`);
     const bound = await tx.execute(sql`select current_setting('app.marketplace_company_id',true) as company_id`);
