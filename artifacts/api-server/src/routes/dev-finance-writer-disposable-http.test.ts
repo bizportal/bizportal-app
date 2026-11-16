@@ -201,10 +201,15 @@ describe.skipIf(!enabled)("PR81 signed HTTP Finance Writer over disposable Postg
     await root.query("INSERT INTO public.companies VALUES(1,true),(3,true)");
     await root.query("INSERT INTO public.users VALUES($1,$2,$3,'super_admin','active',true,NULL)",
       ["ci-finance-admin", EMAIL, await hash(PASSWORD, 4)]);
-    await root.query("INSERT INTO public.mkt_purchase_orders(id,po_number,rfq_id,quote_id,company_id,vendor_id,status,total_amount,tax_amount,grand_total) VALUES(101,'CI-PO-101',201,301,1,10,'confirmed',100,0,100)");
+    await root.query("INSERT INTO public.mkt_purchase_orders(id,po_number,rfq_id,quote_id,company_id,vendor_id,status,total_amount,tax_amount,grand_total,currency_snapshot) VALUES(101,'CI-PO-101',201,301,1,10,'confirmed',100,0,100,'IDR')");
+    await root.query("INSERT INTO public.mkt_purchase_order_lines(id,po_id,item_name,qty,unit,unit_price,subtotal) VALUES(105,101,'CI received product',1,'pcs',100,100)");
     await root.query("INSERT INTO public.mkt_po_shipments(id,po_id,shipment_number,shipment_status) VALUES(102,101,'CI-SHIP-102','delivered')");
+    await root.query("INSERT INTO public.mkt_po_shipment_items(id,shipment_id,po_line_id,line_number,qty) VALUES(106,102,105,1,1)");
     await root.query("INSERT INTO public.mkt_po_goods_receipts(id,shipment_id,receipt_number,receipt_type,inspection_status) VALUES(103,102,'CI-GR-103','full','passed')");
-    await root.query("INSERT INTO public.vendor_invoices(id,invoice_number,vendor_invoice_ref,company_id,supplier_id,supplier_name,mkt_purchase_order_id,mkt_goods_receipt_id,status,three_way_match_status,currency,total_amount,tax_amount,grand_total,invoice_date) VALUES(104,'CI-VI-104','CI-REF-104',1,10,'CI Synthetic Vendor',101,103,'ready_for_ap','passed','IDR',100,0,100,now())");
+    await root.query("INSERT INTO public.mkt_po_goods_receipt_items(id,goods_receipt_id,shipment_item_id,received_qty,accepted_qty) VALUES(107,103,106,1,1)");
+    // Start as an unmatched Draft: actual HTTP 3-way match must do the transition.
+    await root.query("INSERT INTO public.vendor_invoices(id,invoice_number,vendor_invoice_ref,company_id,supplier_id,supplier_name,mkt_purchase_order_id,mkt_goods_receipt_id,status,three_way_match_status,currency,total_amount,tax_amount,grand_total,invoice_date) VALUES(104,'CI-VI-104','CI-REF-104',1,10,'CI Synthetic Vendor',101,103,'draft','unmatched','IDR',100,0,100,now())");
+    await root.query("INSERT INTO public.vendor_invoice_lines(id,invoice_id,mkt_purchase_order_line_id,name,quantity,unit,unit_cost,subtotal,tax_amount) VALUES(108,104,105,'CI received product',1,'pcs',100,100,0)");
     const app = express();
     app.use(express.json());
     app.use((req,_res,next) => { (req as any).log = {
@@ -250,6 +255,21 @@ describe.skipIf(!enabled)("PR81 signed HTTP Finance Writer over disposable Postg
     expect(scope1).toContain("bizportal_finance_company_scope=");
     const a=await root.query("SELECT company_id FROM public.audit_logs WHERE action='finance_company_scope_selected'");
     expect(a.rows).toEqual([{company_id:"1"}]);
+  });
+  it("runs canonical Invoice 3-way match over HTTP before AP and reuses the match",async () => {
+    // A Draft/unmatched Invoice must not be accepted as an AP.
+    const blocked = await post("/api/mkt/admin/vendor-invoices/104/ap-preparation");
+    expect(blocked.status).toBe(409);
+    const first = await post("/api/mkt/admin/vendor-invoices/104/match");
+    expect(first.status).toBe(200);
+    const matched = await first.json() as any;
+    expect(matched).toMatchObject({ok:true,alreadyMatched:false,match:{ok:true,status:"passed"}});
+    expect(matched.data.status).toBe("ready_for_ap");
+    const again = await post("/api/mkt/admin/vendor-invoices/104/match");
+    expect(again.status).toBe(200);
+    expect(await again.json()).toMatchObject({ok:true,alreadyMatched:true,match:{ok:true,status:"passed"}});
+    const persisted = await root.query("SELECT status,three_way_match_status FROM public.vendor_invoices WHERE id=104");
+    expect(persisted.rows).toEqual([{status:"ready_for_ap",three_way_match_status:"passed"}]);
   });
   it("creates/reuses canonical AP and advances to waiting_payment over HTTP",async () => {
     const first=await post("/api/mkt/admin/vendor-invoices/104/ap-preparation");
