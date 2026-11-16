@@ -5,7 +5,8 @@ GitHub Actions runner. This gate does not connect to CST-DEV or PROD.
 
 The PostgreSQL 16 container has --network none, no published ports, no
 shared mounts, and a bounded tmpfs data directory. It requires no secrets.
-The SQL rejects any database name other than cst_pr81_writer_ci, creates
+The SQL rejects any database name other than cst_pr81_writer_ci and any
+non-loopback TCP server address, creates
 its own disposable role and simplified AP/Finance tables under BEGIN, and
 ends with ROLLBACK. Its final assertion verifies both tables and role
 were removed. The container is then destroyed.

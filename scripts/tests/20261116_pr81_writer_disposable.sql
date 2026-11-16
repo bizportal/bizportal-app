@@ -7,6 +7,7 @@ DO $$
 BEGIN
  IF current_database()<>'cst_pr81_writer_ci'
  OR current_user<>'postgres'
+ OR (inet_server_addr() IS NOT NULL AND inet_server_addr()<>'127.0.0.1'::inet)
  THEN RAISE EXCEPTION 'DISPOSABLE_DB_IDENTITY_REQUIRED'; END IF;
 END $$;
 

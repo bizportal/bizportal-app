@@ -1,7 +1,7 @@
 name: PR81 Finance Writer Disposable PostgreSQL
 on:
   pull_request:
-    branches: [test/finance-pr79-pr80-integration-20261115]
+    branches: [main, develop, test/finance-pr79-pr80-integration-20261115]
     paths:
       - 'scripts/tests/20261116_pr81_writer_disposable.sql'
       - '.github/workflows/pr81-finance-writer-disposable.yml'
