@@ -210,7 +210,6 @@ describe.skipIf(!enabled)("PR81 signed HTTP Finance Writer over disposable Postg
     const a=await root.query("SELECT company_id FROM public.audit_logs WHERE action='finance_company_scope_selected'");
     expect(a.rows).toEqual([{company_id:"1"}]);
   });
-  let apId=0;
   it("creates/reuses canonical AP and advances to waiting_payment over HTTP",async () => {
     const first=await post("/api/mkt/admin/vendor-invoices/104/ap-preparation");
     expect(first.status).toBe(201);
