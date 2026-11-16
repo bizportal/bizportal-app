@@ -1,0 +1,71 @@
+name: PR106 Finance Company-Bound Connection Gate PG16/17
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+      - test/pr105-company-bound-rls-20261116
+    paths:
+      - 'lib/db/src/marketplace-finance-dev.ts'
+      - 'lib/db/src/index.ts'
+      - 'artifacts/api-server/src/routes/dev-finance-company-role-routing.test.ts'
+      - 'scripts/tests/pr106-*'
+      - '.github/workflows/pr106-company-finance-gate.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  company-finance-readiness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        pg_image: [postgres:16-alpine, postgres:17-alpine]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install frozen source dependencies without lifecycle scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Resolve canonical DB schema dependency for isolated tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -e lib/db/node_modules/drizzle-zod
+          if test ! -e artifacts/api-server/node_modules/drizzle-zod; then
+            ln -s ../../../lib/db/node_modules/drizzle-zod artifacts/api-server/node_modules/drizzle-zod
+          fi
+          test -e artifacts/api-server/node_modules/drizzle-zod
+      - name: Compile canonical Finance, API and DB source
+        run: pnpm --dir artifacts/api-server run typecheck
+      - name: Retain all existing Finance and Vendor Invoice contract tests
+        run: |
+          pnpm --dir artifacts/api-server exec vitest run \
+            src/routes/dev-finance-company-role-routing.test.ts \
+            src/routes/dev-finance-dedicated-session.test.ts \
+            src/routes/dev-finance-tls-parser-contract.test.ts \
+            src/routes/dev-marketplace-finance-writer.test.ts \
+            src/routes/dev-vendor-finance-session.test.ts \
+            src/routes/mktVendorInvoice.dev-compat.test.ts \
+            src/lib/services/mktMarketplaceCompanyScope.test.ts
+      - name: Verify exactly eleven restrictive company-RLS policies and memberless roles
+        shell: bash
+        run: PR106_DISPOSABLE_PG_IMAGE="${{ matrix.pg_image }}" bash scripts/tests/pr106-run-company-policy-preflight.sh
+      - name: Preserve company-RLS GUC override denial and rollback
+        shell: bash
+        run: PR105_DISPOSABLE_PG_IMAGE="${{ matrix.pg_image }}" bash scripts/tests/pr105-run-company-bound-rls.sh
+      - name: Preserve real synthetic login and private definer identity test
+        shell: bash
+        run: PR105_DISPOSABLE_PG_IMAGE="${{ matrix.pg_image }}" bash scripts/tests/pr105-run-real-login-definer.sh
+      - name: Check test execution did not mutate source, schema or lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- lib/db/src artifacts/api-server/src lib/db/src/schema pnpm-lock.yaml

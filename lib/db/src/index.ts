@@ -99,5 +99,5 @@ export async function getRuntimeDatabaseUrl(): Promise<string> {
 export * from "./schema";
 export { computeDatabasePoolMax } from "./pool-limits";
 export { getDatabaseUrl, resolveDatabaseUrl } from "./connection";
-export { withMarketplaceFinanceDevTransaction, withMarketplaceFinanceDevReadOnlyTransaction, onMarketplaceFinanceCommit, resolveMarketplaceFinanceDevDatabaseUrl } from "./marketplace-finance-dev";
+export { withMarketplaceFinanceDevTransaction, withMarketplaceFinanceDevReadOnlyTransaction, onMarketplaceFinanceCommit, resolveMarketplaceFinanceDevDatabaseUrl, resolveMarketplaceFinanceCompanyDevDatabaseUrl } from "./marketplace-finance-dev";
 export { getDatabaseSecretName, readSecret } from "./gcp-database-secret";
