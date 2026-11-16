@@ -15,6 +15,8 @@ import {
   syncGmailInvoiceCandidates,
 } from "../lib/gmail-invoice-candidates";
 import { getRuntimeConfig } from "../lib/gmail-invoice-runtime";
+import { GmailProviderRateLimitError } from "../lib/gmail-invoice-rate-limit";
+import { getGmailRateLimitUntil } from "../lib/gmail-invoice-ocr";
 import {
   listGmailOrganizationRules,
   provisionGmailOrganizationRules,
@@ -582,6 +584,7 @@ async function readStatus(
 router.get(
   "/recon-classification/invoice-sources/gmail/status",
   async (req, res) => {
+    let scopedCompanyId: number | null = null;
     try {
       const actor = await requireFinanceAdmin(req);
       if (!actor) {
@@ -1211,6 +1214,7 @@ router.get(
 router.post(
   "/recon-classification/invoice-sources/gmail/sync",
   async (req, res) => {
+    let scopedCompanyId: number | null = null;
     try {
       const actor = await requireFinanceAdmin(req);
       if (!actor) {
@@ -1224,6 +1228,7 @@ router.post(
         req.body?.company_id,
       );
       if (!companyId) return;
+      scopedCompanyId = companyId;
       if (!sourceEmail()) {
         res.status(409).json({
           code: "GMAIL_DEV_SOURCE_EMAIL_REQUIRED",
@@ -1319,9 +1324,11 @@ router.post(
         setConfig(
           companyId,
           "LAST_SYNC_STATUS",
-          result.failed > 0
-            ? "partial"
-            : "ok",
+          result.deferred > 0
+            ? "deferred"
+            : result.failed > 0
+              ? "partial"
+              : "ok",
           {
             description:
               "Last Gmail invoice source synchronization status",
@@ -1330,6 +1337,22 @@ router.post(
         ),
       ]);
 
+      if (result.deferred > 0) {
+        const retryAt = getGmailRateLimitUntil();
+        if (retryAt > Date.now()) {
+          await setConfig(companyId, "RATE_LIMIT_UNTIL", new Date(retryAt).toISOString(), {
+            description: "Google Gmail quota cooldown (never a financial approval)",
+            actor: actor.email,
+          });
+          res.setHeader("Retry-After", String(Math.max(1, Math.ceil((retryAt - Date.now()) / 1000))));
+        }
+        res.status(429).json({
+          ok: false, code: "GMAIL_RATE_LIMIT_DEFERRED",
+          error: "Gmail membatasi permintaan. Sinkronisasi ditunda tanpa menandai kandidat gagal.",
+          email: profile.emailAddress, ...result, syncedAt: now,
+        });
+        return;
+      }
       res.json({
         ok: true,
         email: profile.emailAddress,
@@ -1338,6 +1361,23 @@ router.post(
         syncedAt: now,
       });
     } catch (error) {
+      if (error instanceof GmailProviderRateLimitError) {
+        if (scopedCompanyId !== null) {
+          try {
+            await setConfig(scopedCompanyId, "RATE_LIMIT_UNTIL", new Date(error.retryAt).toISOString(), {
+              description: "Google Gmail quota cooldown (never a financial approval)",
+            });
+          } catch (writeError) {
+            req.log.error({ error: writeError }, "Cannot persist Gmail quota cooldown");
+          }
+        }
+        res.setHeader("Retry-After", String(Math.max(1, Math.ceil((error.retryAt - Date.now()) / 1000))));
+        res.status(429).json({
+          ok: false, code: "GMAIL_RATE_LIMIT_DEFERRED",
+          error: error.message, retryAt: new Date(error.retryAt).toISOString(),
+        });
+        return;
+      }
       req.log.error(
         { error },
         "Gmail invoice source sync failed",

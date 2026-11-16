@@ -7,6 +7,7 @@ const mock = vi.hoisted(() => ({
   scan: 0,
   extractionCalls: 0,
   importedInvoices: 0,
+  rateLimitOnce: false,
 }));
 
 vi.mock("@workspace/db", () => ({
@@ -97,6 +98,10 @@ vi.mock("../lib/gmail-invoice-ocr", () => ({
   downloadAttachment: vi.fn(async () => Buffer.from("same invoice file content")),
   extractInvoiceDocument: vi.fn(async () => {
     mock.extractionCalls++;
+    if (mock.rateLimitOnce) {
+      mock.rateLimitOnce = false;
+      throw new GmailProviderRateLimitError();
+    }
     if (mock.extractionCalls === 1) throw new Error("OCR temporarily unavailable");
     return {
       vendor_name: "Vendor", invoice_number: "INV-2026-001",
@@ -116,6 +121,7 @@ vi.mock("../lib/gmail-invoice-rate-limit", () => ({
   requiresInvoiceExtractionReview: () => false,
 }));
 
+import { GmailProviderRateLimitError } from "../lib/gmail-invoice-rate-limit";
 import { syncGmailInvoiceCandidates } from "../lib/gmail-invoice-candidates";
 
 describe("Gmail source deduplication on OCR failure and attachmentId rotation", () => {
@@ -125,6 +131,20 @@ describe("Gmail source deduplication on OCR failure and attachmentId rotation", 
     mock.scan = 0;
     mock.extractionCalls = 0;
     mock.importedInvoices = 0;
+    mock.rateLimitOnce = false;
+  });
+
+  it("defers quota throttling without marking a pending invoice failed", async () => {
+    mock.rateLimitOnce = true;
+    const result = await syncGmailInvoiceCandidates({
+      companyId: 1, accessToken: "test-token", sourceEmail: "test@example.org",
+      actorEmail: "finance@example.org",
+    });
+    expect(result.deferred).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(mock.rows).toHaveLength(1);
+    expect(mock.rows[0].extraction_status).toBe("pending");
+    expect(mock.rows[0].status).toBe("new");
   });
 
   it("reuses the failed row then ignores a repeated completed file", async () => {
