@@ -10,7 +10,7 @@ import {
   vendorInvoiceLinesTable,
   vendorInvoicesTable,
 } from "@workspace/db";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
 import { logActivity } from "../activityLog.js";
 import { enqueueNotification } from "./marketplaceNotificationQueueService.js";
@@ -176,8 +176,30 @@ export async function createMarketplaceVendorInvoice(
 
   try {
     const result = await scopedDb.transaction(async (tx) => {
-      const [po] = await tx.select().from(mktPurchaseOrdersTable)
-        .where(eq(mktPurchaseOrdersTable.id, input.poId)).for("update").limit(1);
+      // DEV opt-in only. The existing privileged/default service keeps its
+      // canonical row locks. Restricted Finance instead requests the SAME
+      // database row locks through a narrowly authorized SECURITY DEFINER
+      // routine; Finance itself receives no UPDATE grant on PO/GR.
+      const restrictedParentLock = scopedDb !== db
+        && process.env.APP_ENV?.trim().toLowerCase() === "development"
+        && process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV === "true"
+        && process.env.BIZPORTAL_MARKETPLACE_VENDOR_PARENT_LOCK_ENABLED_DEV === "true";
+      if (restrictedParentLock) {
+        // Fail closed if migration, EXECUTE permission, RLS or scoped PO/GR
+        // checks are missing. Never silently substitute unlocked SELECT.
+        const lock = await tx.execute(sql`
+          SELECT public.mkt_finance_lock_vendor_invoice_parents_dev(
+            ${input.poId}::integer, ${input.grId}::integer, ${input.supplierId}::integer
+          ) AS locked
+        `);
+        if (lock.rows[0]?.locked !== true)
+          return { ok: false as const, code: "PO_NOT_FOUND" as const };
+      }
+      const [po] = restrictedParentLock
+        ? await tx.select().from(mktPurchaseOrdersTable)
+            .where(eq(mktPurchaseOrdersTable.id, input.poId)).limit(1)
+        : await tx.select().from(mktPurchaseOrdersTable)
+            .where(eq(mktPurchaseOrdersTable.id, input.poId)).for("update").limit(1);
       if (!po) return { ok: false as const, code: "PO_NOT_FOUND" as const };
       if (po.status === "cancelled") return { ok: false as const, code: "PO_CANCELLED" as const };
       if (po.vendorId !== input.supplierId) {
@@ -187,8 +209,11 @@ export async function createMarketplaceVendorInvoice(
         return { ok: false as const, code: "COMPANY_SCOPE_INVALID" as const };
       }
 
-      const [gr] = await tx.select().from(mktPoGoodsReceiptsTable)
-        .where(eq(mktPoGoodsReceiptsTable.id, input.grId)).for("update").limit(1);
+      const [gr] = restrictedParentLock
+        ? await tx.select().from(mktPoGoodsReceiptsTable)
+            .where(eq(mktPoGoodsReceiptsTable.id, input.grId)).limit(1)
+        : await tx.select().from(mktPoGoodsReceiptsTable)
+            .where(eq(mktPoGoodsReceiptsTable.id, input.grId)).for("update").limit(1);
       if (!gr) return { ok: false as const, code: "GR_NOT_FOUND" as const };
       const [shipment] = await tx.select().from(mktPoShipmentsTable)
         .where(eq(mktPoShipmentsTable.id, gr.shipmentId)).limit(1);
