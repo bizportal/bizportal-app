@@ -13,7 +13,8 @@ if (process.env.CI !== "true" || process.env.GITHUB_ACTIONS !== "true" || !raw) 
 const url = new URL(raw);
 if (url.protocol !== "postgresql:" || url.hostname !== "127.0.0.1" ||
     url.port !== "65432" || url.pathname !== "/payroll_ci" ||
-    url.username !== "postgres.xssrfshdrtdfupgqwfdw") {
+    url.username !== "postgres.xssrfshdrtdfupgqwfdw" ||
+    url.search !== "" || url.hash !== "") {
   throw new Error("REFUSE_NON_DISPOSABLE_FINANCE_AUDIT_DATABASE");
 }
 const dirnameHere = dirname(fileURLToPath(import.meta.url));
@@ -22,7 +23,12 @@ const migration = readFileSync(
 );
 assert.match(migration, /CREATE POLICY pr81_finance_company_selection_audit_insert/);
 assert.match(migration, /COMMIT;\s*$/);
-const client = new pg.Client({ connectionString: raw, connectionTimeoutMillis: 5000 });
+const client = new pg.Client({
+  host: "127.0.0.1", port: 65432, database: "payroll_ci",
+  user: "postgres.xssrfshdrtdfupgqwfdw",
+  password: decodeURIComponent(url.password),
+  ssl: false, connectionTimeoutMillis: 5000,
+});
 let prepared = false;
 const role = "bizportal_pr81_otp_login_dev";
 const action = "finance_company_scope_selected";
