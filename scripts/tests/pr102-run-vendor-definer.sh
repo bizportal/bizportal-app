@@ -3,6 +3,12 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 NET=cst-pr102-vendor-definer-e2e
 PG=cst-pr102-vendor-definer-postgres
+IMAGE="${PR102_DISPOSABLE_PG_IMAGE:-postgres:16-alpine}"
+case "$IMAGE" in
+  postgres:16-alpine|postgres:17-alpine) ;;
+  *) echo "REFUSE_UNTRUSTED_DISPOSABLE_POSTGRES_IMAGE"; exit 7 ;;
+esac
+
 NODE=cst-pr102-vendor-definer-node
 test -s "$ROOT/artifacts/api-server/.pr102-vendor-definer-proof.mjs"
 for name in "$PG" "$NODE";do
@@ -21,7 +27,7 @@ docker run -d --rm --name "$PG" --network "$NET" --network-alias pr81pg \
   --memory 256m --cpus 1 --tmpfs /var/lib/postgresql/data:rw,nosuid,size=192m \
   -e POSTGRES_HOST_AUTH_METHOD=trust \
   -e POSTGRES_DB=cst_pr81_writer_ci \
-  -e POSTGRES_USER=postgres postgres:16-alpine >/dev/null
+  -e POSTGRES_USER=postgres "$IMAGE" >/dev/null
 ready=false
 for _ in $(seq 1 70);do
  if docker exec "$PG" pg_isready -q -h127.0.0.1 -U postgres -d cst_pr81_writer_ci >/dev/null 2>&1;then

@@ -31,7 +31,8 @@ BEGIN
     RAISE EXCEPTION 'EXPECTED_RESTRICTED_FINANCE_ROLE_NOT_PRESENT';
   END IF;
   IF has_any_column_privilege('bizportal_marketplace_finance_login_dev','public.mkt_purchase_orders','UPDATE')
-    OR has_any_column_privilege('bizportal_marketplace_finance_login_dev','public.mkt_po_goods_receipts','UPDATE') THEN
+    OR has_any_column_privilege('bizportal_marketplace_finance_login_dev','public.mkt_po_goods_receipts','UPDATE')
+    OR has_any_column_privilege('bizportal_marketplace_finance_login_dev','public.mkt_po_shipments','UPDATE') THEN
     RAISE EXCEPTION 'FINANCE_PARENT_UPDATE_BASELINE_CHANGED';
   END IF;
   SELECT count(*) INTO policies
@@ -72,6 +73,8 @@ GRANT UPDATE(status) ON public.mkt_purchase_orders
   TO bizportal_finance_parent_lock_owner_dev;
 GRANT UPDATE(inspection_status) ON public.mkt_po_goods_receipts
   TO bizportal_finance_parent_lock_owner_dev;
+GRANT UPDATE(shipment_status) ON public.mkt_po_shipments
+  TO bizportal_finance_parent_lock_owner_dev;
 
 CREATE POLICY pr102_parent_po_select_dev ON public.mkt_purchase_orders
   FOR SELECT TO bizportal_finance_parent_lock_owner_dev
@@ -83,6 +86,18 @@ CREATE POLICY pr102_parent_po_update_dev ON public.mkt_purchase_orders
 CREATE POLICY pr102_parent_shipment_select_dev ON public.mkt_po_shipments
   FOR SELECT TO bizportal_finance_parent_lock_owner_dev
   USING(EXISTS(
+    SELECT 1 FROM public.mkt_purchase_orders po
+    WHERE po.id=mkt_po_shipments.po_id
+      AND po.company_id=nullif(current_setting('app.marketplace_company_id',true),'')::integer
+  ));
+CREATE POLICY pr103_parent_shipment_update_dev ON public.mkt_po_shipments
+  FOR UPDATE TO bizportal_finance_parent_lock_owner_dev
+  USING(EXISTS(
+    SELECT 1 FROM public.mkt_purchase_orders po
+    WHERE po.id=mkt_po_shipments.po_id
+      AND po.company_id=nullif(current_setting('app.marketplace_company_id',true),'')::integer
+  ))
+  WITH CHECK(EXISTS(
     SELECT 1 FROM public.mkt_purchase_orders po
     WHERE po.id=mkt_po_shipments.po_id
       AND po.company_id=nullif(current_setting('app.marketplace_company_id',true),'')::integer
@@ -137,6 +152,12 @@ BEGIN
     WHERE gr.id=p_gr_id AND sh.po_id=p_po_id
     FOR UPDATE OF gr;
   IF NOT FOUND THEN RETURN FALSE; END IF;
+  -- Shipment must stay unchanged while its invoice is created.
+  PERFORM 1 FROM public.mkt_po_shipments sh
+    INNER JOIN public.mkt_po_goods_receipts gr ON gr.shipment_id=sh.id
+    WHERE gr.id=p_gr_id AND sh.po_id=p_po_id
+    FOR UPDATE OF sh;
+  IF NOT FOUND THEN RETURN FALSE; END IF;
   RETURN TRUE;
 END
 $body$;
@@ -161,6 +182,7 @@ BEGIN
     OR has_function_privilege('authenticated','finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text)','EXECUTE')
     OR has_any_column_privilege('bizportal_marketplace_finance_login_dev','public.mkt_purchase_orders','UPDATE')
     OR has_any_column_privilege('bizportal_marketplace_finance_login_dev','public.mkt_po_goods_receipts','UPDATE')
+    OR has_any_column_privilege('bizportal_marketplace_finance_login_dev','public.mkt_po_shipments','UPDATE')
   THEN
     RAISE EXCEPTION 'PR102_PRIVATE_FUNCTION_SECURITY_POSTFLIGHT_FAILED';
   END IF;

@@ -21,6 +21,14 @@ export const vendorParentLockFunctionSql = String.raw`CREATE FUNCTION finance_op
         WHERE gr.id=p_gr_id AND sh.po_id=p_po_id
         FOR UPDATE OF gr;
       IF NOT FOUND THEN RETURN FALSE; END IF;
+      -- Lock Shipment after PO and GR: an unrelated Shipment writer must not
+      -- invalidate delivered status while the Vendor Invoice is being created.
+      -- GR is already locked, so its shipment_id cannot be switched mid-lock.
+      PERFORM 1 FROM public.mkt_po_shipments sh
+        INNER JOIN public.mkt_po_goods_receipts gr ON gr.shipment_id=sh.id
+        WHERE gr.id=p_gr_id AND sh.po_id=p_po_id
+        FOR UPDATE OF sh;
+      IF NOT FOUND THEN RETURN FALSE; END IF;
       RETURN TRUE;
     END;
     $func$`;
