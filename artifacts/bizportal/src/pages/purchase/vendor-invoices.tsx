@@ -669,9 +669,11 @@ export function VendorInvoicesListPage() {
                               </Button>
                             )}
                             {(vi.status === "posted" || vi.status === "matched") && outstandingNetPayment(vi) > 0.01 && (
-                              <Link href={`/accounting/bank-disbursements?mode=vendor_invoice&invoiceIds=${vi.id}`}>
+                              // List rows do not include historical reversal/orphan evidence.
+                              // Always review the full invoice detail before creating a disbursement.
+                              <Link href={`/purchase/vendor-invoices/${vi.id}`}>
                                 <Button size="sm" variant="outline" className="h-7 px-2 text-xs gap-1 text-orange-600 border-orange-300 hover:bg-orange-50">
-                                  <Banknote className="h-3 w-3" />Bayar
+                                  <Eye className="h-3 w-3" />Periksa sebelum bayar
                                 </Button>
                               </Link>
                             )}
