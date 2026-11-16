@@ -70,10 +70,12 @@ import * as schema from "@workspace/db";
 import authRouter from "./local-production-auth";
 import financeRouter from "./dev-marketplace-finance-writer";
 const quote = (s: string) => '"' + s.replace(/"/g, '""') + '"';
-const tables = [schema.mktPurchaseOrdersTable, schema.mktPoShipmentsTable,
-  schema.mktPoGoodsReceiptsTable, schema.vendorInvoicesTable,
-  schema.vendorInvoiceLinesTable, schema.mktApPreparationsTable,
-  schema.paymentRequestsTable, schema.mktAccountingHandoffsTable];
+const tables = [schema.mktPurchaseOrdersTable, schema.mktPurchaseOrderLinesTable,
+  schema.mktPoShipmentsTable, schema.mktPoShipmentItemsTable,
+  schema.mktPoGoodsReceiptsTable, schema.mktPoGoodsReceiptItemsTable,
+  schema.vendorInvoicesTable, schema.vendorInvoiceLinesTable,
+  schema.mktApPreparationsTable, schema.paymentRequestsTable,
+  schema.mktAccountingHandoffsTable];
 function typeFor(raw: string) {
   if (["mkt_po_status","vi_status","mkt_ap_preparation_status","pay_req_status"].includes(raw)) return "text";
   if (/^(serial|integer|numeric|text|timestamp|date|boolean|jsonb|varchar|uuid|double precision)/i.test(raw)) return raw;
@@ -159,34 +161,43 @@ describe.skipIf(!enabled)("PR81 signed HTTP Finance Writer over disposable Postg
     if (!auditSql.includes("PR81_FINANCE_AUDIT_POLICY_PRECONDITION_FAILED") ||
         !auditSql.trimEnd().endsWith("COMMIT;")) throw new Error("UNVERIFIED_AUDIT_SOURCE");
     await root.query(auditSql);
+    // Reuse exactly the source-defined 16+2 Finance policies and grants,
+    // instead of inventing broad or unscoped test-only visibility.
+    const baseFinanceSource = readFileSync(resolve(process.cwd(),
+      "../../scripts/sql/20261115_marketplace_finance_dev_least_privilege.sql"), "utf8");
+    const invoiceInsertSource = readFileSync(resolve(process.cwd(),
+      "../../scripts/sql/20261115_marketplace_finance_vendor_insert_dev.sql"), "utf8");
+    const stagedCorrections = readFileSync(resolve(process.cwd(),
+      "../../scripts/sql/20261115_marketplace_finance_relation_guards_STAGED.sql"), "utf8");
+    const grantStatements = [baseFinanceSource, invoiceInsertSource]
+      .flatMap(source => source.match(/^GRANT[\s\S]*?;/gm) ?? []);
+    const policyStatements = [baseFinanceSource, invoiceInsertSource]
+      .flatMap(source => source.match(/^CREATE POLICY[\s\S]*?;/gm) ?? []);
+    if (grantStatements.length !== 9 || policyStatements.length !== 18)
+      throw new Error("FINANCE_CI_SOURCE_GRANT_OR_POLICY_DRIFT");
     for (const t of tables) {
-      const name = getTableConfig(t).name;
-      await root.query("ALTER TABLE public." + quote(name) + " ENABLE ROW LEVEL SECURITY");
-      await root.query("GRANT SELECT ON public." + quote(name) + " TO " + FIN_ROLE);
+      await root.query("ALTER TABLE public." + quote(getTableConfig(t).name) + " ENABLE ROW LEVEL SECURITY");
     }
-    await root.query("GRANT INSERT ON public.mkt_ap_preparations TO " + FIN_ROLE);
-    // Mirror CST-DEV's existing column-scoped UPDATE grants, not broad table UPDATE.
-    await root.query("GRANT UPDATE(preparation_number,status,finance_reviewed_by,finance_reviewed_at,waiting_payment_at,updated_at,payment_request_id,payment_handoff_at,payment_handoff_by) ON public.mkt_ap_preparations TO " + FIN_ROLE);
-    await root.query("GRANT UPDATE(status,three_way_match_status,match_notes,updated_at) ON public.vendor_invoices TO " + FIN_ROLE);
-    await root.query("GRANT INSERT ON public.payment_requests,public.mkt_accounting_handoffs TO " + FIN_ROLE);
-    await root.query("GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO " + FIN_ROLE);
-    const scope = "nullif(current_setting('app.marketplace_company_id',true),'')::integer";
-    for (const name of ["mkt_purchase_orders","vendor_invoices","mkt_ap_preparations","payment_requests","mkt_accounting_handoffs"])
-      await root.query("CREATE POLICY ci_select ON public." + name +
-        " FOR SELECT TO " + FIN_ROLE + " USING (company_id=" + scope + ")");
-    for (const name of ["mkt_po_shipments","mkt_po_goods_receipts","vendor_invoice_lines"])
-      await root.query("CREATE POLICY ci_select ON public." + name +
-        " FOR SELECT TO " + FIN_ROLE + " USING (true)");
-    await root.query("CREATE POLICY ci_invoice_update ON public.vendor_invoices FOR UPDATE TO " + FIN_ROLE +
-      " USING (company_id=" + scope + ") WITH CHECK (company_id=" + scope + ")");
-    await root.query("CREATE POLICY ci_ap_insert ON public.mkt_ap_preparations FOR INSERT TO " + FIN_ROLE +
-      " WITH CHECK (company_id=" + scope + " AND status='ap_preparation')");
-    await root.query("CREATE POLICY ci_ap_update ON public.mkt_ap_preparations FOR UPDATE TO " + FIN_ROLE +
-      " USING (company_id=" + scope + ") WITH CHECK (company_id=" + scope + ")");
-    await root.query("CREATE POLICY ci_pr_insert ON public.payment_requests FOR INSERT TO " + FIN_ROLE +
-      " WITH CHECK (company_id=" + scope + " AND status='draft' AND source_type='marketplace_ap' AND journal_entry_id IS NULL)");
-    await root.query("CREATE POLICY ci_handoff_insert ON public.mkt_accounting_handoffs FOR INSERT TO " + FIN_ROLE +
-      " WITH CHECK (company_id=" + scope + " AND accounting_status='draft_not_posted')");
+    for (const statement of grantStatements) await root.query(statement);
+    for (const statement of policyStatements) await root.query(statement);
+    // Current CST-DEV has three qualified parent-company RLS corrections.
+    // The existing staged SQL documents those exact corrections; only the
+    // AP enum cast is translated to text for this minimal disposable schema.
+    const beginCorrection = stagedCorrections.indexOf("-- ALTER POLICY pr50_finance_dev_ap_insert");
+    const endCorrection = stagedCorrections.indexOf("-- PRECONDITIONS:", beginCorrection);
+    if (beginCorrection < 0 || endCorrection < 0)
+      throw new Error("FINANCE_CI_PARENT_COMPANY_POLICY_SOURCE_MISSING");
+    const corrections = stagedCorrections.slice(beginCorrection, endCorrection)
+      .split("\n").map(line => line.replace(/^-- ?/, "")).join("\n")
+      .replaceAll("::public.mkt_ap_preparation_status", "::text")
+      .match(/ALTER POLICY[\s\S]*?;/g) ?? [];
+    if (corrections.length !== 3 || corrections.some(x => !x.includes(".company_id")))
+      throw new Error("FINANCE_CI_PARENT_COMPANY_POLICY_DRIFT");
+    for (const statement of corrections) await root.query(statement);
+    const exactNames = (await root.query(
+      "SELECT policyname FROM pg_policies WHERE schemaname='public' AND policyname LIKE 'pr50_finance_dev_%'"
+    )).rows;
+    if (exactNames.length !== 18) throw new Error("FINANCE_CI_ROLE_POLICIES_NOT_18");
     await root.query("INSERT INTO public.companies VALUES(1,true),(3,true)");
     await root.query("INSERT INTO public.users VALUES($1,$2,$3,'super_admin','active',true,NULL)",
       ["ci-finance-admin", EMAIL, await hash(PASSWORD, 4)]);
