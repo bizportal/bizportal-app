@@ -20,7 +20,18 @@ any PROD database account.
 
 Both sources must not be configured simultaneously. The Finance URL must
 identify Supabase **CST-DEV**, authenticate as the dedicated Finance role,
-and include TLS (`sslmode=require`, `verify-ca`, or `verify-full`).
+and explicitly require CA and hostname verification using
+sslmode=verify-full with sslrootcert=/absolute/path/to/cst-dev-supabase-ca.crt.
+The CA must be the genuine project-specific certificate downloaded from the
+CST-DEV Supabase Dashboard (Database > Settings > SSL Configuration),
+installed securely on the real DEV host. Do not trust a certificate copied
+only from an unverified TLS connection or disable rejectUnauthorized.
+sslmode=require, verify-ca, a missing CA, relative CA paths, duplicate
+TLS parameters and all extra URL query keys (especially host/user/ssl
+overrides) now fail closed. Node-postgres v8 currently aliases require to
+verify-full, but
+pg-connection-string explicitly warns this becomes weaker in v3.
+No CA file has been installed in active Hostinger by this source change.
 Any missing, conflicting, wrong-role, PROD, or invalid configuration fails
 closed. Generic application-wide secrets are explicitly rejected.
 
@@ -44,10 +55,28 @@ service restart. No fallback to `SUPABASE_DATABASE_URL_DEV` or
    Secret Accessor permissions for the intended isolated server identity.
    Confirm the server has the existing GCP bootstrap credentials.
 3. From an isolated **DEV-only** candidate, perform a single, direct,
-   TLS-protected read-only login with the Finance role. Verify
-   `current_user`, `session_user`, and `row_security_active` against
-   CST-DEV. Do not run this test through the privileged connection's
-   `SET ROLE` shortcut.
+   TLS-protected read-only login with the Finance role. Use the checked-in
+   `scripts/dev-finance-direct-readonly-probe.sh` (separate process, not
+   the active service) after installing the secret and approved GCP IAM.
+   For example, with a shell whose authorized GCP bootstrap is already
+   configured, execute:
+
+   ```bash
+   APP_ENV=development \
+   PR50_FINANCE_READONLY_PROBE=true \
+   BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV=true \
+   BIZPORTAL_MARKETPLACE_FINANCE_GCP_SECRET_NAME_DEV=bizportal-marketplace-finance-dev \
+   bash scripts/dev-finance-direct-readonly-probe.sh
+   ```
+
+   The tool verifies `current_user`, `session_user`, real TLS from
+   `pg_stat_ssl`, `row_security_active` on 11 Finance tables and
+   read-only tenant-1/tenant-3 probes. Missing credentials and an unbound
+   company fail closed, with no financial writes or secret output.
+   A successful direct probe prints `FINANCE_DIRECT_TLS_RLS_READONLY_PASS=true`.
+   The script temporarily compiles into the existing `lib/db` workspace,
+   then removes its compilation artifact. It **does not** use privileged
+   `SET ROLE` and never enables the active service.
 4. Verify signed Super Admin OTP, trusted company binding and negative
    cross-tenant requests. Feature flags remain OFF on the live service.
 5. Only then exercise the existing canonical Vendor Invoice → 3-way match

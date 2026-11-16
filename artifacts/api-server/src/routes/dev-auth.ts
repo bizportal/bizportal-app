@@ -74,7 +74,32 @@ export function isSignedOtpDevEnabled(): boolean {
   return process.env.APP_ENV?.trim().toLowerCase() === "development"
     && isDevelopmentEnvironment()
     && process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV === "true"
+    && process.env.BIZPORTAL_SIGNED_PASSWORD_ENABLED_DEV !== "true"
     && getExplicitSessionSecret() !== null;
+}
+
+/** Explicit opt-in for using the pre-existing Super Admin password in DEV.
+ * This is an application session gate, never a PostgreSQL password.
+ */
+export function isSignedPasswordDevEnabled(): boolean {
+  return process.env.APP_ENV?.trim().toLowerCase() === "development"
+    && isDevelopmentEnvironment()
+    && process.env.BIZPORTAL_SIGNED_PASSWORD_ENABLED_DEV === "true"
+    && process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV !== "true"
+    && getExplicitSessionSecret() !== null
+    && Boolean(process.env.BIZPORTAL_SIGNED_PASSWORD_ACCOUNT_ID_DEV?.trim())
+    && Boolean(process.env.BIZPORTAL_SIGNED_PASSWORD_ACCOUNT_EMAIL_DEV?.trim());
+}
+
+function isSignedDevAuthRequested(): boolean {
+  return isDevelopmentEnvironment() && (
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV === "true"
+    || process.env.BIZPORTAL_SIGNED_PASSWORD_ENABLED_DEV === "true"
+  );
+}
+
+export function isSignedDevAuthEnabled(): boolean {
+  return isSignedOtpDevEnabled() || isSignedPasswordDevEnabled();
 }
 
 export async function initializeProductionSessionSigning(): Promise<void> {
@@ -239,7 +264,9 @@ function decodeSignedCookie<T>(request: Request, cookieName: string): T | null {
 }
 
 export function getDevSession(request: Request): DevAuthUser | null {
-  if (!isDevelopmentEnvironment()) return null;
+  // Once signed DEV OTP is explicitly enabled, a legacy email-only cookie
+  // must never act as fallback authentication for protected routes.
+  if (!isDevelopmentEnvironment() || isSignedDevAuthRequested()) return null;
 
   const secret = getSessionSecret();
   const raw = getCookie(request, DEV_SESSION_COOKIE);
@@ -271,7 +298,7 @@ export function getDevSession(request: Request): DevAuthUser | null {
 }
 
 export function getProductionSession(request: Request): ProductionSession | null {
-  if (isDevelopmentEnvironment() && !isSignedOtpDevEnabled()) return null;
+  if (isDevelopmentEnvironment() && !isSignedDevAuthEnabled()) return null;
 
   const session = decodeSignedCookie<ProductionSession>(request, PRODUCTION_SESSION_COOKIE);
   if (
@@ -288,6 +315,92 @@ export function getProductionSession(request: Request): ProductionSession | null
     ...session,
     email: session.email.trim().toLowerCase(),
   };
+}
+
+/** DEV-only signed Finance company scope; never an authorization grant by itself. */
+const FINANCE_SCOPE_COOKIE = "bizportal_finance_company_scope";
+const FINANCE_SCOPE_TTL_MS = 30 * 60 * 1000;
+interface FinanceCompanyScope {
+  version: 1;
+  userId: string;
+  email: string;
+  sessionIssuedAt: number;
+  companyId: number;
+  expiresAt: number;
+}
+
+export function isFinanceGlobalScopeDevEnabled(): boolean {
+  return isSignedDevAuthEnabled()
+    && (process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV === "true"
+      || process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV === "true")
+    && process.env.BIZPORTAL_FINANCE_GLOBAL_SCOPE_ENABLED_DEV === "true";
+}
+
+export function isApprovedFinanceGlobalSuperAdmin(email: string): boolean {
+  if (!isFinanceGlobalScopeDevEnabled()) return false;
+  const normalized = email.trim().toLowerCase();
+  if (!normalized || !normalized.includes("@")) return false;
+  return (process.env.BIZPORTAL_FINANCE_GLOBAL_SUPERADMIN_EMAILS_DEV ?? "")
+    .split(",").some(value => value.trim().toLowerCase() === normalized);
+}
+
+export function isApprovedFinanceGlobalCompany(companyId: number): boolean {
+  if (!isFinanceGlobalScopeDevEnabled() || !Number.isSafeInteger(companyId) || companyId <= 0) {
+    return false;
+  }
+  return (process.env.BIZPORTAL_FINANCE_GLOBAL_COMPANY_IDS_DEV ?? "")
+    .split(",").some(value => /^[0-9]+$/.test(value.trim()) && Number(value.trim()) === companyId);
+}
+
+export function setFinanceCompanyScopeCookie(
+  response: Response, session: ProductionSession, companyId: number,
+): void {
+  if (!isApprovedFinanceGlobalCompany(companyId)) {
+    throw new Error("DEV_FINANCE_GLOBAL_SCOPE_DISABLED_OR_INVALID");
+  }
+  const secret = getExplicitSessionSecret();
+  if (!secret) throw new Error("DEV_FINANCE_SCOPE_SESSION_SECRET_MISSING");
+  const expiresAt = Math.min(session.expiresAt, Date.now() + FINANCE_SCOPE_TTL_MS);
+  if (expiresAt <= Date.now() || !Number.isFinite(session.issuedAt)) {
+    throw new Error("DEV_FINANCE_SCOPE_SESSION_INVALID");
+  }
+  const scope: FinanceCompanyScope = {
+    version: 1, userId: session.id, email: session.email.trim().toLowerCase(),
+    sessionIssuedAt: session.issuedAt, companyId, expiresAt,
+  };
+  const payload = encode(JSON.stringify(scope));
+  const value = payload + "." + sign("finance-company-scope:v1\n" + payload, secret);
+  const maxAge = Math.max(0, Math.floor((expiresAt - Date.now()) / 1000));
+  response.append("Set-Cookie",
+    FINANCE_SCOPE_COOKIE + "=" + value + "; Max-Age=" + maxAge
+    + "; Path=/api/mkt/admin; HttpOnly; Secure; SameSite=Strict");
+  response.setHeader("Cache-Control", "no-store");
+}
+
+export function getFinanceCompanyScope(request: Request, session: ProductionSession): number | null {
+  if (!isFinanceGlobalScopeDevEnabled() || session.expiresAt <= Date.now()) return null;
+  const secret = getExplicitSessionSecret();
+  const raw = getCookie(request, FINANCE_SCOPE_COOKIE);
+  if (!secret || !raw) return null;
+  const separator = raw.lastIndexOf(".");
+  if (separator <= 0) return null;
+  const payload = raw.slice(0, separator);
+  if (!safeEqual(sign("finance-company-scope:v1\n" + payload, secret), raw.slice(separator + 1))) {
+    return null;
+  }
+  try {
+    const scope = JSON.parse(decode(payload)) as FinanceCompanyScope;
+    if (scope?.version !== 1 || scope.userId !== session.id
+      || scope.email !== session.email.trim().toLowerCase()
+      || scope.sessionIssuedAt !== session.issuedAt
+      || !isApprovedFinanceGlobalCompany(scope.companyId)
+      || typeof scope.expiresAt !== "number" || scope.expiresAt <= Date.now()
+      || scope.expiresAt > session.expiresAt
+      || scope.expiresAt > Date.now() + FINANCE_SCOPE_TTL_MS) return null;
+    return scope.companyId;
+  } catch {
+    return null;
+  }
 }
 
 function getSupabaseConfig(): { url: string; anonKey: string } | null {
@@ -347,7 +460,11 @@ async function verifySupabaseAccessToken(accessToken: string): Promise<{
 }
 
 export async function getProductionUser(session: ProductionSession): Promise<DevAuthUser | null> {
-  const signedOtpDev = isSignedOtpDevEnabled();
+  const signedOtpDev = isSignedDevAuthEnabled();
+  if (isSignedPasswordDevEnabled() && (
+    session.id !== process.env.BIZPORTAL_SIGNED_PASSWORD_ACCOUNT_ID_DEV?.trim()
+    || session.email !== process.env.BIZPORTAL_SIGNED_PASSWORD_ACCOUNT_EMAIL_DEV?.trim().toLowerCase()
+  )) return null;
   // Only DEV signed OTP pins the lookup to the signed account ID as well as
   // email. Duplicate case-insensitive emails must not select a different role.
   // Preserve the existing email-only PROD lookup unchanged.
@@ -356,6 +473,13 @@ export async function getProductionUser(session: ProductionSession): Promise<Dev
       `select to_jsonb(u) user_data
        from public.users u
        where u.id = $1 and lower(coalesce(to_jsonb(u)->>'email', '')) = $2
+         and u.is_active = true
+         and not exists (
+           select 1 from public.users dupe
+            where dupe.id <> u.id
+              and lower(coalesce(to_jsonb(dupe)->>'email', '')) = $2
+              and dupe.is_active = true
+         )
        limit 1`,
       [session.id, session.email],
     )
@@ -366,6 +490,9 @@ export async function getProductionUser(session: ProductionSession): Promise<Dev
        limit 1`,
       [session.email],
     );
+  // Pinned signed ID and email must identify one active account; historical
+  // inactive email shadows are ignored but competing active accounts deny OTP.
+  if (signedOtpDev && result.rows.length !== 1) return null;
   const userData = result.rows[0]?.user_data;
   if (!userData) return null;
   // Revalidate active account state on every authenticated request. A signed
@@ -401,6 +528,15 @@ export async function getProductionUser(session: ProductionSession): Promise<Dev
   const parsedCompanyId = rawCompanyId === null || rawCompanyId === undefined
     ? null
     : Number(rawCompanyId);
+  // A password-authenticated DEV global Super Admin must lose access as soon
+  // as its role, active status or global company scope is changed. Recheck on
+  // every protected request rather than trusting the original signed cookie.
+  if (isSignedPasswordDevEnabled() && (
+    role !== "super_admin"
+    || accountStatus !== "active"
+    || userData.is_active !== true
+    || parsedCompanyId !== null
+  )) return null;
   return {
     id: session.id,
     email,
@@ -473,12 +609,19 @@ export function createDevAuthRouter(): Router {
   });
 
   router.get("/auth/dev-users", (_request, response) => {
-    if (!isDevelopmentEnvironment()) return response.status(404).json({ error: "Not found" });
+    // DEV-only identity enumeration is not part of signed OTP auth.
+    if (!isDevelopmentEnvironment() || isSignedDevAuthRequested()) {
+      return response.status(404).json({ error: "Not found" });
+    }
     return response.json({ users: getDevUsers() });
   });
 
   router.post("/auth/dev-login", async (request, response) => {
-    if (!isDevelopmentEnvironment()) return response.status(404).json({ error: "Not found" });
+    // Never issue an email-only DEV session when signed OTP is required.
+    // Legacy local/test login remains unchanged while OTP is OFF.
+    if (!isDevelopmentEnvironment() || isSignedDevAuthRequested()) {
+      return response.status(404).json({ error: "Not found" });
+    }
 
     const email =
       typeof request.body?.email === "string"
@@ -538,7 +681,7 @@ export function createDevAuthRouter(): Router {
     }
 
     // When OTP is enabled, prefer its verified identity over a legacy cookie.
-    if (isSignedOtpDevEnabled()) {
+    if (isSignedDevAuthEnabled()) {
       const signed = getProductionSession(request);
       if (signed) {
         try {
@@ -568,7 +711,7 @@ export function createDevAuthRouter(): Router {
     if (!isDevelopmentEnvironment()) return next();
 
     let user: DevAuthUser | null = null;
-    if (isSignedOtpDevEnabled()) {
+    if (isSignedDevAuthEnabled()) {
       const signed = getProductionSession(request);
       if (signed) {
         try {

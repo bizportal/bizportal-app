@@ -38,7 +38,8 @@ export async function resolveMarketplaceFinanceDevDatabaseUrl(
   secretReader: (secretName: string) => Promise<string> = readSecret,
 ): Promise<string> {
   if (process.env.APP_ENV?.trim().toLowerCase() !== "development" ||
-      process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV !== "true") {
+      (process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV !== "true" &&
+       process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV !== "true")) {
     throw new Error("DEV_FINANCE_DISABLED");
   }
   const direct = process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV?.trim();
@@ -70,8 +71,27 @@ export async function resolveMarketplaceFinanceDevDatabaseUrl(
   const trustedUser = username === EXPECTED_ROLE ||
     username === `${EXPECTED_ROLE}.${EXPECTED_PROJECT}`;
   const projectBound = hostname.includes(EXPECTED_PROJECT) || username.includes(EXPECTED_PROJECT);
-  if (!["require", "verify-ca", "verify-full"].includes(url.searchParams.get("sslmode") ?? "")) {
+  const sslmode = url.searchParams.get("sslmode");
+  if (!sslmode) {
     throw new Error("DEV_FINANCE_DATABASE_SSL_REQUIRED");
+  }
+  // pg-connection-string uses the LAST duplicate query parameter, whereas
+  // URLSearchParams.get() returns the FIRST. Query params such as host, user,
+  // sslmode or ssl can override validated authority/role or disable TLS.
+  // Finance needs only these two SSL parameters; reject every extra key and
+  // both duplicates BEFORE passing the unchanged URL to pg.Pool.
+  const allowedParams = new Set(["sslmode", "sslrootcert"]);
+  if ([...url.searchParams.keys()].some(key => !allowedParams.has(key)) ||
+      url.searchParams.getAll("sslmode").length !== 1 ||
+      url.searchParams.getAll("sslrootcert").length > 1) {
+    throw new Error("DEV_FINANCE_DATABASE_QUERY_PARAMS_INVALID");
+  }
+  // pg-connection-string v2 currently treats sslmode=require and verify-ca
+  // as aliases for verify-full; its v3/libpq semantics do not. Require CA
+  // and hostname verification explicitly to prevent dependency downgrade.
+  const sslrootcert = url.searchParams.get("sslrootcert");
+  if (sslmode !== "verify-full" || !sslrootcert?.startsWith("/")) {
+    throw new Error("DEV_FINANCE_DATABASE_VERIFIED_CA_REQUIRED");
   }
   if (!["postgres:", "postgresql:"].includes(url.protocol) ||
       !trustedHost || !trustedUser || !projectBound || !url.password ||
@@ -144,13 +164,22 @@ async function getFinanceDb(): Promise<FinanceDatabase> {
  */
 export async function withMarketplaceFinanceDevTransaction<T>(
   companyId: number, work: (session: ScopedDb) => Promise<T>,
+  options: { readOnly?: boolean } = {},
 ): Promise<T> {
+  // A previously initialized Finance pool is not a grant to write. The
+  // independent read-only feature must never activate the writer helper.
+  if (options.readOnly !== true
+      && process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV !== "true") {
+    throw new Error("DEV_FINANCE_WRITER_DISABLED");
+  }
   if (!Number.isSafeInteger(companyId) || companyId <= 0) {
     throw new Error("DEV_FINANCE_COMPANY_INVALID");
   }
   const finance = await getFinanceDb();
   const afterCommit: PostCommitAction[] = [];
   const result = await finance.transaction(async (tx) => {
+    // Enforce PostgreSQL READ ONLY before the first query on this transaction.
+    if (options.readOnly === true) await tx.execute(sql`SET TRANSACTION READ ONLY`);
     pendingAfterCommit.set(tx, afterCommit);
     try {
     const identity = await tx.execute(sql`
@@ -186,7 +215,11 @@ export async function withMarketplaceFinanceDevTransaction<T>(
     if (bound.rows[0]?.company_id !== String(companyId)) {
       throw new Error("DEV_FINANCE_TENANT_BINDING_FAILED");
     }
-    return await work(tx as unknown as ScopedDb);
+    const value = await work(tx as unknown as ScopedDb);
+    if (options.readOnly === true && afterCommit.length > 0) {
+      throw new Error("DEV_FINANCE_READ_ONLY_SIDE_EFFECT_DENIED");
+    }
+    return value;
     } finally {
       pendingAfterCommit.delete(tx);
     }
@@ -194,4 +227,11 @@ export async function withMarketplaceFinanceDevTransaction<T>(
   // No audit or external notification is sent after a failed/rolled-back commit.
   for (const action of afterCommit) await action();
   return result;
+}
+
+/** Existing verified TLS/role/RLS transaction, forced read-only at PostgreSQL. */
+export function withMarketplaceFinanceDevReadOnlyTransaction<T>(
+  companyId: number, work: (session: ScopedDb) => Promise<T>,
+): Promise<T> {
+  return withMarketplaceFinanceDevTransaction(companyId, work, { readOnly: true });
 }

@@ -57,6 +57,29 @@ function isSupportingTaxAttachment(fileName: string): boolean {
   return /^fk(?:[\s_.-]|$)/i.test(fileName.trim());
 }
 
+// A payment slip/remittance confirms or reports a payment; the email subject
+// alone must never authorize a payable Vendor Invoice, even when OCR finds an
+// embedded invoice number and a positive amount. Preserve manual review.
+export function isPaymentEvidenceSubject(subject: string | null | undefined): boolean {
+  const normalized = (subject ?? "")
+    .toLowerCase()
+    .replace(/[._/-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return /(?:^| )(?:payment slip|payment advice|remittance advice|bukti transfer|bukti pembayaran|konfirmasi pembayaran)(?: |$)/.test(normalized);
+}
+
+export function classifyGmailVendorCandidate(input: {
+  subject: string | null;
+  hasDuplicate: boolean;
+  hasCoreFields: boolean;
+  confidence: number;
+}): "duplicate" | "ready" | "manual_review" {
+  if (input.hasDuplicate) return "duplicate";
+  if (isPaymentEvidenceSubject(input.subject)) return "manual_review";
+  return input.hasCoreFields && input.confidence >= 0.65 ? "ready" : "manual_review";
+}
+
 // A circular accompanying billing is not a payable invoice.
 function isSukmaBillingNotice(fileName: string): boolean {
   return /^(?:edaran|surat[\s_.-]+edaran)(?:[\s_.-]|$)/i.test(fileName.trim());
@@ -342,11 +365,12 @@ async function processAttachment(args: {
         extraction.total_amount > 0,
     );
 
-    const status = existingInvoice.rows[0]
-      ? "duplicate"
-      : hasCoreFields && extraction.confidence >= 0.65
-        ? "ready"
-        : "manual_review";
+    const status = classifyGmailVendorCandidate({
+      subject: args.message.subject,
+      hasDuplicate: Boolean(existingInvoice.rows[0]),
+      hasCoreFields,
+      confidence: extraction.confidence,
+    });
 
     await pool.query(
       `update public.gmail_invoice_candidates
@@ -384,7 +408,9 @@ async function processAttachment(args: {
         status,
         existingInvoice.rows[0]?.id ?? null,
         status === "manual_review"
-          ? "Data inti invoice belum lengkap atau confidence di bawah 65%"
+          ? isPaymentEvidenceSubject(args.message.subject)
+            ? "Subjek email berupa bukti pembayaran, bukan invoice vendor; wajib review Finance."
+            : "Data inti invoice belum lengkap atau confidence di bawah 65%"
           : status === "duplicate"
             ? "Nomor invoice vendor sudah tersimpan"
             : null,
@@ -621,6 +647,26 @@ export async function importGmailInvoiceCandidate(args: {
       throw Object.assign(
         new Error("OCR kandidat belum selesai."),
         { status: 409 },
+      );
+    }
+
+    // Revalidate persisted source evidence inside the final transaction. This
+    // also blocks payment-slip rows marked 'ready' by an older DEV runtime.
+    if (isPaymentEvidenceSubject(candidate.subject)) {
+      throw Object.assign(
+        new Error("Bukti pembayaran tidak boleh diimpor sebagai invoice vendor; periksa sebagai AR/Finance."),
+        { status: 409, code: "GMAIL_PAYMENT_EVIDENCE_NOT_PAYABLE" },
+      );
+    }
+
+    // The frontend only offers Import for 'ready' candidates. Enforce the
+    // same rule in the transactional writer: supporting Faktur Pajak,
+    // manual-review and other non-ready records must never be promoted by a
+    // direct API request. Existing imported rows remain idempotent above.
+    if (candidate.status !== "ready") {
+      throw Object.assign(
+        new Error("Hanya kandidat invoice berstatus siap yang dapat dibuat menjadi draft Vendor Invoice."),
+        { status: 409, code: "GMAIL_CANDIDATE_NOT_READY" },
       );
     }
 

@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
 import { pool } from "@workspace/db";
 import { authenticateAdmin, type AdminRequest } from "./admin-auth";
+import { getProductionSession, isDevelopmentEnvironment, isSignedDevAuthEnabled } from "./dev-auth";
 
 const router: IRouter = Router();
 
@@ -19,7 +20,33 @@ router.use(authenticateAdmin);
 
 router.get("/sales/ai-drafts", async (request, response): Promise<void> => {
   const adminRequest = request as AdminRequest;
-  const companyId = adminRequest.adminUser?.companyId ?? null;
+  const actor = adminRequest.adminUser;
+  const assignedCompanyId = actor?.companyId;
+  const companyId = Number.isSafeInteger(assignedCompanyId) &&
+    Number(assignedCompanyId) > 0 ? Number(assignedCompanyId) : null;
+  // A non-global actor with no verified company must not turn the SQL's
+  // optional company filter into an all-company read.
+  const isGlobalActor = ["super_admin", "owner"].includes(actor?.role?.toLowerCase() ?? "");
+  if (companyId === null && !isGlobalActor) {
+    response.status(403).json({
+      error: "Pilih perusahaan yang sesuai dengan hak akses.",
+      code: "COMPANY_SCOPE_REQUIRED",
+    });
+    return;
+  }
+  // A legacy DEV cookie can still be accepted by the shared Admin middleware
+  // during the OTP opt-in transition. It must not authorize global Sales reads
+  // when signed OTP is explicitly enabled. The middleware already DB-verifies
+  // a present signed session before letting this route run.
+  if (companyId === null && isGlobalActor &&
+      isDevelopmentEnvironment() && isSignedDevAuthEnabled() &&
+      !getProductionSession(request)) {
+    response.status(403).json({
+      error: "Akses lintas perusahaan membutuhkan sesi Admin terverifikasi.",
+      code: "SIGNED_GLOBAL_ADMIN_REQUIRED",
+    });
+    return;
+  }
 
   try {
     const result = await pool.query<{

@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useCompany } from "@/contexts/CompanyContext";
+import { FinanceCompanyScopeCard } from "./FinanceCompanyScopeCard";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Plus, Trash2, Eye, ChevronLeft, ChevronRight, Send, CheckCircle, FileText, Bot, Banknote, RotateCcw, RefreshCw, Wrench, Split } from "lucide-react";
 import { toast } from "sonner";
@@ -212,6 +213,8 @@ function parseVendorInvoicePage(payload: unknown): VendorInvoicePage {
 }
 
 export function VendorInvoicesListPage() {
+  // Only the isolated GET-only preview hides legacy invoice writer UI and routes.
+  const isFinanceReadOnlyPreview = import.meta.env.VITE_BIZPORTAL_FINANCE_READONLY_PREVIEW_DEV === "true";
   const { activeCompanyId, isLoading: isCompanyLoading, refetch: refetchCompanies } = useCompany();
   const qcClient = useQueryClient();
   const [page, setPage] = useState(1);
@@ -242,7 +245,7 @@ export function VendorInvoicesListPage() {
       }
       return parseVendorInvoicePage(payload);
     },
-    enabled: activeCompanyId != null,
+    enabled: !isFinanceReadOnlyPreview && activeCompanyId != null,
   });
   const vis = invoicePage?.data ?? [];
   const { data: repairQueue = [], isLoading: repairQueueLoading } = useQuery<LegacyRepairQueueItem[]>({
@@ -258,7 +261,7 @@ export function VendorInvoicesListPage() {
       }
       return payload.data as LegacyRepairQueueItem[];
     },
-    enabled: activeCompanyId != null,
+    enabled: !isFinanceReadOnlyPreview && activeCompanyId != null,
   });
   const { data: repairPreview, isLoading: repairPreviewLoading } = useQuery<LegacyRepairPreview>({
     queryKey: ["/api/purchase-workflow/vendor-invoices/legacy-withholding-repair", repairInvoiceId, activeCompanyId],
@@ -270,7 +273,7 @@ export function VendorInvoicesListPage() {
       if (!response.ok) throw new Error(formatPostingError(payload, "Preview perbaikan PPh gagal dimuat."));
       return payload as LegacyRepairPreview;
     },
-    enabled: repairInvoiceId != null && activeCompanyId != null,
+    enabled: !isFinanceReadOnlyPreview && repairInvoiceId != null && activeCompanyId != null,
   });
   const { data: repairAccounts = [] } = useQuery<LiabilityAccount[]>({
     queryKey: ["/api/purchase-workflow/vendor-invoices/liability-accounts", activeCompanyId],
@@ -280,7 +283,7 @@ export function VendorInvoicesListPage() {
       if (!response.ok || !Array.isArray(payload)) throw new Error("Akun liabilitas gagal dimuat.");
       return payload as LiabilityAccount[];
     },
-    enabled: repairInvoiceId != null && activeCompanyId != null,
+    enabled: !isFinanceReadOnlyPreview && repairInvoiceId != null && activeCompanyId != null,
   });
   const totalPages = Math.max(1, Math.ceil((invoicePage?.total ?? 0) / pageSize));
 
@@ -393,18 +396,54 @@ export function VendorInvoicesListPage() {
             <h1 className="text-2xl font-bold">Vendor Invoice (AP)</h1>
             <p className="text-sm text-muted-foreground">Pusat tagihan supplier & 3-way matching</p>
           </div>
-          <div className="flex gap-2 flex-wrap">
-            <Link href="/finance/recon-config?tab=invoice-sources"><Button variant="outline"><RefreshCw className="mr-2 h-4 w-4" />Sumber Gmail / Sync Now</Button></Link>
-            <Link href="/purchase/vendor-invoices/import"><Button variant="outline"><Bot className="mr-2 h-4 w-4 text-indigo-500" />Import via AI</Button></Link>
-            <Link href="/purchase/vendor-invoices/new"><Button variant="outline"><Plus className="mr-2 h-4 w-4" />Buat Invoice</Button></Link>
-            <Link href="/accounting/bank-disbursements?mode=vendor_invoice">
-              <Button className="bg-orange-600 hover:bg-orange-700 text-white gap-2">
-                <Banknote className="h-4 w-4" />Buat Bank Disbursement
-              </Button>
-            </Link>
-          </div>
+          {!isFinanceReadOnlyPreview && (
+            <div className="flex gap-2 flex-wrap">
+              <Link href="/finance/recon-config?tab=invoice-sources"><Button variant="outline"><RefreshCw className="mr-2 h-4 w-4" />Sumber Gmail / Sync Now</Button></Link>
+              <Link href="/purchase/vendor-invoices/import"><Button variant="outline"><Bot className="mr-2 h-4 w-4 text-indigo-500" />Import via AI</Button></Link>
+              <Link href="/purchase/vendor-invoices/new"><Button variant="outline"><Plus className="mr-2 h-4 w-4" />Buat Invoice</Button></Link>
+              <Link href="/accounting/bank-disbursements?mode=vendor_invoice">
+                <Button className="bg-orange-600 hover:bg-orange-700 text-white gap-2">
+                  <Banknote className="h-4 w-4" />Buat Bank Disbursement
+                </Button>
+              </Link>
+            </div>
+          )}
         </div>
 
+        {import.meta.env.VITE_BIZPORTAL_FINANCE_GLOBAL_SCOPE_UI_DEV === "true" && (
+          <FinanceCompanyScopeCard />
+        )}
+
+        {isFinanceReadOnlyPreview ? (
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <FileText className="h-5 w-5" /> Finance Reader — preview baca-saja
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              <p>
+                Daftar Vendor Invoice lama tidak dibuka dalam preview ini. Hanya pembacaan
+                invoice/AP canonical berdasarkan ID serta verifikasi perusahaan yang diizinkan.
+              </p>
+              <p className="text-muted-foreground">
+                Pilih satu perusahaan dan klik Verifikasi perusahaan Finance di atas.
+                Dokumen yang belum memiliki hubungan PO dan Goods Receipt tidak akan
+                ditampilkan oleh Finance Reader; ini bukan kegagalan memuat daftar.
+              </p>
+              <a
+                href="/finance-readonly-check.html"
+                className="inline-flex items-center rounded-md border px-3 py-2 font-medium hover:bg-muted"
+              >
+                Buka pengujian Finance Reader
+              </a>
+              <p className="text-muted-foreground">
+                Mode ini tidak mengaktifkan pembuatan invoice, pembayaran, atau posting jurnal.
+              </p>
+            </CardContent>
+          </Card>
+        ) : (
+          <>
         {/* Dialog konfirmasi hapus */}
         {confirmDeleteId !== null && confirmTarget && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
@@ -724,6 +763,8 @@ export function VendorInvoicesListPage() {
             )}
           </CardContent>
         </Card>
+          </>
+        )}
       </div>
     </AppShell>
   );

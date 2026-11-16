@@ -83,7 +83,7 @@ function resolve(company:Company,type:DocType,data:Record<string,unknown>={}):Re
 }
 type DocumentPreviewData = {
   number:string; date:string; recipient:string; reference:string;
-  lines:Array<{description:string;quantity:string;unit:string;price:string;subtotal:string}>;
+  lines:Array<{description:string;quantity:string;unit:string;price:string;subtotal:string;notes?:string}>;
   total:string;
 };
 function preview(type:DocType,template:Record<string,unknown>,transaction?:DocumentPreviewData):string{
@@ -117,8 +117,10 @@ function preview(type:DocType,template:Record<string,unknown>,transaction?:Docum
     "<section><small>Penerima</small>",esc(transaction?.recipient??"Diisi oleh modul transaksi"),"</section>",
     "<section><small>Referensi</small>",esc(transaction?.reference??"Diisi oleh modul transaksi"),"</section></div>",
     "<table><thead><tr>",...th.map(x=>"<th>"+esc(x)+"</th>"),"</tr></thead><tbody>",
-    ...(transaction?transaction.lines.map((line,i)=>"<tr><td>"+(i+1)+"</td><td>"+esc(line.description)+"</td><td>"+esc(line.quantity)+"</td><td>"+esc(line.price)+"</td><td>"+esc(line.subtotal)+"</td></tr>"):["<tr><td colspan='5'>Data asli akan dimasukkan oleh modul transaksi; preview tidak menerbitkan dokumen.</td></tr>"]),
-    "</tbody></table>",transaction?"<p style='text-align:right;font-weight:bold'>Total: "+esc(transaction.total)+"</p>":"",
+    ...(transaction?transaction.lines.map((line,i)=>freight
+      ?"<tr><td>"+(i+1)+"</td><td>"+esc(line.description)+"</td><td>"+esc(line.quantity)+"</td><td>"+esc(line.unit)+"</td><td>"+esc(line.notes??"")+"</td></tr>"
+      :"<tr><td>"+(i+1)+"</td><td>"+esc(line.description)+"</td><td>"+esc(line.quantity)+"</td><td>"+esc(line.price)+"</td><td>"+esc(line.subtotal)+"</td></tr>"):["<tr><td colspan='5'>Data asli akan dimasukkan oleh modul transaksi; preview tidak menerbitkan dokumen.</td></tr>"]),
+    "</tbody></table>",transaction&&!freight?"<p style='text-align:right;font-weight:bold'>Total: "+esc(transaction.total)+"</p>":"",
     "<footer>",esc(template.footerText),"</footer>",
     "<p class='noprint'><button onclick='window.print()'>Cetak / Simpan PDF</button></p></body></html>",
   ].join("");
@@ -273,6 +275,88 @@ router.get("/settings/documents/po/transaction-preview/:id",async(req,res)=>{
   }catch(error){
     (req as AdminRequest).log?.error?.({error},"PO preview unavailable");
     res.status(503).json({error:"Pratinjau PO belum tersedia."});
+  }
+});
+// Read-only A4 transaction adapter for the *existing* Marketplace shipment.
+// DO / Manifest / Packing List reuse the same template renderer and only
+// expose a shipment belonging to the verified Admin company.
+// No issued documents, GL postings, or PDF binary are created here.
+router.get("/settings/documents/:type/transaction-preview/:id",async(req,res)=>{
+  const type=req.params.type;
+  if(type!=="delivery_note"&&type!=="manifest"&&type!=="packing_list"){
+    res.status(404).json({error:"Jenis dokumen tidak didukung oleh shipment preview."});return;
+  }
+  const c=res.locals.documentCompany as Company;
+  const id=Number(req.params.id);
+  if(!Number.isSafeInteger(id)||id<=0){res.status(400).json({error:"Invalid shipment ID"});return;}
+  try{
+    const ship=await pool.query<{
+      id:number;shipment_number:string;po_number:string;shipment_status:string;
+      created_at:Date|string;origin:string|null;destination:string|null;
+      tracking_number:string|null;
+    }>(
+      `select sh.id,sh.shipment_number,po.po_number,sh.shipment_status,
+              sh.created_at,sh.origin,sh.destination,sh.tracking_number
+         from public.mkt_po_shipments sh
+         join public.mkt_purchase_orders po on po.id=sh.po_id
+        where sh.id=$1 and po.company_id=$2
+        limit 1`,
+      [id,c.id],
+    );
+    const shipment=ship.rows[0];
+    if(!shipment){res.status(404).json({error:"Shipment not found"});return;}
+    const [items,config]=await Promise.all([
+      pool.query<{description:string;quantity:string|number;unit:string|null;notes:string|null}>(
+        `select pol.item_name as description,si.qty as quantity,
+                coalesce(si.uom,pol.unit) as unit,si.remarks as notes
+           from public.mkt_po_shipment_items si
+           join public.mkt_po_shipments sh on sh.id=si.shipment_id
+           join public.mkt_purchase_orders po on po.id=sh.po_id
+           join public.mkt_purchase_order_lines pol
+             on pol.id=si.po_line_id and pol.po_id=po.id
+          where sh.id=$1 and po.company_id=$2
+          order by si.line_number asc,si.id asc limit 201`,
+        [id,c.id],
+      ),
+      pool.query<{value:string}>(
+        "select value from public.app_config where key=$1 and environment='development' and is_secret=false limit 1",
+        [key(c.id,type)],
+      ),
+    ]);
+    if(items.rows.length===0||items.rows.length>200){
+      res.status(422).json({error:"Shipment items unavailable or exceed preview limit"});return;
+    }
+    const date=new Date(shipment.created_at);
+    if(Number.isNaN(date.getTime())){res.status(422).json({error:"Shipment date invalid"});return;}
+    const data:DocumentPreviewData={
+      number:shipment.shipment_number,
+      date:date.toLocaleDateString("id-ID"),
+      recipient:shipment.destination||"Tujuan belum dicatat",
+      reference:[
+        "PO "+shipment.po_number,
+        "Status "+shipment.shipment_status,
+        shipment.tracking_number?"Resi "+shipment.tracking_number:"",
+        shipment.origin?"Asal "+shipment.origin:"",
+      ].filter(Boolean).join(" • "),
+      lines:items.rows.map(line=>({
+        description:line.description,
+        quantity:String(line.quantity),
+        unit:line.unit??"",
+        notes:line.notes??"",
+        price:"",subtotal:"",
+      })),
+      total:"",
+    };
+    const html=preview(type,resolve(c,type,config.rows[0]?.value?
+      parseConfig(config.rows[0].value):{}),data);
+    res.setHeader("Content-Type","text/html; charset=utf-8");
+    res.setHeader("Cache-Control","no-store");
+    res.setHeader("Content-Security-Policy",
+      "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'");
+    res.send(html);
+  }catch(error){
+    (req as AdminRequest).log?.error?.({error},"Shipment print preview unavailable");
+    res.status(503).json({error:"Pratinjau shipment belum tersedia."});
   }
 });
 router.get("/settings/documents/:type",async(req,res)=>{

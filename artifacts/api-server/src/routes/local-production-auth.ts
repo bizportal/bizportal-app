@@ -9,6 +9,7 @@ import {
   initializeProductionSessionSigning,
   isDevelopmentEnvironment,
   isSignedOtpDevEnabled,
+  isSignedPasswordDevEnabled,
   setProductionSessionCookie,
   type ProductionSession,
 } from "./dev-auth";
@@ -51,23 +52,36 @@ function createSession(user: { id: string; email: string }): ProductionSession {
 }
 
 async function findUserByEmail(email: string, exactId?: string): Promise<RawUser | null> {
-  // PROD and normal login retain the original email-only query.
-  // Signed OTP in DEV can bind a single, explicitly approved account ID.
+  // PROD and normal login retain original email-only semantics.
+  // DEV signed OTP must pin the account ID and reject a competing active
+  // account with the same normalized email.
+  const signedDev = isSignedOtpDevEnabled();
+  const activeOnly = signedDev
+    ? " and u.is_active = true"
+    : "";
   const result = exactId
     ? await pool.query<{ user_data: Record<string, unknown> }>(
       `select to_jsonb(u) as user_data
          from public.users u
         where u.id = $1 and lower(coalesce(to_jsonb(u)->>'email', '')) = $2
+          and u.is_active = true
+          and not exists (
+            select 1 from public.users dupe
+             where dupe.id <> u.id
+               and lower(coalesce(to_jsonb(dupe)->>'email', '')) = $2
+               and dupe.is_active = true
+          )
         limit 1`,
       [exactId, email],
     )
     : await pool.query<{ user_data: Record<string, unknown> }>(
       `select to_jsonb(u) as user_data
          from public.users u
-        where lower(coalesce(to_jsonb(u)->>'email', '')) = $1
-        limit 1`,
+        where lower(coalesce(to_jsonb(u)->>'email', '')) = $1${activeOnly}
+        limit ${signedDev ? 2 : 1}`,
       [email],
     );
+  if (signedDev && result.rows.length !== 1) return null;
   const data = result.rows[0]?.user_data;
   if (!data || typeof data.id !== "string" || typeof data.email !== "string") return null;
 
@@ -314,7 +328,11 @@ router.post("/auth/email-login", async (
   response: Response,
   next: NextFunction,
 ): Promise<void> => {
-  if (isDevelopmentEnvironment()) {
+  // Reuse the *existing* password hash and production password verifier.
+  // In DEV this route is disabled unless explicitly enabled with a pinned,
+  // server-verified Super Admin; the general PROD login is unchanged.
+  const devPassword = isDevelopmentEnvironment();
+  if (devPassword && !isSignedPasswordDevEnabled()) {
     next();
     return;
   }
@@ -332,7 +350,25 @@ router.post("/auth/email-login", async (
   }
 
   try {
-    const user = await findUserByEmail(email);
+    const pinnedEmail = process.env.BIZPORTAL_SIGNED_PASSWORD_ACCOUNT_EMAIL_DEV?.trim().toLowerCase();
+    const pinnedId = process.env.BIZPORTAL_SIGNED_PASSWORD_ACCOUNT_ID_DEV?.trim();
+    // Do not expose whether an account exists or which role it has.
+    if (devPassword && (!pinnedEmail || !pinnedId || email !== pinnedEmail)) {
+      response.status(401).json({ error: "Email atau password salah." });
+      return;
+    }
+    const user = devPassword
+      ? await findUserByEmail(email, pinnedId)
+      : await findUserByEmail(email);
+    if (devPassword && (
+      !user || user.id !== pinnedId || user.email.trim().toLowerCase() !== pinnedEmail
+      || user.role.trim().toLowerCase() !== "super_admin"
+      || !user.isActive || user.status?.trim().toLowerCase() !== "active"
+      || user.companyId !== null
+    )) {
+      response.status(401).json({ error: "Email atau password salah." });
+      return;
+    }
     if (!user?.passwordHash || !(await compare(password, user.passwordHash))) {
       response.status(401).json({ error: "Email atau password salah." });
       return;
@@ -346,6 +382,9 @@ router.post("/auth/email-login", async (
 
     await initializeProductionSessionSigning();
 
+    // The pinned ID, active status, uniqueness and password have already
+    // been validated above. The existing getProductionUser session middleware
+    // rechecks identity on every subsequent protected request, not at login.
     const session = createSession(user);
     setProductionSessionCookie(response, session);
     response.json({

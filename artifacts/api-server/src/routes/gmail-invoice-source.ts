@@ -1418,6 +1418,17 @@ router.post(
       return;
     }
 
+    // A financial writer must not accept company scope only from a request
+    // body. Require the verified Admin/Owner/Super Admin identity to already
+    // be bound to one positive company before touching the candidate.
+    if (!Number.isSafeInteger(actor.companyId) || (actor.companyId ?? 0) <= 0) {
+      res.status(403).json({
+        error: "Hak akses perusahaan belum terverifikasi untuk impor invoice.",
+        code: "COMPANY_SCOPE_MISSING",
+      });
+      return;
+    }
+
     const companyId = requireCompanyScope(
       res,
       actor,
@@ -1483,6 +1494,9 @@ router.post(
           error instanceof Error
             ? error.message
             : "Gagal membuat draft Vendor Invoice dari kandidat Gmail.",
+        code: error && typeof error === "object" && "code" in error
+          ? String((error as { code?: unknown }).code ?? "GMAIL_IMPORT_FAILED")
+          : "GMAIL_IMPORT_FAILED",
       });
     }
   },
