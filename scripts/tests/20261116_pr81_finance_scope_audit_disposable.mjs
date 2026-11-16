@@ -29,7 +29,8 @@ const client = new pg.Client({
   password: decodeURIComponent(url.password),
   ssl: false, connectionTimeoutMillis: 5000,
 });
-let prepared = false;
+let createdRole = false;
+let createdTable = false;
 const role = "bizportal_pr81_otp_login_dev";
 const action = "finance_company_scope_selected";
 
@@ -57,11 +58,15 @@ try {
   assert.equal(identity.rows[0].actor, "postgres.xssrfshdrtdfupgqwfdw");
   const roleExists = await client.query("SELECT 1 FROM pg_roles WHERE rolname=$1", [role]);
   assert.equal(roleExists.rowCount, 0, "Disposable role must not preexist");
+  assert.equal((await client.query("SELECT to_regclass('public.audit_logs') AS existing")).rows[0].existing,
+    null, "Disposable audit table must not preexist");
   await client.query("CREATE ROLE " + role + " NOLOGIN NOBYPASSRLS NOINHERIT");
+  createdRole = true;
   await client.query(`CREATE TABLE public.audit_logs(
     user_email text, action text NOT NULL, entity_type text, entity_id text,
     after_data jsonb, company_id text, module text, ip_address text
   )`);
+  createdTable = true;
   await client.query("ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY");
   await client.query("GRANT USAGE ON SCHEMA public TO " + role);
   await client.query("GRANT INSERT ON public.audit_logs TO " + role);
@@ -71,7 +76,6 @@ try {
       AND action='email_otp_delivery_failed'
       AND entity_type='auth' AND company_id='default' AND module='system'
     )`);
-  prepared = true;
   const countBefore = await client.query("SELECT count(*)::int AS n FROM pg_policies WHERE schemaname='public' AND tablename='audit_logs'");
   assert.equal(countBefore.rows[0].n, 1);
 
@@ -105,10 +109,12 @@ try {
   console.log("PR87_DISPOSABLE_AUDIT_INSERT_PASS: allowlisted 1/3; 8 refusals; original OTP allowed; zero persisted rows");
 } finally {
   await client.query("ROLLBACK").catch(() => {});
-  if (prepared) {
-    await client.query("DROP TABLE IF EXISTS public.audit_logs").catch(() => {});
+  // Drop only objects successfully created by this test. A failed preflight
+  // must not remove preexisting roles or tables.
+  if (createdTable) await client.query("DROP TABLE public.audit_logs").catch(() => {});
+  if (createdRole) {
     await client.query("REVOKE USAGE ON SCHEMA public FROM " + role).catch(() => {});
-    await client.query("DROP ROLE IF EXISTS " + role).catch(() => {});
+    await client.query("DROP ROLE " + role).catch(() => {});
   }
   await client.end().catch(() => {});
 }
