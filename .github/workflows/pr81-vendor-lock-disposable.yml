@@ -1,0 +1,49 @@
+name: PR81 Vendor Invoice Lock Permission Disposable PG16
+on:
+  pull_request:
+    branches: [main, develop, test/finance-pr79-pr80-integration-20261115]
+    paths:
+      - 'scripts/tests/pr81-vendor-lock-*'
+      - 'scripts/tests/pr81-build-vendor-lock.cjs'
+      - 'scripts/tests/pr81-run-vendor-lock.sh'
+      - 'scripts/tests/README-pr81-vendor-lock-disposable.md'
+      - 'artifacts/api-server/src/lib/services/mktVendorInvoiceService.ts'
+      - '.github/workflows/pr81-vendor-lock-disposable.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  vendor-lock-disposable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install frozen dependencies without scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Resolve existing canonical schema dependency for test bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d artifacts/api-server/node_modules
+          test -e lib/db/node_modules/drizzle-zod
+          if test ! -e artifacts/api-server/node_modules/drizzle-zod; then
+            ln -s ../../../lib/db/node_modules/drizzle-zod artifacts/api-server/node_modules/drizzle-zod
+          fi
+          test -e artifacts/api-server/node_modules/drizzle-zod
+      - name: Bundle unmodified canonical Vendor Invoice service
+        run: node scripts/tests/pr81-build-vendor-lock.cjs
+      - name: Assert PO and GR locks fail closed under restricted finance profile
+        run: bash scripts/tests/pr81-run-vendor-lock.sh
+      - name: Ensure canonical source and lockfile were not changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- artifacts/api-server/src/lib/services/mktVendorInvoiceService.ts lib/db/src/schema pnpm-lock.yaml
