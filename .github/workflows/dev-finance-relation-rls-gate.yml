@@ -6,6 +6,7 @@ on:
       - 'scripts/tests/20261115_finance_relation_rls_disposable.mjs'
       - 'scripts/tests/20261116_pr81_finance_scope_audit_disposable.mjs'
       - 'artifacts/api-server/src/routes/dev-finance-writer-disposable-http.test.ts'
+      - 'artifacts/api-server/src/routes/mktVendorInvoice.multipart-contract.test.ts'
       - 'scripts/sql/20261116_pr81_finance_scope_audit_insert_STAGED.sql'
       - 'scripts/sql/20261115_marketplace_finance_relation_guards_STAGED.sql'
       - '.github/workflows/dev-finance-relation-rls-gate.yml'
@@ -52,5 +53,7 @@ jobs:
         run: node scripts/tests/20261116_pr81_finance_scope_audit_disposable.mjs
       - name: Verify signed HTTP Finance AP Writer and Accounting Draft on disposable PostgreSQL
         run: pnpm --filter @workspace/api-server exec vitest run src/routes/dev-finance-writer-disposable-http.test.ts --maxWorkers=1 --minWorkers=1
+      - name: Verify real multipart vendor token PDF route without external writes
+        run: pnpm --filter @workspace/api-server exec vitest run src/routes/mktVendorInvoice.multipart-contract.test.ts --maxWorkers=1 --minWorkers=1
       - name: Typecheck Finance API and DB after HTTP integration
         run: pnpm --filter @workspace/api-server run typecheck
