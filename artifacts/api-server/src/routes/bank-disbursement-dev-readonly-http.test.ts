@@ -29,7 +29,7 @@ vi.mock("@workspace/db", () => ({
       }
       if (state.headerMissing) return { rowCount: 0, rows: [] };
       return { rowCount: 1, rows: [{
-        id: 9, disbursement_number: "BD-TEST-9", journal_id: 7,
+        id: 9, company_id: 1, disbursement_number: "BD-TEST-9", journal_id: 7,
         date: "2026-11-16", ref: "DEV-ONLY", memo: null,
         total_amount: "125000.00", status: "posted", entry_id: 19,
         created_at: "2026-11-16T00:00:00.000Z", attachment_url: null,
