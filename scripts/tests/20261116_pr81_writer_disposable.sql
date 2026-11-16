@@ -190,17 +190,41 @@ BEGIN
  GET DIAGNOSTICS changed=ROW_COUNT;
  IF changed<>0 THEN RAISE EXCEPTION 'AP_WAITING_PAYMENT_REPLAY_MODIFIED'; END IF;
 END $$;
+-- Paid/nonzero/journal denial must use an AP that is actually eligible for
+-- Payment Request creation, so lifecycle policy checks cannot mask failures.
 INSERT INTO ci_pr81_finance.ap VALUES (120,1,10,15,11,13,'ap_preparation',NULL,NULL);
+UPDATE ci_pr81_finance.ap SET status='finance_review',finance_reviewed_at=now()
+ WHERE id=120 AND status='ap_preparation';
+UPDATE ci_pr81_finance.ap SET status='waiting_payment',waiting_payment_at=now()
+ WHERE id=120 AND status='finance_review';
 DO $$
-DECLARE rejected bool := false;
+DECLARE denied_status bool := false;
+        denied_amount bool := false;
+        denied_journal bool := false;
 BEGIN
+ IF (SELECT count(*) FROM ci_pr81_finance.ap
+     WHERE id=120 AND status='waiting_payment')<>1
+ THEN RAISE EXCEPTION 'NEGATIVE_PAYMENT_TEST_AP_NOT_ELIGIBLE'; END IF;
  BEGIN
   INSERT INTO ci_pr81_finance.payment_requests VALUES
-    (220,1,120,'mkt-ap:120','paid',100,NULL);
- EXCEPTION WHEN insufficient_privilege OR check_violation THEN rejected:=true;
+    (220,1,120,'mkt-ap:120:paid','paid',0,NULL);
+ EXCEPTION WHEN insufficient_privilege OR check_violation THEN denied_status:=true;
  END;
- IF NOT rejected THEN RAISE EXCEPTION 'PAID_PAYMENT_INSERT_NOT_DENIED'; END IF;
+ BEGIN
+  INSERT INTO ci_pr81_finance.payment_requests VALUES
+    (221,1,120,'mkt-ap:120:amount','draft',100,NULL);
+ EXCEPTION WHEN insufficient_privilege OR check_violation THEN denied_amount:=true;
+ END;
+ BEGIN
+  INSERT INTO ci_pr81_finance.payment_requests VALUES
+    (222,1,120,'mkt-ap:120:journal','draft',0,999);
+ EXCEPTION WHEN insufficient_privilege OR check_violation THEN denied_journal:=true;
+ END;
+ IF NOT (denied_status AND denied_amount AND denied_journal)
+    OR EXISTS (SELECT 1 FROM ci_pr81_finance.payment_requests WHERE ap_id=120)
+ THEN RAISE EXCEPTION 'PAID_NONZERO_OR_GL_PAYMENT_PROTECTION_FAILED'; END IF;
 END $$;
+SELECT 'ELIGIBLE_AP_PAID_NONZERO_AND_JOURNAL_PAYMENT_DENIAL_PASS' AS checkpoint;
 
 INSERT INTO ci_pr81_finance.payment_requests VALUES (210,1,110,'mkt-ap:110','draft',0,NULL);
 INSERT INTO ci_pr81_finance.accounting_handoffs VALUES

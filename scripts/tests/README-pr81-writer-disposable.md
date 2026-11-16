@@ -14,7 +14,7 @@ were removed. The container is then destroyed.
 Assertions cover tenant-scoped RLS and reciprocal company visibility; AP
 ap_preparation -> finance_review -> waiting_payment; a draft-only Payment
 Request and an Accounting Handoff marked draft_not_posted; unique-key replay
-deduplication; denial of paid, cross-company AP insert and GL insert rights.
+deduplication; separate denial of paid status, nonzero paid amount and non-null GL\njournal reference on an eligible waiting_payment AP; cross-company AP\ninsert rejection and GL insert-rights absence.
 
 Evidence limitation: This is a PostgreSQL constraint/lifecycle model,
 not an invocation of the full BizPortal production service or CST-DEV API.
