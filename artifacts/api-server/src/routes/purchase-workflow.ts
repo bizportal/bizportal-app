@@ -1015,10 +1015,23 @@ router.get("/purchase-workflow/vendor-invoices/:id", async (req, res): Promise<v
       select vi.*, vi.status::text status,
              coalesce(rvip.paid_amount, 0) reconciled_amount_paid,
              ae.status::text journal_status, ae.entry_number journal_entry_number,
+             invoice_reversal.reversal_journal_id,
              coalesce(orphan_disbursement.disbursement_numbers, array[]::text[]) orphan_disbursement_numbers,
              coalesce(voided_disbursement.disbursement_numbers, array[]::text[]) linked_voided_disbursement_numbers
         from public.vendor_invoices vi
         left join public.accounting_entries ae on ae.id = vi.journal_entry_id
+        -- Derive the reversal from existing Accounting entries. Some DEV
+        -- schemas have no vendor_invoices.reversal_journal_id column.
+        left join lateral (
+          select rev.id reversal_journal_id
+          from public.accounting_entries rev
+          where rev.company_id = vi.company_id
+            and rev.source::text = 'reversal'
+            and rev.source_id = vi.journal_entry_id
+            and rev.status::text = 'posted'
+          order by rev.id desc
+          limit 1
+        ) invoice_reversal on true
         ${RECONCILED_PAYMENT_JOIN}
         -- Informational only. An orphaned historical disbursement is NOT
         -- a settled vendor invoice and must never increase amountPaid.
