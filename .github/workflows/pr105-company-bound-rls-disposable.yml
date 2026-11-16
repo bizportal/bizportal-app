@@ -1,0 +1,34 @@
+name: PR105 Finance Company-Bound RLS Disposable PG16/17
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+      - test/pr104-finance-boundary-deadlock-20261116
+    paths:
+      - 'scripts/tests/pr105-*'
+      - '.github/workflows/pr105-company-bound-rls-disposable.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tenant-boundary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        pg_image: [postgres:16-alpine, postgres:17-alpine]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prove per-company roles ignore forged tenant GUCs and deny cross-company reads/writes
+        shell: bash
+        run: PR105_DISPOSABLE_PG_IMAGE="${{ matrix.pg_image }}" bash scripts/tests/pr105-run-company-bound-rls.sh
+      - name: Prove real isolated DB login identities and SECURITY DEFINER session_user binding
+        shell: bash
+        run: PR105_DISPOSABLE_PG_IMAGE="${{ matrix.pg_image }}" bash scripts/tests/pr105-run-real-login-definer.sh
+      - name: Verify no committed credentials, migration or active-service code changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- lib/db artifacts/api-server/src scripts/sql pnpm-lock.yaml
