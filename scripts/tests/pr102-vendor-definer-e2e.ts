@@ -117,12 +117,14 @@ async function main(){
   await exec(tx,"GRANT SELECT ON public.mkt_purchase_orders,public.mkt_po_shipments,public.mkt_po_goods_receipts TO "+owner);
   await exec(tx,"GRANT UPDATE(status) ON public.mkt_purchase_orders TO "+owner);
   await exec(tx,"GRANT UPDATE(inspection_status) ON public.mkt_po_goods_receipts TO "+owner);
+  await exec(tx,"GRANT UPDATE(shipment_status) ON public.mkt_po_shipments TO "+owner);
   for(const name of ["mkt_purchase_orders","mkt_po_goods_receipts"]){
    const guard=parentPolicy(name);
    await exec(tx,"CREATE POLICY owner_select_"+name+" ON public."+name+" FOR SELECT TO "+owner+" USING("+guard+")");
    await exec(tx,"CREATE POLICY owner_update_"+name+" ON public."+name+" FOR UPDATE TO "+owner+" USING("+guard+") WITH CHECK("+guard+")");
   }
   await exec(tx,"CREATE POLICY owner_select_shipment ON public.mkt_po_shipments FOR SELECT TO "+owner+" USING(EXISTS(SELECT 1 FROM public.mkt_purchase_orders po WHERE po.id=po_id AND po.company_id="+tenant+"))");
+  await exec(tx,"CREATE POLICY owner_update_shipment ON public.mkt_po_shipments FOR UPDATE TO "+owner+" USING(EXISTS(SELECT 1 FROM public.mkt_purchase_orders po WHERE po.id=po_id AND po.company_id="+tenant+")) WITH CHECK(EXISTS(SELECT 1 FROM public.mkt_purchase_orders po WHERE po.id=po_id AND po.company_id="+tenant+"))");
   // Private schema not exposed through Supabase/PostgREST. Only the Finance
   // login can USAGE + EXECUTE the definer; owner has no login or BYPASSRLS.
   await exec(tx,"CREATE SCHEMA finance_ops_private AUTHORIZATION postgres");
@@ -142,12 +144,13 @@ async function main(){
   console.log("PRIVATE_SCHEMA_DENIES_OUTSIDER_EXECUTE_PASS");
   await exec(tx,"SET LOCAL ROLE "+finance);
   await exec(tx,"SELECT set_config('app.marketplace_company_id','1',true)");
-  const check=await exec(tx,"SELECT current_user::text role,has_any_column_privilege(current_user,'public.mkt_purchase_orders','UPDATE') po_update,has_any_column_privilege(current_user,'public.mkt_po_goods_receipts','UPDATE') gr_update,has_function_privilege(current_user,'finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text)','EXECUTE') may_lock");
+  const check=await exec(tx,"SELECT current_user::text role,has_any_column_privilege(current_user,'public.mkt_purchase_orders','UPDATE') po_update,has_any_column_privilege(current_user,'public.mkt_po_goods_receipts','UPDATE') gr_update,has_any_column_privilege(current_user,'public.mkt_po_shipments','UPDATE') shipment_update,has_function_privilege(current_user,'finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text)','EXECUTE') may_lock");
   assert.equal(check.rows[0].role,finance);
   assert.equal(check.rows[0].po_update,false);
   assert.equal(check.rows[0].gr_update,false);
+  assert.equal(check.rows[0].shipment_update,false);
   assert.equal(check.rows[0].may_lock,true);
-  console.log("FINANCE_NO_PO_GR_UPDATE_PRIVILEGE_PASS");
+  console.log("FINANCE_NO_PO_GR_SHIPMENT_UPDATE_PRIVILEGE_PASS");
   const cst=invoice(11,13,10,21,1,"CI-CST-VENDOR-001");
   const first=await createMarketplaceVendorInvoice(cst,actor,tx as unknown as typeof db);
   assert.equal(first.ok,true,JSON.stringify(first));

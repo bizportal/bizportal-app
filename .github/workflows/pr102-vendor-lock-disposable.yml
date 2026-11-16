@@ -1,7 +1,7 @@
-name: PR102 Vendor Invoice Scoped Parent Lock Disposable PG16
+name: PR102-103 Vendor Invoice Scoped Parent and Shipment Lock PG16/17
 on:
   pull_request:
-    branches: [main, develop, test/finance-pr79-pr80-integration-20261115, test/pr81-vendor-lock-disposable-20261116]
+    branches: [main, develop, test/finance-pr79-pr80-integration-20261115, test/pr81-vendor-lock-disposable-20261116, test/pr102-vendor-parent-lock-20261116]
     paths:
       - 'artifacts/api-server/src/lib/services/mktVendorInvoiceService.ts'
       - 'artifacts/api-server/src/routes/mktVendorInvoice.ts'
@@ -16,7 +16,11 @@ permissions:
 jobs:
   vendor-parent-lock:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      matrix:
+        pg_image: [postgres:16-alpine, postgres:17-alpine]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -47,11 +51,11 @@ jobs:
           node scripts/tests/pr102-build-vendor-definer.cjs
           node scripts/tests/pr102-build-vendor-concurrency.cjs
       - name: Prove canonical service scoped create/replay, RLS and complete rollback
-        run: bash scripts/tests/pr102-run-vendor-definer.sh
-      - name: Prove genuine PO and GR row locks against unrelated concurrent writers
-        run: bash scripts/tests/pr102-run-vendor-concurrency.sh
+        run: PR102_DISPOSABLE_PG_IMAGE="${{ matrix.pg_image }}" bash scripts/tests/pr102-run-vendor-definer.sh
+      - name: Prove PO, GR and Shipment locks against unrelated concurrent writers
+        run: PR102_DISPOSABLE_PG_IMAGE="${{ matrix.pg_image }}" bash scripts/tests/pr102-run-vendor-concurrency.sh
       - name: Validate staged install and rollback remain blocked, then prove disposable SQL parity
-        run: bash scripts/tests/pr102-run-review-sql-disposable.sh
+        run: PR102_DISPOSABLE_PG_IMAGE="${{ matrix.pg_image }}" bash scripts/tests/pr102-run-review-sql-disposable.sh
       - name: Ensure test executions did not edit source or lockfile
         shell: bash
         run: |

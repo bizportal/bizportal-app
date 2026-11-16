@@ -21,10 +21,10 @@ async function setup(){
  assert.equal(id.rows[0].db,"cst_pr81_writer_ci");
  assert.equal(id.rows[0].role,"postgres");
  await q("CREATE TABLE public.mkt_purchase_orders (id integer PRIMARY KEY,company_id integer NOT NULL,vendor_id integer NOT NULL,status text NOT NULL,vendor_token text NOT NULL,vendor_token_expires_at timestamp)");
- await q("CREATE TABLE public.mkt_po_shipments (id integer PRIMARY KEY,po_id integer NOT NULL)");
+ await q("CREATE TABLE public.mkt_po_shipments (id integer PRIMARY KEY,po_id integer NOT NULL,shipment_status text NOT NULL)");
  await q("CREATE TABLE public.mkt_po_goods_receipts (id integer PRIMARY KEY,shipment_id integer NOT NULL,inspection_status text NOT NULL)");
  await q("INSERT INTO public.mkt_purchase_orders VALUES (11,1,10,'confirmed','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',NULL),(31,3,35,'confirmed','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',NULL)");
- await q("INSERT INTO public.mkt_po_shipments VALUES (12,11),(32,31)");
+ await q("INSERT INTO public.mkt_po_shipments VALUES (12,11,'delivered'),(32,31,'delivered')");
  await q("INSERT INTO public.mkt_po_goods_receipts VALUES (13,12,'passed'),(33,32,'passed')");
  await q("CREATE ROLE "+finance+" NOLOGIN NOINHERIT NOBYPASSRLS");
  await q("CREATE ROLE "+owner+" NOLOGIN NOINHERIT NOBYPASSRLS");
@@ -35,12 +35,14 @@ async function setup(){
  await q("GRANT SELECT ON public.mkt_purchase_orders,public.mkt_po_shipments,public.mkt_po_goods_receipts TO "+owner);
  await q("GRANT UPDATE(status) ON public.mkt_purchase_orders TO "+owner);
  await q("GRANT UPDATE(inspection_status) ON public.mkt_po_goods_receipts TO "+owner);
+ await q("GRANT UPDATE(shipment_status) ON public.mkt_po_shipments TO "+owner);
  await q("CREATE POLICY owner_po_sel ON public.mkt_purchase_orders FOR SELECT TO "+owner+" USING(company_id="+tenant+")");
  await q("CREATE POLICY owner_po_upd ON public.mkt_purchase_orders FOR UPDATE TO "+owner+" USING(company_id="+tenant+") WITH CHECK(company_id="+tenant+")");
  const grScope="EXISTS(SELECT 1 FROM public.mkt_po_shipments sh JOIN public.mkt_purchase_orders po ON po.id=sh.po_id WHERE sh.id=shipment_id AND po.company_id="+tenant+")";
  await q("CREATE POLICY owner_gr_sel ON public.mkt_po_goods_receipts FOR SELECT TO "+owner+" USING("+grScope+")");
  await q("CREATE POLICY owner_gr_upd ON public.mkt_po_goods_receipts FOR UPDATE TO "+owner+" USING("+grScope+") WITH CHECK("+grScope+")");
  await q("CREATE POLICY owner_ship_sel ON public.mkt_po_shipments FOR SELECT TO "+owner+" USING(EXISTS(SELECT 1 FROM public.mkt_purchase_orders po WHERE po.id=po_id AND po.company_id="+tenant+"))");
+ await q("CREATE POLICY owner_ship_upd ON public.mkt_po_shipments FOR UPDATE TO "+owner+" USING(EXISTS(SELECT 1 FROM public.mkt_purchase_orders po WHERE po.id=po_id AND po.company_id="+tenant+")) WITH CHECK(EXISTS(SELECT 1 FROM public.mkt_purchase_orders po WHERE po.id=po_id AND po.company_id="+tenant+"))");
  await q("CREATE SCHEMA finance_ops_private AUTHORIZATION postgres");
  await q("REVOKE ALL ON SCHEMA finance_ops_private FROM PUBLIC");
  await q("GRANT USAGE ON SCHEMA finance_ops_private TO "+finance+","+owner);
@@ -79,10 +81,10 @@ async function cleanup(){
  console.log("CONCURRENCY_FIXTURE_CLEANUP_PASS");
 }
 async function main(){
- let a:pg.PoolClient|undefined,b:pg.PoolClient|undefined,c:pg.PoolClient|undefined;
+ let a:pg.PoolClient|undefined,b:pg.PoolClient|undefined,c:pg.PoolClient|undefined,d:pg.PoolClient|undefined;
  await setup();
  try{
-  [a,b,c]=await Promise.all([db.connect(),db.connect(),db.connect()]);
+  [a,b,c,d]=await Promise.all([db.connect(),db.connect(),db.connect(),db.connect()]);
   await a.query("BEGIN");
   await a.query("SET LOCAL ROLE "+finance);
   await a.query("SELECT set_config('app.marketplace_company_id','1',true)");
@@ -93,13 +95,19 @@ async function main(){
   console.log("DEF_INER_FUNCTION_TENANT_BOUND_LOCK_PASS");
   await Promise.all([
    blockedWriter(b,"UPDATE public.mkt_purchase_orders SET vendor_token='cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc' WHERE id=11","PO_TOKEN_ROTATION_WRITER"),
-   blockedWriter(c,"UPDATE public.mkt_po_goods_receipts SET inspection_status='failed' WHERE id=13","GR_INDEPENDENT_WRITER")
+   blockedWriter(c,"UPDATE public.mkt_po_goods_receipts SET inspection_status='failed' WHERE id=13","GR_INDEPENDENT_WRITER"),
+   blockedWriter(d,"UPDATE public.mkt_po_shipments SET shipment_status='cancelled' WHERE id=12","SHIPMENT_INDEPENDENT_WRITER")
   ]);
   await a.query("ROLLBACK");
   const changedPo=await b.query("UPDATE public.mkt_purchase_orders SET vendor_token='cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc' WHERE id=11 RETURNING id");
   const changedGr=await c.query("UPDATE public.mkt_po_goods_receipts SET inspection_status='failed' WHERE id=13 RETURNING id");
+  const changedShipment=await d.query("UPDATE public.mkt_po_shipments SET shipment_status='cancelled' WHERE id=12 RETURNING id");
   assert.equal(changedPo.rowCount,1);
   assert.equal(changedGr.rowCount,1);
+  assert.equal(changedShipment.rowCount,1);
+  const shipment=await q("SELECT shipment_status FROM public.mkt_po_shipments WHERE id=12");
+  assert.equal(shipment.rows[0].shipment_status,"cancelled");
+  console.log("SHIPPING_STATE_MUTATION_BLOCKED_UNTIL_LOCK_RELEASE_PASS");
   const rotated=await q("SELECT vendor_token FROM public.mkt_purchase_orders WHERE id=11");
   assert.equal(rotated.rows[0].vendor_token,"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc");
   const other=await q("SELECT (SELECT status FROM public.mkt_purchase_orders WHERE id=31) po,(SELECT inspection_status FROM public.mkt_po_goods_receipts WHERE id=33) gr");
@@ -110,6 +118,7 @@ async function main(){
   if(a){try{await a.query("ROLLBACK")}catch{};a.release()}
   if(b){try{await b.query("ROLLBACK")}catch{};b.release()}
   if(c){try{await c.query("ROLLBACK")}catch{};c.release()}
+  if(d){try{await d.query("ROLLBACK")}catch{};d.release()}
   await cleanup();
  }
 }

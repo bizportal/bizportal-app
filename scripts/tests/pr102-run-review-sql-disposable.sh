@@ -2,6 +2,12 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PG=cst-pr102-private-lock-sql-disposable
+IMAGE="${PR102_DISPOSABLE_PG_IMAGE:-postgres:16-alpine}"
+case "$IMAGE" in
+  postgres:16-alpine|postgres:17-alpine) ;;
+  *) echo "REFUSE_UNTRUSTED_DISPOSABLE_POSTGRES_IMAGE"; exit 7 ;;
+esac
+
 DB=postgres
 INSTALL="$ROOT/scripts/sql/20261116_pr102_finance_parent_lock_dev_REVIEW_ONLY.sql"
 ROLLBACK="$ROOT/scripts/sql/20261116_pr102_finance_parent_lock_dev_ROLLBACK_REVIEW_ONLY.sql"
@@ -11,7 +17,7 @@ if docker ps -a --filter "name=^$PG$" --format '{{.Names}}' | grep -q .; then
 fi
 cleanup(){ docker rm -f "$PG" >/dev/null 2>&1 || :; }
 trap cleanup EXIT
-docker run -d --rm --network none --name "$PG"   --memory 256m --cpus 1 --tmpfs /var/lib/postgresql/data:rw,nosuid,size=192m   -e POSTGRES_DB="$DB" -e POSTGRES_USER=postgres   -e POSTGRES_HOST_AUTH_METHOD=trust postgres:16-alpine >/dev/null
+docker run -d --rm --network none --name "$PG"   --memory 256m --cpus 1 --tmpfs /var/lib/postgresql/data:rw,nosuid,size=192m   -e POSTGRES_DB="$DB" -e POSTGRES_USER=postgres   -e POSTGRES_HOST_AUTH_METHOD=trust "$IMAGE" >/dev/null
 for i in $(seq 1 60); do
   if docker exec "$PG" pg_isready -q -U postgres -d "$DB" >/dev/null 2>&1;then break;fi
   sleep 0.25
