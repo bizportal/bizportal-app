@@ -100,7 +100,7 @@ vi.mock("../lib/gmail-invoice-ocr", () => ({
     mock.extractionCalls++;
     if (mock.rateLimitOnce) {
       mock.rateLimitOnce = false;
-      throw new GmailProviderRateLimitError();
+      throw new GmailProviderRateLimitError(Date.now() + 15 * 60 * 1000);
     }
     if (mock.extractionCalls === 1) throw new Error("OCR temporarily unavailable");
     return {

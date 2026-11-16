@@ -31,6 +31,7 @@ describe("HRD read-only transaction custody",()=>{
   beforeEach(()=>{
     state.calls.length=0;state.connected=0;state.released=0;state.discarded=0;
     state.role="bizportal_hrd_prod";state.company="1";state.workFailure=false;state.rollbackFailure=false;state.beginFailure=false;
+    vi.stubEnv("APP_ENV","production");vi.stubEnv("HRD_CANONICAL_READONLY_ENABLED_DEV","");
   });
   const read=()=>withHrdCompanyReadOnly(1,client=>
     client.query("SELECT id FROM public.employees WHERE company_id=$1 LIMIT 1",[1]));
@@ -47,6 +48,33 @@ describe("HRD read-only transaction custody",()=>{
     expect(state.calls[2].values).toEqual(["1"]);
     expect(state.connected).toBe(1);expect(state.released).toBe(1);
     expect(state.discarded).toBe(0);
+  });
+  it("uses existing DEV role only with explicit DEV flag and validates effective role",async()=>{
+    vi.stubEnv("APP_ENV","development");
+    vi.stubEnv("HRD_CANONICAL_READONLY_ENABLED_DEV","true");
+    state.role="bizportal_hrd_dev";
+    await read();
+    expect(state.calls.map(v=>v.sql)).toContain("SET LOCAL ROLE bizportal_hrd_dev");
+    expect(state.calls.map(v=>v.sql)).not.toContain("SET LOCAL ROLE bizportal_hrd_prod");
+  });
+  it("fails closed for DEV company 3 until its actual RLS policy is ready",async()=>{
+    vi.stubEnv("APP_ENV","development");
+    vi.stubEnv("HRD_CANONICAL_READONLY_ENABLED_DEV","true");
+    await expect(withHrdCompanyReadOnly(3,async()=>true)).rejects.toThrow("HRD_DEV_COMPANY_RLS_NOT_READY");
+    expect(state.connected).toBe(0);
+  });
+  it("rejects an incorrect effective role even when DEV flag is enabled",async()=>{
+    vi.stubEnv("APP_ENV","development");
+    vi.stubEnv("HRD_CANONICAL_READONLY_ENABLED_DEV","true");
+    state.role="bizportal_hrd_prod";
+    await expect(read()).rejects.toThrow("HRD_READONLY_ROLE_SCOPE_MISMATCH");
+    expect(state.calls.map(v=>v.sql)).toContain("ROLLBACK");
+  });
+  it("keeps PROD role when DEV flag is set outside development",async()=>{
+    vi.stubEnv("APP_ENV","production");
+    vi.stubEnv("HRD_CANONICAL_READONLY_ENABLED_DEV","true");
+    await read();
+    expect(state.calls.map(v=>v.sql)).toContain("SET LOCAL ROLE bizportal_hrd_prod");
   });
   it("rejects invalid company without acquiring a pooled connection",async()=>{
     await expect(withHrdCompanyReadOnly(0,async()=>true)).rejects.toThrow("HRD_READONLY_INVALID_COMPANY");
