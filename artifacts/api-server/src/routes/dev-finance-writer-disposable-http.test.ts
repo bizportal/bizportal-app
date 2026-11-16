@@ -170,7 +170,11 @@ describe.skipIf(!enabled)("PR81 signed HTTP Finance Writer over disposable Postg
     const app = express();
     app.use(express.json());
     app.use((req,_res,next) => { (req as any).log = {
-      error: () => undefined, warn: () => undefined, info: () => undefined,
+      error: (record: any, context: string) => {
+        const e = record?.error ?? record;
+        console.warn("CI_FINANCE_HTTP_ERROR", context, e?.code ?? "none",
+          String(e?.message ?? "").slice(0,250), String(e?.cause?.message ?? "").slice(0,200));
+      }, warn: () => undefined, info: () => undefined,
     }; next(); });
     app.use("/api",authRouter); app.use("/api",financeRouter);
     server = app.listen(0,"127.0.0.1");
