@@ -6,6 +6,7 @@ import { once } from "node:events";
 const state = vi.hoisted(() => ({
   actor: { role: "owner", companyId: 1 } as { role: string; companyId: number | null } | null,
   calls: [] as Array<{ sql: string; args: unknown[] }>,
+  headerMissing: false,
 }));
 
 vi.mock("./dev-auth", () => ({
@@ -18,6 +19,15 @@ vi.mock("@workspace/db", () => ({
   pool: {
     query: async (sql: string, args: unknown[] = []) => {
       state.calls.push({ sql, args });
+      if (sql.includes("from public.bank_disbursement_items item")) {
+        return { rowCount: 1, rows: [{
+          id: 21, seq: 1, transaction_type: "supplier_payment",
+          account_id: 4, description: "Synthetic invoice", amount: "125000.00",
+          notes: null, purchase_document_id: null, wht_amount: "0.00",
+          wht_account_id: null, party_name: "Synthetic vendor",
+        }] };
+      }
+      if (state.headerMissing) return { rowCount: 0, rows: [] };
       return { rowCount: 1, rows: [{
         id: 9, disbursement_number: "BD-TEST-9", journal_id: 7,
         date: "2026-11-16", ref: "DEV-ONLY", memo: null,
@@ -54,6 +64,7 @@ describe("Bank Disbursement DEV read-only HTTP parity", () => {
     vi.stubEnv("BIZPORTAL_DEV_BD_READONLY_ENABLED", "true");
     state.actor = { role: "owner", companyId: 1 };
     state.calls.length = 0;
+    state.headerMissing = false;
   });
   afterEach(() => vi.unstubAllEnvs());
 
@@ -112,4 +123,27 @@ describe("Bank Disbursement DEV read-only HTTP parity", () => {
     })).status).toBe(404);
     expect(state.calls).toHaveLength(0);
   });
+  it("returns detail and items under matching company, without writes", async () => {
+    const response = await get("/accounting/bank-disbursements/9?company=1");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(await response.json()).toMatchObject({
+      id: 9, companyId: 1, disbursementNumber: "BD-TEST-9",
+      items: [{ id: 21, transactionType: "supplier_payment", amount: 125000 }],
+      entry: null,
+    });
+    expect(state.calls).toHaveLength(2);
+    expect(state.calls.map(x => x.args)).toEqual([[9, 1], [9, 1]]);
+    expect(state.calls[1].sql).toContain("bd.company_id = $2");
+  });
+
+  it("rejects cross-company detail, invalid id, and missing record", async () => {
+    expect((await get("/accounting/bank-disbursements/9?company=2")).status).toBe(400);
+    expect((await get("/accounting/bank-disbursements/garbage?company=1")).status).toBe(400);
+    expect(state.calls).toHaveLength(0);
+    state.headerMissing = true;
+    expect((await get("/accounting/bank-disbursements/9?company=1")).status).toBe(404);
+    expect(state.calls).toHaveLength(1);
+  });
+
 });
