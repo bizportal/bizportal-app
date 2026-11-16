@@ -19,6 +19,11 @@ export async function withHrdCompanyReadOnly<T>(
   const role = devMode && process.env.HRD_CANONICAL_READONLY_ENABLED_DEV === "true"
     ? "bizportal_hrd_dev"
     : "bizportal_hrd_prod";
+  // The currently deployed CST-DEV HRD RLS policy is company-1-only.
+  // Fail explicitly rather than returning an apparently empty company-3 list.
+  if (role === "bizportal_hrd_dev" && companyId !== 1) {
+    throw Error("HRD_DEV_COMPANY_RLS_NOT_READY");
+  }
   const client = await pool.connect();
   let inTransaction = false;
   let beganAttempt = false;

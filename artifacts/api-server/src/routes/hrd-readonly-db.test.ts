@@ -57,6 +57,12 @@ describe("HRD read-only transaction custody",()=>{
     expect(state.calls.map(v=>v.sql)).toContain("SET LOCAL ROLE bizportal_hrd_dev");
     expect(state.calls.map(v=>v.sql)).not.toContain("SET LOCAL ROLE bizportal_hrd_prod");
   });
+  it("fails closed for DEV company 3 until its actual RLS policy is ready",async()=>{
+    vi.stubEnv("APP_ENV","development");
+    vi.stubEnv("HRD_CANONICAL_READONLY_ENABLED_DEV","true");
+    await expect(withHrdCompanyReadOnly(3,async()=>true)).rejects.toThrow("HRD_DEV_COMPANY_RLS_NOT_READY");
+    expect(state.connected).toBe(0);
+  });
   it("rejects an incorrect effective role even when DEV flag is enabled",async()=>{
     vi.stubEnv("APP_ENV","development");
     vi.stubEnv("HRD_CANONICAL_READONLY_ENABLED_DEV","true");
