@@ -43,3 +43,26 @@ Remote device: `srv1792369`; Nginx site `bizportal-dev.cstlogistic.co.id`.
 - The Nginx vhost also uses HTTP Basic authentication; no authenticated browser/payment request, journal write or manual transfer was attempted.
 
 **Confirmed cutover invariant:** do not replace the active DEV service with a candidate that lacks parity for the Bank Disbursement sole executor. Require source dependency mapping and disposable payment E2E before any live cutover. Do not infer endpoint availability from an unauthenticated 401.
+
+
+## Legacy executor route contract inventory
+
+Verified by reading the archived `bankDisbursements.ts` (approximately 2,557 source lines). Mounted under `/accounting/bank-disbursements` by the upstream router:
+
+| Method | Relative path | Character |
+| --- | --- | --- |
+| GET | `/meta/accounts` | Account metadata |
+| GET | `/counterparty-search` | Counterparty search |
+| GET | `/vendors` | Vendor selection |
+| GET | `/` | Disbursement list |
+| GET | `/vendor-invoices/outstanding` | Candidate invoice balances |
+| GET | `/summary` | Treasury summary |
+| GET | `/:id` | Disbursement detail |
+| POST | `/` | Financial disbursement writer |
+| POST | `/:id/void` | Financial reversal/void writer |
+| POST | additional registered handlers | Supplementary operations (must inspect individually) |
+| POST | `/ocr-extract` | OCR upload processing |
+
+The 106 KB route imports `drizzle-orm`, `postEntryWithClient`, `accountingSeed`, `resolveCompanyId`, `bdSourceGuard`, `auditLog`, OpenAI/OCR, WHT and vendor payment recalculation helpers. **This is not a stand-alone one-file transplant.**
+
+The first safe implementation slice should be a fully authenticated company-scoped **read-only** parity adapter, but only after the current actual writer service has been identified and there is a documented owner for the bank payment POST. Do not accidentally turn GET data into a new payment authorizer.
