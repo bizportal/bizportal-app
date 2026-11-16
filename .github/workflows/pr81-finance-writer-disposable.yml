@@ -34,7 +34,7 @@ jobs:
             postgres:16-alpine >/dev/null
           ready=false
           for _ in $(seq 1 70); do
-            if docker exec "$name" pg_isready -q -U postgres \
+            if docker exec "$name" pg_isready -q -h 127.0.0.1 -U postgres \
                -d cst_pr81_writer_ci >/dev/null 2>&1; then
               ready=true
               break
@@ -48,7 +48,7 @@ jobs:
           # Executes only inside an offline container without mapped ports,
           # shared volumes, CST-DEV credentials or GitHub secrets.
           if ! docker exec -i "$name" psql -X -v ON_ERROR_STOP=1 \
-            -U postgres -d cst_pr81_writer_ci \
+            -h 127.0.0.1 -U postgres -d cst_pr81_writer_ci \
             < scripts/tests/20261116_pr81_writer_disposable.sql \
             > "$logfile" 2>&1; then
             tail -50 "$logfile"
