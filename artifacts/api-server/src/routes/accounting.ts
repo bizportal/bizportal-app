@@ -1539,4 +1539,70 @@ router.get("/accounting/hub/general-ledger", async (req, res): Promise<void> => 
 });
 
 
+// DEV-only read parity for the historical bank-disbursement list.
+// No journal writer, void, posting or payment endpoint is registered here.
+// Inherits the existing Accounting authentication middleware above.
+router.get("/accounting/bank-disbursements", async (req, res): Promise<void> => {
+  if (!isDevelopmentEnvironment() ||
+      process.env.BIZPORTAL_DEV_BD_READONLY_ENABLED !== "true") {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  res.setHeader("Cache-Control", "private, no-store");
+  let companyId: number | null;
+  try {
+    companyId = requestedCompanyId(req);
+  } catch {
+    res.status(400).json({ error: "Invalid company" });
+    return;
+  }
+  // Never read across companies, even for a global Accounting actor.
+  if (companyId === null) {
+    res.status(400).json({ error: "Company is required" });
+    return;
+  }
+  const rawLimit = first(req.query.limit);
+  const limit = rawLimit === undefined ? 50 : Number(rawLimit);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    res.status(400).json({ error: "Invalid limit" });
+    return;
+  }
+  try {
+    const result = await pool.query<{
+      id: number; disbursement_number: string | null; journal_id: number;
+      date: string | Date; ref: string | null; memo: string | null;
+      total_amount: string; status: string; entry_id: number | null;
+      created_at: string | Date; attachment_url: string | null;
+      counterparty_name: string | null; counterparty_type: string | null;
+      counterparty_id: number | null; source_module: string | null;
+      expense_id: number | null; source_number: string | null;
+    }>(
+      `select id, disbursement_number, journal_id, date, ref, memo,
+              total_amount, status, entry_id, created_at, attachment_url,
+              counterparty_name, counterparty_type, counterparty_id,
+              source_module, expense_id, source_number
+         from public.bank_disbursements
+        where company_id = $1
+        order by date desc, id desc
+        limit $2`,
+      [companyId, limit],
+    );
+    res.json(result.rows.map(row => ({
+      id: row.id, disbursementNumber: row.disbursement_number,
+      journalId: row.journal_id, date: row.date, ref: row.ref,
+      memo: row.memo, totalAmount: Number(row.total_amount),
+      status: row.status, entryId: row.entry_id, createdAt: row.created_at,
+      attachmentUrl: row.attachment_url,
+      counterpartyName: row.counterparty_name,
+      counterpartyType: row.counterparty_type,
+      counterpartyId: row.counterparty_id, sourceModule: row.source_module,
+      expenseId: row.expense_id, sourceNumber: row.source_number,
+    })));
+  } catch (error) {
+    req.log.error({ error }, "DEV bank disbursement read parity failed");
+    res.status(503).json({ error: "Bank disbursement read unavailable" });
+  }
+});
+
+
 export default router;
