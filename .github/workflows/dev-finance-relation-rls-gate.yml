@@ -5,6 +5,7 @@ on:
     paths:
       - 'scripts/tests/20261115_finance_relation_rls_disposable.mjs'
       - 'scripts/tests/20261116_pr81_finance_scope_audit_disposable.mjs'
+      - 'artifacts/api-server/src/routes/dev-finance-writer-disposable-http.test.ts'
       - 'scripts/sql/20261116_pr81_finance_scope_audit_insert_STAGED.sql'
       - 'scripts/sql/20261115_marketplace_finance_relation_guards_STAGED.sql'
       - '.github/workflows/dev-finance-relation-rls-gate.yml'
@@ -49,3 +50,5 @@ jobs:
         run: node scripts/tests/20261115_finance_relation_rls_disposable.mjs
       - name: Verify PR81 Finance audit INSERT policy in disposable PostgreSQL
         run: node scripts/tests/20261116_pr81_finance_scope_audit_disposable.mjs
+      - name: Verify signed HTTP Finance AP Writer and Accounting Draft on disposable PostgreSQL
+        run: pnpm --filter @workspace/api-server exec vitest run src/routes/dev-finance-writer-disposable-http.test.ts --maxWorkers=1 --minWorkers=1
