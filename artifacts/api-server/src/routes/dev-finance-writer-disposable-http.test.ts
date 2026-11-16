@@ -40,8 +40,8 @@ vi.mock("@workspace/db", async (originalFactory) => {
   const { sql } = await import("drizzle-orm");
   const common = { host: "127.0.0.1", port: 65432, database: "payroll_ci",
     max: 3, connectionTimeoutMillis: 5000 };
-  const auth = new driver.Pool({ ...common, user: AUTH_ROLE, password: "ci-auth-local-only" });
-  const finance = new driver.Pool({ ...common, user: FIN_ROLE, password: "ci-finance-local-only" });
+  const auth = new driver.Pool({ ...common, user: "bizportal_pr81_otp_login_dev", password: "ci-auth-local-only" });
+  const finance = new driver.Pool({ ...common, user: "bizportal_marketplace_finance_login_dev", password: "ci-finance-local-only" });
   testPools.auth = auth; testPools.finance = finance;
   const financeDb = drizzle(finance, { schema: actual });
   async function withCompany<T>(id: number, work: (db: typeof financeDb) => Promise<T>, readOnly = false) {
@@ -52,7 +52,7 @@ vi.mock("@workspace/db", async (originalFactory) => {
     return financeDb.transaction(async (tx) => {
       if (readOnly) await tx.execute(sql.raw("SET TRANSACTION READ ONLY"));
       const role = await tx.execute(sql.raw("SELECT current_user::text AS role, row_security_active('public.mkt_ap_preparations'::regclass) AS rls_active"));
-      if (role.rows[0]?.role !== FIN_ROLE || role.rows[0]?.rls_active !== true)
+      if (role.rows[0]?.role !== "bizportal_marketplace_finance_login_dev" || role.rows[0]?.rls_active !== true)
         throw new Error("FINANCE_CI_ROLE_OR_RLS_INVALID");
       await tx.execute(sql.raw("SELECT set_config('app.marketplace_company_id','" + id + "',true)"));
       return work(tx as unknown as typeof financeDb);
