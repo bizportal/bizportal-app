@@ -1,0 +1,38 @@
+name: PR107 Finance Roles and 18 RLS Rules Disposable PG16/17
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+      - test/pr106-company-finance-pools-20261117
+    paths:
+      - 'scripts/sql/20261117_pr107_*'
+      - 'scripts/tests/pr107-*'
+      - '.github/workflows/pr107-finance-rls-migration-disposable.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  finance-rls-migration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        pg_image: [postgres:16-alpine, postgres:17-alpine]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prove original reviewed migration files are NOT executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "PR107_REVIEW_ONLY_DO_NOT_APPLY_ANY_LIVE_DATABASE" scripts/sql/20261117_pr107_finance_company_roles_RLS_REVIEW_ONLY.sql
+          grep -q "PR107_REVIEW_ONLY_ROLLBACK_DO_NOT_APPLY" scripts/sql/20261117_pr107_finance_company_roles_ROLLBACK_REVIEW_ONLY.sql
+      - name: Rehearse exact 18 legacy policies, role grants, tenant isolation and rollback
+        shell: bash
+        run: PR107_DISPOSABLE_PG_IMAGE="${{ matrix.pg_image }}" bash scripts/tests/pr107-run-finance-migration-disposable.sh
+      - name: Confirm tests did not mutate tracked application or database files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- lib/db artifacts/api-server/src scripts/sql scripts/tests pnpm-lock.yaml
