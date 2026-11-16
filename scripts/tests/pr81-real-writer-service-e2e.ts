@@ -96,11 +96,13 @@ async function main(){
    await exec(tx,"GRANT SELECT ON public."+name+" TO "+writer);
    await exec(tx,"ALTER TABLE public."+name+" ENABLE ROW LEVEL SECURITY");
   }
-  await exec(tx,"GRANT INSERT,UPDATE ON public.mkt_ap_preparations TO "+writer);
-  // Canonical SELECT ... FOR UPDATE on invoice requires UPDATE privileges.
-  await exec(tx,"GRANT UPDATE ON public.vendor_invoices TO "+writer);
+  // Mirror the existing narrow CST-DEV Finance column-level grants. Do not
+  // grant whole-table UPDATE or broad sequence rights just to make this pass.
+  await exec(tx,"GRANT INSERT ON public.mkt_ap_preparations TO "+writer);
+  await exec(tx,"GRANT UPDATE (preparation_number, status, finance_reviewed_by, finance_reviewed_at, waiting_payment_at, payment_request_id, payment_handoff_at, payment_handoff_by, updated_at) ON public.mkt_ap_preparations TO "+writer);
+  await exec(tx,"GRANT UPDATE (status, three_way_match_status, match_notes, updated_at) ON public.vendor_invoices TO "+writer);
   await exec(tx,"GRANT INSERT ON public.payment_requests,public.mkt_accounting_handoffs TO "+writer);
-  await exec(tx,"GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO "+writer);
+  await exec(tx,"GRANT USAGE ON SEQUENCE public.mkt_ap_preparations_id_seq,public.payment_requests_id_seq,public.mkt_accounting_handoffs_id_seq TO "+writer);
   for(const p of [
    "CREATE POLICY qapo ON public.mkt_purchase_orders FOR SELECT TO "+writer+" USING(company_id="+tenant+")",
    "CREATE POLICY qash ON public.mkt_po_shipments FOR SELECT TO "+writer+" USING(EXISTS(SELECT 1 FROM public.mkt_purchase_orders p WHERE p.id=public.mkt_po_shipments.po_id))",
@@ -117,11 +119,33 @@ async function main(){
   ])await exec(tx,p);
   await exec(tx,"SET LOCAL ROLE "+writer);
   await exec(tx,"SELECT set_config('app.marketplace_company_id','1',true)");
-  const who=await exec(tx,"SELECT current_user::text role,row_security_active('public.mkt_ap_preparations'::regclass) rls,has_table_privilege(current_user,'public.accounting_entries','INSERT') gl");
+  const who=await exec(tx, [
+    "SELECT current_user::text role,",
+    "row_security_active('public.mkt_ap_preparations'::regclass) rls,",
+    "has_table_privilege(current_user,'public.accounting_entries','INSERT') gl,",
+    "has_table_privilege(current_user,'public.vendor_invoices','UPDATE') invoice_table_update,",
+    "has_any_column_privilege(current_user,'public.vendor_invoices','UPDATE') invoice_column_update,",
+    "has_column_privilege(current_user,'public.vendor_invoices','updated_at','UPDATE') invoice_updated_at,",
+    "has_column_privilege(current_user,'public.vendor_invoices','id','UPDATE') invoice_id_update,",
+    "has_table_privilege(current_user,'public.mkt_ap_preparations','UPDATE') ap_table_update,",
+    "has_any_column_privilege(current_user,'public.mkt_ap_preparations','UPDATE') ap_column_update,",
+    "has_column_privilege(current_user,'public.mkt_ap_preparations','status','UPDATE') ap_status_update,",
+    "has_column_privilege(current_user,'public.mkt_ap_preparations','payment_request_id','UPDATE') ap_payment_link_update,",
+    "has_column_privilege(current_user,'public.mkt_ap_preparations','company_id','UPDATE') ap_company_update"
+  ].join(" "));
   assert.equal(who.rows[0].role,writer);
   assert.equal(who.rows[0].rls,true);
   assert.equal(who.rows[0].gl,false);
-  console.log("ACTUAL_SERVICE_RESTRICTED_DB_ROLE_AND_RLS_PASS");
+  assert.equal(who.rows[0].invoice_table_update,false);
+  assert.equal(who.rows[0].invoice_column_update,true);
+  assert.equal(who.rows[0].invoice_updated_at,true);
+  assert.equal(who.rows[0].invoice_id_update,false);
+  assert.equal(who.rows[0].ap_table_update,false);
+  assert.equal(who.rows[0].ap_column_update,true);
+  assert.equal(who.rows[0].ap_status_update,true);
+  assert.equal(who.rows[0].ap_payment_link_update,true);
+  assert.equal(who.rows[0].ap_company_update,false);
+  console.log("ACTUAL_SERVICE_NARROW_COLUMN_UPDATE_AND_RLS_PASS");
   const actor={actorId:"pr81-test",actorName:"PR81 test"};
   const created=await createApPreparation(14,actor,tx as unknown as typeof db);
   assert.equal(created.ok,true);

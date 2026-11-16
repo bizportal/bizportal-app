@@ -14,7 +14,12 @@ It does not import the canonical Finance Supabase connection helper,
 which correctly refuses non-CST-DEV hosts.
 
 The disposable schema's columns are derived from **real Drizzle table
-definitions**. The test adds reduced, synthetic tenant RLS policies,
+definitions**. The test mirrors the narrowly scoped CST-DEV column-level
+UPDATE privileges for Vendor Invoice (status/matching/updated_at) and AP
+(status/review/handoff/updated_at), and uses only three required sequence
+USAGE grants. The canonical Invoice FOR UPDATE / AP transitions PASS with
+these grants, **without whole-table UPDATE**. Do not widen CST-DEV grants.
+The test adds reduced, synthetic tenant RLS policies,
 unique indexes, draft-only constraints and a restricted role; it
 intentionally does NOT replicate the full production foreign-key graph
 or all 18 CST-DEV Finance policies. Thus it is **not** a live CST-DEV
