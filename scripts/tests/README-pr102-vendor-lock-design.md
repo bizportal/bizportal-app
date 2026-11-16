@@ -40,3 +40,9 @@ The disposable prototype uses a dedicated **NOLOGIN / NOINHERIT / NOBYPASSRLS** 
 ## Security hardening from actual CST-DEV read-only catalog
 
 CST-DEV on 16 Nov 2026 has 18 dedicated Finance RLS policies, Finance SELECT but no PO/GR UPDATE privileges, and 10 historic invoices; this review does not change any record. The definer routine is now declared exclusively in `finance_ops_private`, a new unexposed schema, never `public`. Only the dedicated Finance role gets schema USAGE and exact EXECUTE on this one routine; `anon`, `authenticated`, `service_role` and PUBLIC do not. The NOLOGIN function owner has CREATE on this schema only during controlled bootstrap, then it is revoked. The token expiry check uses `clock_timestamp()` (actual wall clock) after potentially blocking for a PO row lock. These changes remain disposable-test-only, **not** applied on CST-DEV.
+
+## Staged SQL candidates (guarded and not deployable)
+
+- `scripts/sql/20261116_pr102_finance_parent_lock_dev_REVIEW_ONLY.sql` and the matching `...ROLLBACK_REVIEW_ONLY.sql` include an unconditional exception at their start. They **cannot** be applied as written; these are source-only review artifacts, not migration records. Do not remove the guard or commit live execution without a separate approval.
+- `scripts/tests/pr102-run-review-sql-disposable.sh` first verifies that the original files reject execution. On a local, `--network none` disposable PostgreSQL 16 container, it removes that guard from **temporary CI copies only** and proves the full DDL and rollback with schema isolation, RLS baseline and preserved direct Finance restrictions. It cannot reach CST-DEV/PROD or a networked database.
+- Supabase CLI is not installed on the current VPS. Any **official migration** must be generated using a verified Supabase CLI and reviewed release workflow; the staged SQL is deliberately not an automatically deployable migration.

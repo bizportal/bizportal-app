@@ -7,6 +7,7 @@ on:
       - 'artifacts/api-server/src/routes/mktVendorInvoice.ts'
       - 'artifacts/api-server/src/routes/dev-vendor-finance-session.test.ts'
       - 'scripts/tests/pr102-*'
+      - 'scripts/sql/20261116_pr102_finance_parent_lock_dev_*REVIEW_ONLY.sql'
       - 'scripts/tests/README-pr102-vendor-lock-design.md'
       - '.github/workflows/pr102-vendor-lock-disposable.yml'
   workflow_dispatch:
@@ -49,6 +50,8 @@ jobs:
         run: bash scripts/tests/pr102-run-vendor-definer.sh
       - name: Prove genuine PO and GR row locks against unrelated concurrent writers
         run: bash scripts/tests/pr102-run-vendor-concurrency.sh
+      - name: Validate staged install and rollback remain blocked, then prove disposable SQL parity
+        run: bash scripts/tests/pr102-run-review-sql-disposable.sh
       - name: Ensure test executions did not edit source or lockfile
         shell: bash
         run: |
