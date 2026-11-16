@@ -1,9 +1,11 @@
 name: DEV Finance Relationship RLS Disposable Gate
 on:
   pull_request:
-    branches: [main]
+    branches: [main, test/finance-pr79-pr80-integration-20261115]
     paths:
       - 'scripts/tests/20261115_finance_relation_rls_disposable.mjs'
+      - 'scripts/tests/20261116_pr81_finance_scope_audit_disposable.mjs'
+      - 'scripts/sql/20261116_pr81_finance_scope_audit_insert_STAGED.sql'
       - 'scripts/sql/20261115_marketplace_finance_relation_guards_STAGED.sql'
       - '.github/workflows/dev-finance-relation-rls-gate.yml'
   workflow_dispatch:
@@ -45,3 +47,5 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Verify referential company policies and initial AP status
         run: node scripts/tests/20261115_finance_relation_rls_disposable.mjs
+      - name: Verify PR81 Finance audit INSERT policy in disposable PostgreSQL
+        run: node scripts/tests/20261116_pr81_finance_scope_audit_disposable.mjs
