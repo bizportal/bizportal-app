@@ -1,0 +1,60 @@
+name: PR104 Finance Tenant Boundary and Deadlock Disposable PG16/17
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+      - test/pr103-vendor-shipment-lock-20261116
+      - test/pr102-vendor-parent-lock-20261116
+    paths:
+      - 'scripts/tests/pr104-*'
+      - 'artifacts/api-server/src/routes/mktVendorInvoice.ts'
+      - 'artifacts/api-server/src/routes/dev-vendor-finance-session.test.ts'
+      - '.github/workflows/pr104-finance-boundary-disposable.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  security-boundary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      matrix:
+        pg_image: [postgres:16-alpine, postgres:17-alpine]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install frozen dependencies without lifecycle scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Resolve source schema dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -e lib/db/node_modules/drizzle-zod
+          if test ! -e artifacts/api-server/node_modules/drizzle-zod; then
+            ln -s ../../../lib/db/node_modules/drizzle-zod artifacts/api-server/node_modules/drizzle-zod
+          fi
+          test -e artifacts/api-server/node_modules/drizzle-zod
+      - name: Typecheck API and database source
+        run: pnpm --dir artifacts/api-server run typecheck
+      - name: Run existing vendor and Finance regression tests
+        run: pnpm --dir artifacts/api-server exec vitest run src/routes/dev-vendor-finance-session.test.ts src/routes/mktVendorInvoice.dev-compat.test.ts src/lib/services/mktMarketplaceCompanyScope.test.ts
+      - name: Reproduce caller-settable database tenant context in disposable PostgreSQL
+        run: PR104_DISPOSABLE_PG_IMAGE="${{ matrix.pg_image }}" bash scripts/tests/pr104-run-tenant-boundary.sh
+      - name: Build canonical private-row-lock reverse-order deadlock probe
+        run: node scripts/tests/pr104-build-deadlock.cjs
+      - name: Prove deadlock SQLSTATE and complete rollback on disposable PostgreSQL
+        run: PR102_DISPOSABLE_PG_IMAGE="${{ matrix.pg_image }}" bash scripts/tests/pr104-run-deadlock.sh
+      - name: Ensure source, schema and lockfile unchanged by testing
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- artifacts/api-server/src/routes/mktVendorInvoice.ts artifacts/api-server/src/routes/dev-vendor-finance-session.test.ts lib/db/src/schema pnpm-lock.yaml
