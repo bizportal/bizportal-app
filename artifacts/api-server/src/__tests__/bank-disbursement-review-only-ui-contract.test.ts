@@ -28,6 +28,16 @@ describe("DEV outstanding review cannot authorize a bank payment", () => {
     expect(ui).toContain('disabled={saving || isUploadingAttachment || (paymentMode === "vendor_invoice" && outstandingData?.reviewOnly === true)}');
   });
 
+  it("prevents quick invoice creation and posting in review-only mode", () => {
+    const start = ui.indexOf("const handleQuickCreateVendorInvoice = async () => {");
+    const end = ui.indexOf("const positiveLines =", start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(ui.slice(start, end)).toContain("if (outstandingData?.reviewOnly)");
+    expect(ui.slice(start, end)).toContain("return;");
+    expect(ui).toContain("!outstandingData?.reviewOnly && ocrApplied && ocrResult");
+  });
+
   it("does not add a bank writer route", () => {
     expect(route).not.toContain('router.post("/accounting/bank-disbursements"');
     expect(route).not.toContain('router.post("/accounting/bank-disbursements/:id/void"');
