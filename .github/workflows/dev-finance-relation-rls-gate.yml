@@ -52,3 +52,5 @@ jobs:
         run: node scripts/tests/20261116_pr81_finance_scope_audit_disposable.mjs
       - name: Verify signed HTTP Finance AP Writer and Accounting Draft on disposable PostgreSQL
         run: pnpm --filter @workspace/api-server exec vitest run src/routes/dev-finance-writer-disposable-http.test.ts --maxWorkers=1 --minWorkers=1
+      - name: Typecheck Finance API and DB after HTTP integration
+        run: pnpm --filter @workspace/api-server run typecheck
