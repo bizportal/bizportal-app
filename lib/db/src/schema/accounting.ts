@@ -325,8 +325,8 @@ export const accountingEntriesTable = pgTable("accounting_entries", {
   voidEntryId: integer("void_entry_id"),
   voidedBy: text("voided_by"),
 }, (t) => ({
-  uniqAutoSource: uniqueIndex("accounting_entries_source_uniq")
-    .on(t.source, t.sourceId)
+  uniqAutoSource: uniqueIndex("accounting_entries_company_source_source_id_uniq")
+    .on(t.companyId, t.source, t.sourceId)
     .where(drizzleSql`${t.source} <> 'manual' AND ${t.sourceId} IS NOT NULL`),
   uniqCanonicalSourceEvent: uniqueIndex("accounting_entries_canonical_event_uniq")
     .on(t.companyId, t.source, t.sourceEventId)
