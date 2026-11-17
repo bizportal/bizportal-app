@@ -456,7 +456,10 @@ async function recoverExistingQaFixtures() {
           where mkt_purchase_order_id=$1) invoice_status,
         (select count(*)::int from public.mkt_ap_preparations where mkt_purchase_order_id=$1) all_ap,
         (select count(*)::int from public.mkt_ap_preparations where mkt_purchase_order_id=$1
-          and company_id=$5 and supplier_id=$6 and status='waiting_payment') safe_ap,
+          and company_id=$5 and supplier_id=$6
+          and status in ('ap_preparation','finance_review','waiting_payment')) safe_ap,
+        (select min(status::text) from public.mkt_ap_preparations
+          where mkt_purchase_order_id=$1) ap_status,
         (select count(*)::int from public.payment_requests pr
           join public.mkt_ap_preparations ap on ap.id=pr.mkt_ap_preparation_id
           where ap.mkt_purchase_order_id=$1) all_payments,
@@ -508,11 +511,23 @@ async function recoverExistingQaFixtures() {
       evidence.invoice_status==="ready_for_ap" && evidence.all_ap===0 &&
       evidence.all_payments===0 && evidence.all_handoffs===0 &&
       equalActivities(vendorActions);
+    const apCreatedActions = [...vendorActions,{action:"mkt_ap_preparation_created",n:1}];
+    const apReviewedActions = [...apCreatedActions,{action:"mkt_ap_finance_reviewed",n:1}];
+    const apWaitingActions = [...apReviewedActions,{action:"mkt_ap_waiting_payment",n:1}];
+    const apOnly = evidence.all_invoices===1 && evidence.invoice_lines===2 &&
+      evidence.invoice_status==="ready_for_ap" && evidence.all_ap===1 &&
+      evidence.all_payments===0 && evidence.all_handoffs===0 &&
+      (
+        (evidence.ap_status==="ap_preparation" && equalActivities(apCreatedActions)) ||
+        (evidence.ap_status==="finance_review" && equalActivities(apReviewedActions)) ||
+        (evidence.ap_status==="waiting_payment" && equalActivities(apWaitingActions))
+      );
     const completed = evidence.all_invoices===1 && evidence.invoice_lines===2 &&
       evidence.invoice_status==="ready_for_ap" && evidence.all_ap===1 &&
+      evidence.ap_status==="waiting_payment" &&
       evidence.all_payments===1 && evidence.all_handoffs===1 &&
       equalActivities(allActions);
-    requireThat(noInvoice || uploaded || submitted || completed,
+    requireThat(noInvoice || uploaded || submitted || apOnly || completed,
       "RECOVER_SYNTHETIC_FLOW_DRIFT");
     fixtures.push({
       companyId, supplierId:q.supplier_id, rfqId:q.rfq_id,quoteId:q.quote_id,
