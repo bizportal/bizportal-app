@@ -8487,6 +8487,7 @@ router.post("/bank-reconciliation/:mutationId/vendor-invoice-payment-batch", asy
           and bd.void_entry_id is null
           and ae.status = 'posted'
           and ae.cancelled_at is null
+          and ae.voided_at is null
         order by bd.id
         limit 1
         for update of bd`,
