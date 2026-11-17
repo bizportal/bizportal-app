@@ -581,7 +581,15 @@ async function main() {
 }
 main().catch(error => {
   // Never print Error objects, SQL parameters, request URLs or raw credential errors.
-  const message = error instanceof Error && /^QA_[A-Z0-9_]+$/.test(error.message) ? error.message : "QA_UNEXPECTED_FAILURE";
+  // Only emit stable internal error codes; never emit raw SQL, URLs, vendor
+  // capabilities, service account identities or opaque driver error messages.
+  const msg = error instanceof Error ? error.message : "";
+  const message = /^QA_[A-Z0-9_]+$/.test(msg) ? msg
+    : /^DEV_FINANCE_[A-Z0-9_]+$/.test(msg) ? msg
+    : "QA_UNEXPECTED_FAILURE";
+  const errorClass = error instanceof Error &&
+    ["Error","TypeError","RangeError","AggregateError"].includes(error.name)
+      ? error.name : "UNKNOWN";
   let cause: unknown = error;
   let sqlState: string | undefined;
   for (let depth = 0; depth < 5 && cause instanceof Error; depth++) {
@@ -589,7 +597,7 @@ main().catch(error => {
     if (typeof possibleCode === "string" && /^[0-9A-Z]{5}$/.test(possibleCode)) sqlState = possibleCode;
     cause = cause.cause;
   }
-  console.error(JSON.stringify({ result: "FAIL", stage, code: message, sqlState, marker }));
+  console.error(JSON.stringify({ result: "FAIL", stage, code: message, sqlState, errorClass, marker }));
   process.exitCode = 1;
 }).finally(async () => {
   admin?.release();
