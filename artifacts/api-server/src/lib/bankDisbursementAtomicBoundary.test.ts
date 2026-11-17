@@ -133,6 +133,54 @@ describe("Unregistered candidate bank payment atomic boundary", () => {
     },
   );
 
+  it("fails closed on a persisted idempotency receipt missing linked journal/disbursement", async () => {
+    const h = makeHarness();
+    await commitVendorInvoicePaymentAtomic(input, h.adapter);
+    const corrupted: AtomicSettlementAdapter<State> = {
+      ...h.adapter,
+      findByKey: async () => ({
+        ...input, journalId: 0, disbursementId: 1,
+      }),
+    };
+    await expect(commitVendorInvoicePaymentAtomic(input, corrupted))
+      .rejects.toThrow("ATOMIC_SETTLEMENT_INCOMPLETE_RECEIPT");
+    expect(h.snapshot()).toMatchObject({ journalCount: 1, disbursementCount: 1 });
+  });
+
+  it("does not commit an invalid journal ID or disbursement ID", async () => {
+    for (const invalidStage of ["journal", "disbursement"] as const) {
+      const h = makeHarness();
+      const broken: AtomicSettlementAdapter<State> = {
+        ...h.adapter,
+        ...(invalidStage === "journal"
+          ? { postJournal: async () => 0 }
+          : { createDisbursement: async () => 0 }),
+      };
+      await expect(commitVendorInvoicePaymentAtomic(input, broken)).rejects.toThrow(
+        invalidStage === "journal"
+          ? "ATOMIC_SETTLEMENT_INVALID_JOURNAL_ID"
+          : "ATOMIC_SETTLEMENT_INVALID_DISBURSEMENT_ID",
+      );
+      expect(h.snapshot()).toEqual({
+        outstanding: 10000, journalCount: 0, disbursementCount: 0, payments: [],
+      });
+    }
+  });
+
+  it("rejects invalid authoritative outstanding balances before financial writes", async () => {
+    const h = makeHarness();
+    const broken: AtomicSettlementAdapter<State> = {
+      ...h.adapter,
+      lockInvoice: async () => ({
+        companyId: 1, invoiceId: 77, status: "posted",
+        outstandingMinor: Number.NaN,
+      }),
+    };
+    await expect(commitVendorInvoicePaymentAtomic(input, broken))
+      .rejects.toThrow("ATOMIC_SETTLEMENT_INVALID_AUTHORITY_BALANCE");
+    expect(h.snapshot()).toMatchObject({ journalCount: 0, disbursementCount: 0 });
+  });
+
   it("validates request identity and WHT before starting a DB transaction", async () => {
     const h = makeHarness();
     expect(await commitVendorInvoicePaymentAtomic({
