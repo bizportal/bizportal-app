@@ -34,15 +34,15 @@ VALUES (1,101,102,11,103,1),(3,301,302,31,303,3);
 
 INSERT INTO public.sales_documents
  (id,doc_number,kind,status,invoice_status,customer_name,total_amount,tax_amount,
-  grand_total,company_id,invoice_number,invoice_date,due_date,tax_treatment)
+  grand_total,company_id,invoice_number,invoice_date,due_date,tax_treatment,tax_rate_id)
 VALUES
- (171,'QA-ORDER-171','order','confirmed','invoiced','Synthetic CST A',100,0,100,1,'QA-CST-171','2026-11-18','2026-12-18','none'),
- (173,'QA-ORDER-173','order','confirmed','invoiced','Synthetic DIVA B',100,0,100,3,'QA-DIVA-173','2026-11-18','2026-12-18','none'),
- (175,'QA-ORDER-175','order','confirmed','invoiced','Synthetic rollback',100,0,100,1,'QA-CST-175','2026-11-18','2026-12-18','none'),
- (177,'QA-ORDER-177','order','confirmed','invoiced','Synthetic taxable wrong treatment',100,11,111,1,'QA-CST-177','2026-11-18','2026-12-18','taxable'),
- (179,'QA-ORDER-179','order','confirmed','invoiced','Synthetic PPN CST',100,11,111,1,'QA-CST-179','2026-11-18','2026-12-18','exclusive'),
- (183,'QA-ORDER-183','order','confirmed','invoiced','Synthetic PPN DIVA',100,11,111,3,'QA-DIVA-183','2026-11-18','2026-12-18','exclusive'),
- (185,'QA-ORDER-185','order','confirmed','invoiced','Synthetic PPN wrong amount',100,101.75,201.75,1,'QA-CST-185','2026-11-18','2026-12-18','exclusive');
+ (171,'QA-ORDER-171','order','confirmed','invoiced','Synthetic CST A',100,0,100,1,'QA-CST-171','2026-11-18','2026-12-18','none',null),
+ (173,'QA-ORDER-173','order','confirmed','invoiced','Synthetic DIVA B',100,0,100,3,'QA-DIVA-173','2026-11-18','2026-12-18','none',null),
+ (175,'QA-ORDER-175','order','confirmed','invoiced','Synthetic rollback',100,0,100,1,'QA-CST-175','2026-11-18','2026-12-18','none',null),
+ (177,'QA-ORDER-177','order','confirmed','invoiced','Synthetic taxable wrong treatment',100,11,111,1,'QA-CST-177','2026-11-18','2026-12-18','taxable',1),
+ (179,'QA-ORDER-179','order','confirmed','invoiced','Synthetic PPN CST',100,11,111,1,'QA-CST-179','2026-11-18','2026-12-18','exclusive',1),
+ (183,'QA-ORDER-183','order','confirmed','invoiced','Synthetic PPN DIVA',100,11,111,3,'QA-DIVA-183','2026-11-18','2026-12-18','exclusive',3),
+ (185,'QA-ORDER-185','order','confirmed','invoiced','Synthetic PPN wrong amount',100,101.75,201.75,1,'QA-CST-185','2026-11-18','2026-12-18','exclusive',1);
 INSERT INTO public.sales_document_lines(document_id,name,quantity,unit_price,subtotal)
 VALUES (171,'Synthetic service',1,100,100),
  (173,'Synthetic service',1,100,100),
