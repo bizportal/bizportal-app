@@ -303,6 +303,38 @@ describe("DEV-only company Finance pool routing is fail closed",()=>{
   expect(m.transactions.map(t=>t.role)).toEqual([ROLE.cst,ROLE.cst,ROLE.diva]);
  });
 
+ it("uses pinned Supabase root CA and verified hostname for IPv4 Session Pooler:5432",async()=>{
+  process.env[BUNDLE_FLAG]="true";
+  // Reuse the canonical 2-role bundle; only change 6543 -> Session Pooler:5432.
+  // No real credentials or network access in this regression.
+  m.secret.mockReset().mockResolvedValue(bundle(
+    url(ROLE.cst).replace(":6543/postgres",":5432/postgres"),
+    url(ROLE.diva).replace(":6543/postgres",":5432/postgres"),
+  ));
+  const mod=await load();
+  const cst=await mod.withMarketplaceFinanceDevReadOnlyTransaction(1,async()=>true);
+  const diva=await mod.withMarketplaceFinanceDevReadOnlyTransaction(3,async()=>true);
+  expect(cst).toBe(true);
+  expect(diva).toBe(true);
+  expect(m.poolOptions).toHaveLength(2);
+  expect(m.secret).toHaveBeenCalledTimes(1);
+  for(const pool of m.poolOptions){
+    expect(pool.port).toBe(5432);
+    expect(pool.host).toBe("aws-0-ap-southeast-2.pooler.supabase.com");
+    expect(pool.ssl).toMatchObject({
+      rejectUnauthorized:true,
+      servername:"aws-0-ap-southeast-2.pooler.supabase.com",
+    });
+    expect(pool.ssl.ca).toContain("-----BEGIN CERTIFICATE-----");
+    expect(pool.ssl.ca).toContain("-----END CERTIFICATE-----");
+    expect(pool.max).toBe(1);
+    expect(pool.application_name).toBe("bizportal-finance-dev");
+    expect(pool.password).toBe("synthetic");
+  }
+  expect(m.poolOptions.map(p=>p.user).sort()).toEqual([
+    ROLE.cst+"."+PROJECT,ROLE.diva+"."+PROJECT,
+  ].sort());
+ });
  it("one GCP secret yields distinct authenticated CST/Diva pools, even concurrently",async()=>{
   process.env[BUNDLE_FLAG]="true";
   m.secret.mockReset().mockResolvedValue(bundle());

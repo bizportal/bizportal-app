@@ -1,5 +1,6 @@
 import pg from "pg";
 import { X509Certificate } from "node:crypto";
+import { rootCertificates } from "node:tls";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { sql } from "drizzle-orm";
 import * as schema from "./schema";
@@ -250,21 +251,26 @@ function secureFinancePoolOptions(raw: string, expectedRole = EXPECTED_ROLE): pg
     throw new Error("DEV_FINANCE_DATABASE_TARGET_INVALID");
   }
 
-  let ca: string | undefined;
-  if (hostname === directHost) {
-    const cert = new X509Certificate(SUPABASE_FINANCE_ROOT_2021_PEM);
-    if (!cert.ca ||
-        cert.fingerprint256.toUpperCase() !== SUPABASE_FINANCE_ROOT_2021_FINGERPRINT256) {
-      throw new Error("DEV_FINANCE_PINNED_CA_INVALID");
-    }
-    ca = SUPABASE_FINANCE_ROOT_2021_PEM;
+  // Supabase direct DB resolves IPv6 only in CST-DEV; the already-existing
+  // Session Pooler resolves IPv4. Both present chains requiring Supabase's
+  // pinned public root. For pooler, retain system roots plus this specific
+  // approved root exactly as the already-PASS DEV admin TLS QA does.
+  // Never disable certificate or hostname verification, and never use the
+  // privileged shared postgres connection as a company-role fallback.
+  const cert = new X509Certificate(SUPABASE_FINANCE_ROOT_2021_PEM);
+  if (!cert.ca ||
+      cert.fingerprint256.toUpperCase() !== SUPABASE_FINANCE_ROOT_2021_FINGERPRINT256) {
+    throw new Error("DEV_FINANCE_PINNED_CA_INVALID");
   }
+  const ca = hostname === directHost
+    ? SUPABASE_FINANCE_ROOT_2021_PEM
+    : [...rootCertificates, SUPABASE_FINANCE_ROOT_2021_PEM].join("\n");
 
   return {
     host: hostname, port, user,
     password: decodeURIComponent(url.password),
     database,
-    ssl: { rejectUnauthorized: true, servername: hostname, ...(ca ? { ca } : {}) },
+    ssl: { rejectUnauthorized: true, servername: hostname, ca },
     max: 1, connectionTimeoutMillis: 8000, idleTimeoutMillis: 5000,
     query_timeout: 20000, application_name: "bizportal-finance-dev",
   };
