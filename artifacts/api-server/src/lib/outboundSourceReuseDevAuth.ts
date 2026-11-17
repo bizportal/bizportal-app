@@ -1,8 +1,8 @@
 /**
  * PR95 outbound source reuse authentication gate — DEV ONLY, UNREGISTERED.
  * Reuses canonical signed OTP cookie and DB-revalidated user identity.
- * Never accepts x-company-id, email, role, or user id from a request body.
- * No legacy getDevSession fallback. No real finance route is registered.
+ * Principal claims are never sourced from untrusted HTTP inputs.
+ * Legacy development session fallback is prohibited; no route is registered.
  */
 import type { Request } from "express";
 import {
