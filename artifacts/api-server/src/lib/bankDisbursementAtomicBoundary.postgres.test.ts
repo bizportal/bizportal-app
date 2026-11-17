@@ -173,7 +173,7 @@ describe.skipIf(!enabled)("PR95 boundary with real disposable PostgreSQL transac
       try {
         const result=await commitVendorInvoicePaymentAtomic(body as InvoiceSettlementInput,adapter());
         res.status(result.outcome==="created"?201:result.outcome==="replayed"?200:
-          result.reason==="idempotency_conflict"?409:422).json(result);
+          result.outcome==="rejected" && result.reason==="idempotency_conflict"?409:422).json(result);
       } catch {
         res.status(503).json({ error:"TRANSACTION_ROLLED_BACK" });
       }
