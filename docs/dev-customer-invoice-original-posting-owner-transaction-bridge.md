@@ -31,6 +31,10 @@ Exit code 0. Independent Supabase postflight: QA Invoice=0, QA journal=0, QA AR=
 Permanent adapter regression tests: 16/16 PASS; TypeScript PASS.
 Original owner source-only migration PR135: 926/926 executed API tests PASS (54 intentionally skipped), 6/6 source-side transaction safeguards PASS.
 
+## Source-only bundle validation (not a deployment)
+
+The PR136 GitHub Actions workflow now includes an isolated esbuild bundle smoke check for the original owner adapter (Node 22 ESM, external npm/workspace packages). It verifies the bundle includes the exported adapter, the original CanonicalPostingEngine, and the positive-tax fail-closed guard, then records SHA-256 and deletes the temporary output. This checks bundle construction only; it does NOT prove runtime dependency portability, real signed HTTP authentication, post-COMMIT side effects, or activation readiness. Do not copy the temporary bundle to DEV or PROD as a release package.
+
 ## Remaining NO-GO before runtime activation
 
 - Make a pinned, reviewed, deterministic in-process release package of the existing owner. The transient CJS bundle and symlinks from the proof are not a deployable package.
