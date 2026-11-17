@@ -23,3 +23,17 @@ The next integration cannot write `public.payment_allocations` merely from a Ven
 - Verify replay, cancellation/reversal, and orphan/cross-company cases; production gating remains OFF until those paths PASS on real services.
 
 **Decision:** PR #95 remains Draft. Leave the synthetic test untouched for its existing valid contract coverage; its PASS is not a deployment permission. No application-runtime or database write was performed in this audit.
+
+
+## Existing canonical mutation writer found — 2026-11-17 follow-up
+
+Source audit of `artifacts/api-server/src/routes/bank-reconciliation.ts` found the **already registered** endpoint `POST /bank-reconciliation/:mutationId/vendor-invoice-payment-batch` (near line 8331). Within one `client.query("begin") ... commit/rollback` transaction, this writer creates `accounting_entries`, `accounting_entry_lines`, a `payment_matching_groups` row, `payment_allocations` rows with a **real mutationId**, reconciliation matches, and bank mutation approval state. It uses `getApprovalActor(req)`; it is not a Bank Disbursement POST endpoint. The canonical bank-reconciliation posting transition is separate from the batch approval's `approved_pending_posting` state. Its capabilities are *code-verified, not fresh HTTP E2E verified in this audit*.
+
+**Important correction to earlier generalized claims:** The repository **does have a canonical Vendor Invoice bank-mutation matching/allocation writer**, so do not create another one, reuse it. The *missing piece* remains an authenticated Bank Disbursement sole-executor for payment initiation/settlement with its own source custody, plus a well-defined handoff to bank-mutation reconciliation which must **not post the same bank debit twice**. Source contract test `src/__tests__/pr95-existing-vendor-bank-reconciliation-writer.test.ts` freezes the existing route and its transaction boundary. No database mutation or activation has occurred.
+
+### Integration decision
+
+- Preserve the existing bank mutation vendor invoice batch endpoint as-is.
+- Keep the PR95 candidate's `pr95_real.allocations` synthetic table limited to testing its generic transaction contract; it is not a drop-in integration with `public.payment_allocations`.
+- Before creating a Bank Disbursement writer, map whether a payment initiation creates an accounting journal that bank reconciliation should *match* rather than *repost*, including transition from `approved_pending_posting`, and prove both paths cannot debit bank for the same settlement.
+- Cutover remains BLOCKED until real service E2E establishes payment-source custody, company scope, no double journal, no fabricated bank mutation and correct reconciliation state.
