@@ -105,6 +105,11 @@ jobs:
           set -euo pipefail
           bash scripts/payroll-calculate/run-disposable.sh | tee "$RUNNER_TEMP/payroll-calculate.log"
           grep -qx 'REAL_POSTGRES_DISPOSABLE_PASS' "$RUNNER_TEMP/payroll-calculate.log"
+      - name: Signed HTTP Calculate -> one Super Admin approval on restricted PostgreSQL
+        run: |
+          set -euo pipefail
+          NODE_OPTIONS=--throw-deprecation bash scripts/payroll-calculate/run-disposable.sh signed | tee "$RUNNER_TEMP/payroll-calculate-signed.log"
+          grep -qx 'SIGNED_APPROVAL_POSTGRES_DISPOSABLE_PASS' "$RUNNER_TEMP/payroll-calculate-signed.log"
       - name: Build and check the actual pinned native package
         run: |
           set -euo pipefail

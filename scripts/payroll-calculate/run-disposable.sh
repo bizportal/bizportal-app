@@ -19,5 +19,17 @@ docker exec "$NAME" pg_isready -U postgres -d postgres
 cd "$ROOT"
 export PAYROLL_CALC_PG_ADMIN_URL="postgresql://postgres:payroll_container_fixture_only_2026@127.0.0.1:${PORT}/postgres"
 export PAYROLL_CALC_PG_RESTRICTED_URL="postgresql://bizportal_payroll_dev:payroll_fixture_only_2026@127.0.0.1:${PORT}/postgres"
-pnpm --filter @workspace/api-server exec vitest run src/routes/payroll-calculate-real-postgres.test.ts
-echo "REAL_POSTGRES_DISPOSABLE_PASS"
+case "${1:-calculate}" in
+  calculate)
+    pnpm --filter @workspace/api-server exec vitest run src/routes/payroll-calculate-real-postgres.test.ts
+    echo "REAL_POSTGRES_DISPOSABLE_PASS"
+    ;;
+  signed)
+    export PAYROLL_CALC_PG_APPROVER_URL="postgresql://bizportal_payroll_approver_dev:payroll_approver_fixture_only_2026@127.0.0.1:${PORT}/postgres"
+    pnpm --filter @workspace/api-server exec vitest run src/routes/payroll-calculate-signed-approval-postgres.test.ts --maxWorkers=1 --no-file-parallelism
+    echo "SIGNED_APPROVAL_POSTGRES_DISPOSABLE_PASS"
+    ;;
+  *)
+    echo "Expected fixture mode: calculate or signed"; exit 2
+    ;;
+esac
