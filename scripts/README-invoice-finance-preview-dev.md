@@ -126,6 +126,9 @@ baseline, atomically installs a separate `zz-invoice-completion-dev.conf`, tests
 Nginx, restarts only the private preview and checks local/HTTPS readiness plus
 unauthenticated denial. Failure restores the previous state automatically.
 The generic `/api/` denial and all existing login routes remain in place.
+The existing shared Nginx rate limit remains 10 requests/minute. Smoke checks
+retry only HTTP 429, at most three attempts, with a 6.2-second minimum delay and
+`Retry-After` bounded to 30 seconds. Other HTTP/transport failures are not retried.
 
 The Writer drop-in clears the inherited generic Finance DSN/secret-name settings:
 company mode deliberately rejects those values. It selects the existing one-GCP
@@ -201,10 +204,11 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p 'test
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p 'test_invoice_preview_build.py' -v
 ```
 
-Nine checks cover rejected payment/unrecognized paths, preserved authentication,
+Eleven checks cover rejected payment/unrecognized paths, preserved authentication,
 stale Nginx baseline refusal, artifact manifest path traversal, concurrent-change
 rollback refusal, restoration after an injected Nginx validation failure and the
-exact Customer AR route/anonymous denial in each mode.
+exact Customer AR route/anonymous denial in each mode, plus bounded 429-only
+retries without retrying a failed connection or accepting anonymous access.
 These checks never invoke a real service or replace the signed DEV business test.
 Seven additional build-tool checks cover secret/environment isolation, portable
 symlinks, narrow pnpm self-link rebasing, complete checksum generation and atomic

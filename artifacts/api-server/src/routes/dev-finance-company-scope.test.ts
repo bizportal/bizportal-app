@@ -14,6 +14,7 @@ const envKeys = [
   "BIZPORTAL_FINANCE_GLOBAL_SCOPE_ENABLED_DEV",
   "BIZPORTAL_FINANCE_GLOBAL_SUPERADMIN_EMAILS_DEV",
   "BIZPORTAL_FINANCE_GLOBAL_COMPANY_IDS_DEV",
+  "BIZPORTAL_CUSTOMER_AR_PREVIEW_ENABLED_DEV",
 ] as const;
 const original = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
 const session = (): ProductionSession => ({
@@ -28,6 +29,7 @@ beforeEach(() => {
   process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
   process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV = "true";
   delete process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV;
+  delete process.env.BIZPORTAL_CUSTOMER_AR_PREVIEW_ENABLED_DEV;
   process.env.BIZPORTAL_FINANCE_GLOBAL_SCOPE_ENABLED_DEV = "true";
   process.env.BIZPORTAL_FINANCE_GLOBAL_SUPERADMIN_EMAILS_DEV = "admin@example.test";
   process.env.BIZPORTAL_FINANCE_GLOBAL_COMPANY_IDS_DEV = "1,3";
@@ -93,6 +95,29 @@ describe("Issue76 DEV Finance scope signature and session binding", () => {
     expect(cookies[0]).toContain("Path=/api/mkt/admin");
     expect(res.setHeader).toHaveBeenCalledWith("Cache-Control", "no-store");
     expect(getFinanceCompanyScope(req, actor)).toBe(1);
+  });
+  it("transports the same signed selection only to the two intended browser cookie paths", () => {
+    const actor = session();
+    const customerPath = "/api/sales/customer-invoices/auto-match-preview";
+    // Browser cookie path matching: exact path or a slash-delimited descendant.
+    const browserRequest = (cookies: string[], path: string) => ({ headers: {
+      cookie: cookies.filter((cookie) => {
+        const scope = /(?:^|; )Path=([^;]+)/.exec(cookie)?.[1] ?? "/";
+        return path === scope || path.startsWith(scope.endsWith("/") ? scope : scope + "/");
+      }).map((cookie) => cookie.split(";")[0]).join("; "),
+    } }) as Request;
+    const previous = issued(3, actor);
+    expect(previous.cookies).toHaveLength(1);
+    expect(getFinanceCompanyScope(browserRequest(previous.cookies, customerPath), actor)).toBeNull();
+    process.env.BIZPORTAL_CUSTOMER_AR_PREVIEW_ENABLED_DEV = "true";
+    const selected = issued(3, actor);
+    expect(selected.cookies).toHaveLength(2);
+    expect(selected.cookies[1]).toContain("Path=" + customerPath + "; HttpOnly; Secure; SameSite=Strict");
+    expect(getFinanceCompanyScope(browserRequest(selected.cookies, customerPath), actor)).toBe(3);
+    expect(getFinanceCompanyScope(browserRequest(selected.cookies, "/api/mkt/admin/vendor-invoices/1"), actor)).toBe(3);
+    expect(getFinanceCompanyScope(browserRequest(selected.cookies, "/api/sales/customer-invoices/other"), actor)).toBeNull();
+    expect(getFinanceCompanyScope(browserRequest(selected.cookies, "/api/finance/unrelated"), actor)).toBeNull();
+    expect(getFinanceCompanyScope(browserRequest(selected.cookies, customerPath), { ...actor, issuedAt: actor.issuedAt + 1 })).toBeNull();
   });
   it("rejects tampering and replay for a different OTP session", () => {
     const actor = session();

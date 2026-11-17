@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+from email.utils import parsedate_to_datetime
 import fcntl
 import hashlib
 import json
@@ -115,7 +116,143 @@ def route(pattern: str, methods: str, body_limit: str, *, token: bool = False, e
         "        proxy_set_header X-Forwarded-Host $host;\n"
         "        proxy_set_header X-Forwarded-Proto https;\n"
         "        proxy_set_header X-Real-IP $remote_addr;\n"
-        "        proxy_set_header X-Forwarded-For $proxy_add_x_fo…1461 tokens truncated…"source-commit.txt").read_text().strip() == expected_sha, "SOURCE_SHA_MISMATCH")
+        "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
+        "        proxy_connect_timeout 4s;\n"
+        "        proxy_read_timeout 45s;\n"
+        "        proxy_send_timeout 30s;\n"
+        "    }\n"
+    )
+
+
+def nginx_block() -> str:
+    ident = "[1-9][0-9]{0,9}"
+    token = "[0-9A-Fa-f]{64}"
+    return BEGIN + (
+        route("/api/sales/customer-invoices/auto-match-preview", "GET", "1024", exact=True) +
+        route(f"^/api/mkt/admin/vendor-invoices/{ident}/(match|ap-preparation)$", "POST", "1024") +
+        route(f"^/api/mkt/admin/ap-preparations/{ident}/(finance-review|waiting-payment|accounting-handoff)$", "POST", "1024") +
+        route(f"^/api/mkt/vendor-invoice/{token}$", "POST", "21m", token=True) +
+        route(f"^/api/mkt/vendor-invoice/{token}/invoices(/{ident})?$", "GET", "1024", token=True) +
+        route(f"^/api/mkt/vendor-invoice/{token}/invoices/{ident}/submit$", "POST", "1024", token=True)
+    ) + END
+
+
+def nginx_content(original: str, mode: str) -> str:
+    if BEGIN in original or END in original:
+        require(original.count(BEGIN) == original.count(END) == 1, "NGINX_MARKERS_INVALID")
+        before, rest = original.split(BEGIN, 1)
+        _, after = rest.split(END, 1)
+        original = before + after
+    require(sha_bytes(original.encode()) == BASE_NGINX, "NGINX_BASELINE_CHANGED")
+    if mode == "stage":
+        return original
+    anchor = "    # END PR81 FINANCE GET ONLY\n"
+    require(original.count(anchor) == 1, "NGINX_ANCHOR_INVALID")
+    return original.replace(anchor, anchor + nginx_block(), 1)
+
+
+def drop_content(mode: str) -> str:
+    enabled = "true" if mode == "writer" else "false"
+    lines = [
+        "[Service]", f"WorkingDirectory={TARGET}", "ExecStart=",
+        f"ExecStart={NODE} --max-http-header-size=65536 {TARGET}/dist/index.mjs",
+        f"Environment=BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV={enabled}",
+        f"Environment=BIZPORTAL_MARKETPLACE_VENDOR_INVOICE_ENABLED_DEV={enabled}",
+        f"Environment=BIZPORTAL_MARKETPLACE_ACCOUNTING_HANDOFF_ENABLED_DEV={enabled}",
+        f"Environment=BIZPORTAL_MARKETPLACE_VENDOR_PARENT_LOCK_ENABLED_DEV={enabled}",
+        f"Environment=BIZPORTAL_CUSTOMER_AR_PREVIEW_ENABLED_DEV={enabled}",
+        "Environment=BIZPORTAL_FINANCE_NOTIFICATIONS_SUPPRESSED_DEV=true",
+        "Environment=BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV=true",
+        "Environment=FLEET_EMBEDDED_REMINDER_ENABLED=false",
+        "Environment=DEV_RECONCILIATION_SCHEDULERS_ENABLED=false",
+        "Environment=GMAIL_INVOICE_SCHEDULER_ENABLED=false", "Environment=WA_ENABLED=false",
+    ]
+    if mode == "writer":
+        lines += [
+            "Environment=BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV=true",
+            "Environment=BIZPORTAL_MARKETPLACE_FINANCE_SINGLE_GCP_SECRET_DEV=true",
+            # The company-bundle resolver rejects either legacy value when set.
+            "Environment=BIZPORTAL_MARKETPLACE_FINANCE_GCP_SECRET_NAME_DEV=",
+            "Environment=BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV=",
+            f"EnvironmentFile={STORAGE_ENV}", "Environment=ALLOW_DEV_STORAGE_WRITES=true",
+        ]
+    return "\n".join(lines) + "\n"
+
+
+def atomic_write(path: Path, data: bytes, mode: int) -> None:
+    temporary = path.with_name(path.name + ".invoice-tmp-" + str(os.getpid()))
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def status(url: str, method: str = "GET") -> int:
+    # The existing shared Nginx login zone permits 10 requests/minute. Retry
+    # only an explicit throttling response, never a transport or business error.
+    for attempt in range(3):
+        request = urllib.request.Request(url, method=method)
+        if method == "POST":
+            request.data = b"{}"
+            request.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(request, timeout=8) as response:
+                return response.status
+        except urllib.error.HTTPError as error:
+            code = error.code
+            retry_after = error.headers.get("Retry-After", "") if error.headers else ""
+            error.close()
+            if code != 429 or attempt == 2:
+                return code
+            delay = 6.2
+            try:
+                if re.fullmatch(r"[0-9]+", retry_after.strip()):
+                    delay = float(retry_after)
+                elif retry_after:
+                    retry_at = parsedate_to_datetime(retry_after)
+                    delay = retry_at.timestamp() - time.time()
+            except (ValueError, OverflowError, TypeError):
+                pass
+            time.sleep(min(30.0, max(6.2, delay)))
+        except (OSError, TimeoutError):
+            return 0
+    return 429
+
+
+def ready() -> None:
+    deadline = time.monotonic() + 40
+    while time.monotonic() < deadline:
+        if status("http://127.0.0.1:19881/api/health/ready") == 200:
+            return
+        time.sleep(0.5)
+    raise RuntimeError("PRIVATE_PREVIEW_NOT_READY")
+
+
+def check_http_gates(mode: str) -> None:
+    require(status(ORIGIN + "/api/health/ready") == 200, "HTTPS_READINESS_FAILED")
+    require(status(ORIGIN + "/api/auth/user") == 401, "ANONYMOUS_AUTH_GATE_FAILED")
+    required = 401 if mode == "writer" else 404
+    require(status(ORIGIN + "/api/mkt/admin/vendor-invoices/1/match", "POST") == required,
+            "ANONYMOUS_WRITER_GATE_FAILED")
+    require(status(ORIGIN + "/api/mkt/admin/ap-preparations/1/accounting-handoff", "POST") == required,
+            "ANONYMOUS_HANDOFF_GATE_FAILED")
+    require(status(ORIGIN + "/api/sales/customer-invoices/auto-match-preview?company_id=1") == required,
+            "ANONYMOUS_CUSTOMER_AR_GATE_FAILED")
+    require(status(ORIGIN + "/api/mkt/admin/vendor-invoices/1/settle", "POST") == 404,
+            "UNRELATED_API_GATE_FAILED")
+    require(status(ORIGIN + "/api/sales/documents/1/action", "POST") == 404,
+            "CUSTOMER_ISSUANCE_NOT_ALLOWLISTED")
+
+
+def check_artifact(expected_sha: str) -> None:
+    require(re.fullmatch(r"[0-9a-f]{40}", expected_sha) is not None, "FULL_COMMIT_SHA_REQUIRED")
+    require(TARGET.is_dir() and not TARGET.is_symlink(), "TARGET_DIRECTORY_INVALID")
+    require((TARGET / "source-commit.txt").read_text().strip() == expected_sha, "SOURCE_SHA_MISMATCH")
     manifest = TARGET / "RELEASE_SHA256SUMS.txt"
     require(manifest.is_file(), "ARTIFACT_CHECKSUMS_MISSING")
     checked: set[str] = set()

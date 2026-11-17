@@ -374,6 +374,13 @@ export function setFinanceCompanyScopeCookie(
   response.append("Set-Cookie",
     FINANCE_SCOPE_COOKIE + "=" + value + "; Max-Age=" + maxAge
     + "; Path=/api/mkt/admin; HttpOnly; Secure; SameSite=Strict");
+  if (process.env.BIZPORTAL_CUSTOMER_AR_PREVIEW_ENABLED_DEV === "true") {
+    // Keep the Marketplace cookie's original path. A second copy of the same
+    // signed scope is sent only to the Customer AR preview's exact GET path.
+    response.append("Set-Cookie",
+      FINANCE_SCOPE_COOKIE + "=" + value + "; Max-Age=" + maxAge
+      + "; Path=/api/sales/customer-invoices/auto-match-preview; HttpOnly; Secure; SameSite=Strict");
+  }
   response.setHeader("Cache-Control", "no-store");
 }
 

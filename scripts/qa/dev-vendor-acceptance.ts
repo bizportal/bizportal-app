@@ -217,11 +217,27 @@ function invoicePdf(reference: string): Buffer {
 }
 async function vendorRequest(f: Fixture, suffix: string, init?: RequestInit) {
   // Redirects are refused so a capability can never be forwarded to another host.
-  const response = await fetch(`${ORIGIN}/api/mkt/vendor-invoice/${f.token}${suffix}`,
-    { ...init, redirect: "error", signal: AbortSignal.timeout(30_000) });
-  let body: any; try { body = await response.json(); } catch { throw new Error("QA_VENDOR_RESPONSE_NOT_JSON"); }
-  requireThat(response.ok && body?.ok === true, `VENDOR_HTTP_${response.status}`);
-  return { status: response.status, body };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const response = await fetch(`${ORIGIN}/api/mkt/vendor-invoice/${f.token}${suffix}`,
+      { ...init, redirect: "error", signal: AbortSignal.timeout(30_000) });
+    // The private proxy shares its 10 requests/minute zone with deployment
+    // health/scope checks. Respect it; only 429 is safe to retry automatically.
+    if (response.status === 429) {
+      await response.body?.cancel();
+      requireThat(attempt < 2, "VENDOR_HTTP_429");
+      const header = response.headers.get("retry-after");
+      const seconds = header == null ? NaN : Number(header);
+      const requestedMs = Number.isFinite(seconds) ? seconds * 1000
+        : header == null ? 0 : Date.parse(header) - Date.now();
+      const delay = Math.min(30_000, Math.max(6_200, Number.isFinite(requestedMs) ? requestedMs : 0));
+      await new Promise(resolve => setTimeout(resolve, delay));
+      continue;
+    }
+    let body: any; try { body = await response.json(); } catch { throw new Error("QA_VENDOR_RESPONSE_NOT_JSON"); }
+    requireThat(response.ok && body?.ok === true, `VENDOR_HTTP_${response.status}`);
+    return { status: response.status, body };
+  }
+  throw new Error("QA_VENDOR_HTTP_429");
 }
 async function upload(f: Fixture) {
   const form = new FormData();
@@ -250,6 +266,12 @@ async function exercise(f: Fixture) {
   const submittedAgain = await vendorRequest(f, `/invoices/${f.invoiceId}/submit`,
     { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
   requireThat(submittedAgain.body.alreadySubmitted === true && submittedAgain.body.data?.id === f.invoiceId, "VENDOR_SUBMIT_REPLAY");
+  const vendorAudit = (await admin!.query(`select action,count(*)::int n from public.activity_logs
+    where mkt_purchase_order_id=$1 group by action order by action`, [f.poId])).rows;
+  requireThat(JSON.stringify(vendorAudit) === JSON.stringify([
+    { action: "invoice_ready_for_ap", n: 1 }, { action: "invoice_uploaded", n: 1 },
+    { action: "three_way_match_passed", n: 1 },
+  ]), "EXACT_VENDOR_HTTP_AUDIT_BEFORE_BACKEND");
   passed("REAL_VENDOR_HTTPS_UPLOAD_MATCH_REPLAY", { companyId: f.companyId, invoiceId: f.invoiceId });
   stage = `company_${f.companyId}_canonical_ap`;
   const { sql } = await import("drizzle-orm");
@@ -286,7 +308,13 @@ async function exercise(f: Fixture) {
     (select attachment_object_path from public.vendor_invoices where id=$2) object_path`,
   [f.poId, f.invoiceId, f.apId, f.paymentRequestId, f.handoffId])).rows[0];
   requireThat(result.invoices === 1 && result.lines === 2 && result.ap === 1 && result.draft === 1 &&
-    result.handoff === 1 && result.notifications === 0 && result.audit >= 5, "COMMITTED_FLOW_COUNTS_OR_AUDIT");
+    result.handoff === 1 && result.notifications === 0 && result.audit === 6, "COMMITTED_FLOW_COUNTS_OR_AUDIT");
+  const apAudit = (await admin!.query(`select action,count(*)::int n from public.activity_logs
+    where mkt_purchase_order_id=$1 and action like 'mkt_ap_%' group by action order by action`, [f.poId])).rows;
+  requireThat(JSON.stringify(apAudit) === JSON.stringify([
+    { action: "mkt_ap_finance_reviewed", n: 1 }, { action: "mkt_ap_preparation_created", n: 1 },
+    { action: "mkt_ap_waiting_payment", n: 1 },
+  ]), "EXACT_COMPANY_SESSION_AP_AUDIT");
   requireThat(typeof result.object_path === "string" && /^\/objects\/uploads\/[a-f0-9-]+\.pdf$/.test(result.object_path), "STORAGE_OBJECT_PATH");
   f.objectPath = result.object_path;
   const { ObjectStorageService } = await import("../../artifacts/api-server/src/lib/objectStorage");

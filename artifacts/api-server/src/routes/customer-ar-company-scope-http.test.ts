@@ -199,89 +199,50 @@ describe("Customer AR dedicated company read-only routing", () => {
     access.signedSession = false;
     expect((await check(1)).body.code).toBe("CUSTOMER_AR_SIGNED_SESSION_REQUIRED");
     access.signedSession = true;
-  …31240 tokens truncated…tal, invoice_number,
-     invoice_date, due_date, company_id, notes)
-    VALUES (reference, 'order', 'confirmed', 'invoiced', 'unpaid', 0,
-      'QA rollback only; not a real customer', 100, 0, 100, reference,
-      current_date, current_date + 30, 1, 'Synthetic DEV rollback probe only')
-    RETURNING id INTO v_invoice_id;
-  INSERT INTO public.accounting_entries
-    (company_id, entry_number, journal_id, date, ref, description,
-     status, source, source_id, total_debit, total_credit, created_by_id)
-    VALUES (1, reference, journal, current_date, reference,
-      'Synthetic customer AR rollback probe only', 'draft', 'sales_invoice',
-      v_invoice_id, 100, 100, 'qa-customer-ar-rollback')
-    RETURNING id INTO v_entry_id;
-  INSERT INTO public.accounting_entry_lines
-    (entry_id, company_id, account_id, debit, credit, description)
-    VALUES (v_entry_id, 1, ar_account, 100, 0, 'QA rollback AR'),
-      (v_entry_id, 1, revenue_account, 0, 100, 'QA rollback revenue');
-  UPDATE public.accounting_entries SET status = 'posted' WHERE id = v_entry_id;
-  IF EXISTS (SELECT 1 FROM public.ar_subledger ar WHERE ar.invoice_id = v_invoice_id AND ar.company_id = 1) THEN
-    RAISE EXCEPTION 'CUSTOMER_AR_QA_PROJECTION_WAS_NOT_DEFERRED';
-  END IF;
-  PERFORM set_config('qa.customer_ar_invoice_id', v_invoice_id::text, true);
-  PERFORM set_config('qa.customer_ar_entry_id', v_entry_id::text, true);
-END
-$prepare$;
+    access.actor!.companyId = 2;
+    expect((await check(2)).body.code).toBe("CUSTOMER_AR_COMPANY_NOT_ENABLED");
+    expect(financeReadOnly).not.toHaveBeenCalled();
+    expect(queries).not.toHaveBeenCalled();
+  });
 
-SET CONSTRAINTS ALL IMMEDIATE;
+  it("does not let even a company-bound Super Admin widen scope through a query", async () => {
+    access.actor!.role = "super_admin";
+    expect((await check(3)).body.code).toBe("CUSTOMER_AR_SIGNED_COMPANY_SCOPE_REQUIRED");
+    expect(financeReadOnly).not.toHaveBeenCalled();
+    expect(queries).not.toHaveBeenCalled();
+  });
 
-DO $assert_and_replay$
-DECLARE v_invoice_id integer := current_setting('qa.customer_ar_invoice_id')::integer;
-  v_entry_id integer := current_setting('qa.customer_ar_entry_id')::integer;
-  v_ar_id integer;
-BEGIN
-  IF (SELECT count(*) FROM public.ar_subledger ar WHERE ar.company_id = 1 AND ar.invoice_id = v_invoice_id) <> 1 THEN
-    RAISE EXCEPTION 'CUSTOMER_AR_QA_EXACTLY_ONE_PROJECTION_REQUIRED';
-  END IF;
-  SELECT id INTO v_ar_id FROM public.ar_subledger ar
-    WHERE ar.company_id = 1 AND ar.invoice_id = v_invoice_id
-      AND ar.gl_entry_id = v_entry_id AND ar.gross_amount = 100
-      AND ar.outstanding_amount = 100 AND ar.paid_amount = 0 AND ar.status = 'OPEN'
-      AND ar.notes = 'bizportal:customer-ar-source:v1';
-  IF v_ar_id IS NULL THEN RAISE EXCEPTION 'CUSTOMER_AR_QA_SOURCE_PROOF_MISMATCH'; END IF;
-  UPDATE public.sales_documents SET updated_at = clock_timestamp() WHERE id = v_invoice_id;
-  UPDATE public.sales_documents SET updated_at = clock_timestamp() WHERE id = v_invoice_id;
-  IF (SELECT count(*) FROM public.ar_subledger ar WHERE ar.company_id = 1 AND ar.invoice_id = v_invoice_id) <> 1
-    OR NOT EXISTS (SELECT 1 FROM public.ar_subledger ar WHERE ar.id = v_ar_id
-      AND ar.gl_entry_id = v_entry_id AND ar.paid_amount = 0 AND ar.outstanding_amount = 100) THEN
-    RAISE EXCEPTION 'CUSTOMER_AR_QA_REPLAY_CHANGED_BALANCE_OR_IDENTITY';
-  END IF;
-  -- Project source paid state only; no payment/bank/allocation is created.
-  UPDATE public.sales_documents SET amount_paid = 25, payment_status = 'partial' WHERE id = v_invoice_id;
-  UPDATE public.sales_documents SET updated_at = clock_timestamp() WHERE id = v_invoice_id;
-  UPDATE public.sales_documents SET updated_at = clock_timestamp() WHERE id = v_invoice_id;
-  IF NOT EXISTS (SELECT 1 FROM public.ar_subledger ar WHERE ar.id = v_ar_id
-      AND ar.gl_entry_id = v_entry_id AND ar.gross_amount = 100
-      AND ar.paid_amount = 25 AND ar.outstanding_amount = 75 AND ar.status = 'PARTIAL')
-    OR (SELECT count(*) FROM public.ar_subledger ar WHERE ar.company_id = 1 AND ar.invoice_id = v_invoice_id) <> 1 THEN
-    RAISE EXCEPTION 'CUSTOMER_AR_QA_PARTIAL_REPLAY_NOT_ABSOLUTE';
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM public.bizportal_customer_ar_source_evidence_dev e
-    WHERE e.company_id = 1 AND e.invoice_id = v_invoice_id AND e.gl_entry_id = v_entry_id
-      AND e.gross_amount = 100 AND e.paid_amount = 25 AND e.outstanding_amount = 75) THEN
-    RAISE EXCEPTION 'CUSTOMER_AR_QA_SHARED_SOURCE_VIEW_DID_NOT_VERIFY';
-  END IF;
-  IF (SELECT count(*) FROM public.accounting_entries e
-    WHERE e.company_id = 1 AND e.source::text = 'sales_invoice' AND e.source_id = v_invoice_id) <> 1
-    OR (SELECT count(*) FROM public.accounting_entry_lines l WHERE l.entry_id = v_entry_id) <> 2 THEN
-    RAISE EXCEPTION 'CUSTOMER_AR_QA_SOURCE_JOURNAL_CHANGED';
-  END IF;
-END
-$assert_and_replay$;
+  it("requires the approved global Super Admin's signed Finance company selection", async () => {
+    access.actor = { id: "global", email: "global@example.invalid", role: "super_admin", companyId: null };
+    expect((await check(3)).status).toBe(403);
+    access.selectedCompany = 3;
+    expect((await check(1)).status).toBe(403);
+    expect((await check(3)).status).toBe(200);
+    expect(financeReadOnly.mock.calls[0][0]).toBe(3);
+    access.approvedGlobal = false;
+    expect((await check(3)).status).toBe(403);
+    expect(financeReadOnly).toHaveBeenCalledTimes(1);
+    expect(queries).toHaveBeenCalledTimes(1);
+    expect(queries.mock.calls[0][0]).toContain("public.companies");
+  });
 
-ROLLBACK;
+  it("rejects a deactivated company before reading any financial rows", async () => {
+    access.companyActive = false;
+    const response = await check(1);
+    expect(response.status).toBe(404);
+    expect(response.body.code).toBe("CUSTOMER_AR_COMPANY_UNAVAILABLE");
+    expect(financeReadOnly).not.toHaveBeenCalled();
+    expect(scopedQueries).not.toHaveBeenCalled();
+    expect(queries).toHaveBeenCalledTimes(1);
+    expect(queries.mock.calls[0][0]).toContain("public.companies");
+  });
 
--- Reaching this SELECT means all above assertions passed and rollback ran.
--- These counts independently verify no QA financial row or activation remains.
-SELECT jsonb_build_object(
-  'result', 'CUSTOMER_AR_ACTUAL_DEV_PG17_ROLLBACK_PASS',
-  'server_version', current_setting('server_version'),
-  'issuer', current_user,
-  'qa_sales_remaining', (SELECT count(*) FROM public.sales_documents WHERE doc_number LIKE 'QA-CUSTAR-ROLLBACK-%'),
-  'qa_entries_remaining', (SELECT count(*) FROM public.accounting_entries WHERE entry_number LIKE 'QA-CUSTAR-ROLLBACK-%'),
-  'qa_ar_remaining', (SELECT count(*) FROM public.ar_subledger WHERE invoice_number LIKE 'QA-CUSTAR-ROLLBACK-%'),
-  'enabled_actors_after_rollback', (SELECT count(*) FROM public.bizportal_customer_ar_source_actors_dev WHERE enabled),
-  'ar_rows_after_rollback', (SELECT count(*) FROM public.ar_subledger)
-) AS result;
+  it("returns 503 on a restricted-session failure without global-pool fallback", async () => {
+    financeReadOnly.mockRejectedValueOnce(new Error("restricted role unavailable"));
+    const response = await check(1);
+    expect(response.status).toBe(503);
+    expect(response.body.code).toBe("CUSTOMER_AR_PREVIEW_UNAVAILABLE");
+    expect(queries).toHaveBeenCalledTimes(1);
+    expect(queries.mock.calls[0][0]).toContain("public.companies");
+  });
+});
