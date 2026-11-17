@@ -168,6 +168,11 @@ suite("PR95 unregistered source-owned OUT reuse transition on disposable Postgre
       await execute();
       await second.query("BEGIN");
       await second.query("SET LOCAL lock_timeout='8s'");
+      const conflictingLock=await second.query(
+        "select pg_try_advisory_xact_lock(hashtextextended($1::text,0)) as acquired",
+        ["pr95:vendor-invoice:1:7"],
+      );
+      expect(conflictingLock.rows[0].acquired).toBe(false);
       // Second session must wait on invoice lock held by first transaction;
       // after first COMMIT its canonical allocation is visible and rejected.
       const racing=finalizeOutboundSourceReuseCandidate(
