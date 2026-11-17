@@ -17,7 +17,7 @@ vi.mock("../logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-import { processCustomerPortalSalesInvoiceOutboxDevOnce } from "./outboxProcessor.js";
+import { processCustomerPortalSalesInvoiceOutboxDevOnce, startCustomerPortalSalesInvoiceOutboxDevProcessor } from "./outboxProcessor.js";
 
 const keys = [
   "APP_ENV", "CUSTOMER_PORTAL_ATOMIC_ACCOUNTING_POST_DEV",
@@ -57,10 +57,42 @@ beforeEach(() => {
   m.transaction.mockImplementation(async (work) => work({ execute: m.execute }));
 });
 afterEach(() => {
+  vi.useRealTimers();
   for (const k of keys) {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
   }
+});
+
+describe("strict outbox DEV runtime scheduler", () => {
+  it("does not schedule unless all explicit development flags are enabled", () => {
+    process.env.CUSTOMER_PORTAL_OUTBOX_SAFE_CONSUME_DEV = "false";
+    expect(startCustomerPortalSalesInvoiceOutboxDevProcessor()).toBeNull();
+    expect(m.transaction).not.toHaveBeenCalled();
+    process.env.APP_ENV = "production";
+    process.env.CUSTOMER_PORTAL_OUTBOX_SAFE_CONSUME_DEV = "true";
+    expect(startCustomerPortalSalesInvoiceOutboxDevProcessor()).toBeNull();
+    expect(m.transaction).not.toHaveBeenCalled();
+  });
+
+  it("uses the existing API startup and graceful shutdown hook, not a second worker service", () => {
+    const source = readFileSync(join(process.cwd(), "src/index.ts"), "utf8");
+    expect(source).toContain("startCustomerPortalSalesInvoiceOutboxDevProcessor");
+    expect(source).toContain("stopCustomerInvoiceOutboxDevProcessor?.()");
+    expect(source).not.toContain("startOutboxProcessor()");
+  });
+
+  it("runs one strict drain on startup and stops both timers cleanly", async () => {
+    vi.useFakeTimers();
+    runResponses([[]]);
+    const stop = startCustomerPortalSalesInvoiceOutboxDevProcessor();
+    expect(stop).toBeTypeOf("function");
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(m.transaction).toHaveBeenCalledTimes(1);
+    stop?.();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(m.transaction).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("legacy and strict outbox ownership boundary", () => {
