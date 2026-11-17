@@ -1,6 +1,6 @@
 import { Router, type IRouter, type Request, type Response, type NextFunction } from "express";
 import { pool } from "@workspace/db";
-import { getPayrollPool, payrollScopedQuery, setPayrollCompanyScope } from "./payroll-db";
+import { getPayrollPool, payrollDedicatedEnabled, payrollScopedQuery, setPayrollCompanyScope } from "./payroll-db";
 import { authorizePayrollCompany } from "./payroll-access";
 import { registerPayrollSetupReadinessRoutes } from "./payroll-setup-readiness";
 import { registerPayrollProdConnectionPreflightRoutes } from "./payroll-prod-connection-preflight";
@@ -267,12 +267,19 @@ router.post("/payroll/runs/:id/generate-items", async (req: PayrollRequest, res)
   const runId = positiveId(req.params.id);
   if (!runId) { res.status(400).json({ message: "ID payroll tidak valid." }); return; }
   const companyId = req.payrollCompanyId!;
+  // Generating employee salary rows is a financial write: it may NEVER fall
+  // back to the shared application/OTP/Finance pool, even on DEV.
+  if (!payrollDedicatedEnabled()) {
+    res.status(503).json({ message: "Koneksi Payroll khusus untuk pengujian belum tersedia." });
+    return;
+  }
   try {
-    const client = await pool.connect();
+    const client = await getPayrollPool().connect();
     let activeTransaction = false;
     try {
       await client.query("BEGIN");
       activeTransaction = true;
+      await setPayrollCompanyScope(client, companyId);
       // Serialise item generation and edits for the same run.
       await client.query("SELECT pg_advisory_xact_lock($1::integer, $2::integer)", [companyId, -runId]);
       const run = await client.query(
@@ -374,12 +381,18 @@ router.patch("/payroll/runs/:id/items/:itemId", async (req: PayrollRequest, res)
   }
 
   const companyId = req.payrollCompanyId!;
+  // The editor changes financial amounts, so no general DB pool fallback.
+  if (!payrollDedicatedEnabled()) {
+    res.status(503).json({ message: "Koneksi Payroll khusus untuk pengujian belum tersedia." });
+    return;
+  }
   try {
-    const client = await pool.connect();
+    const client = await getPayrollPool().connect();
     let activeTransaction = false;
     try {
       await client.query("BEGIN");
       activeTransaction = true;
+      await setPayrollCompanyScope(client, companyId);
       await client.query("SELECT pg_advisory_xact_lock($1::integer, $2::integer)", [companyId, -runId]);
       const run = await client.query(
         "SELECT id, status FROM public.payroll_runs WHERE company_id = $1 AND id = $2 FOR UPDATE", [companyId, runId],
