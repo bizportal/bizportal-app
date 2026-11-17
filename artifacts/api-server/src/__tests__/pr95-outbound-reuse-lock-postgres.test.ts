@@ -108,6 +108,22 @@ suite("PR95 locked outbound source journal preflight on disposable PostgreSQL 16
     const result=await client.query("select amount::text as amount from public.bank_mutations where id=90001");
     expect(Number(result.rows[0].amount)).toBe(100);
   });
+  it("rejects account-to-COA mismatch inside the same locked transaction",async()=>{
+    await client.query("BEGIN");
+    try {
+      await client.query("update public.company_bank_accounts set coa_id=1010 where id=17");
+      await expect(lock()).rejects.toThrow("PR95_BANK_COA_SOURCE_MISMATCH");
+    }finally{await client.query("ROLLBACK");}
+    await client.query("BEGIN");
+    try {
+      await client.query("update public.company_bank_accounts set company_id=2 where id=17");
+      await expect(lock()).rejects.toThrow("PR95_BANK_COA_UNRESOLVED");
+    }finally{await client.query("ROLLBACK");}
+    await client.query("BEGIN");
+    try {
+      await expect(lock()).resolves.toMatchObject({sourceEntryId:314,verifiedAmountMinor:10000});
+    }finally{await client.query("ROLLBACK");}
+  });
   it("rejects bank direction mismatch and voided source journal atomically",async()=>{
     await client.query("BEGIN");
     try{
