@@ -39,6 +39,11 @@ export type SettlementResult =
 export interface AtomicSettlementAdapter<Tx> {
   /** Opens a real Postgres transaction; rejection must roll back every write. */
   transaction<T>(fn: (tx: Tx) => Promise<T>): Promise<T>;
+  /** Serialize attempts with the same (company,idempotency key) before invoice locks.
+   * The PG adapter must acquire a transaction-scoped advisory lock.
+   * A durable UNIQUE(company_id,key) constraint is still mandatory.
+   */
+  lockRequestKey(tx: Tx, companyId: number, key: string): Promise<void>;
   /** Must use SELECT FOR UPDATE for the exact (company,invoice) identity. */
   lockInvoice(tx: Tx, companyId: number, invoiceId: number): Promise<LockedInvoice | null>;
   /** Lookup under unique(company_id,idempotency_key), within the same transaction. */
@@ -70,6 +75,9 @@ export async function commitVendorInvoicePaymentAtomic<Tx>(
 ): Promise<SettlementResult> {
   if (!validate(input)) return { outcome: "rejected", reason: "invalid" };
   return adapter.transaction(async (tx) => {
+    // Global lock order: request key first, invoice second. The key lock
+    // prevents two different invoice IDs using the same key from racing.
+    await adapter.lockRequestKey(tx, input.companyId, input.idempotencyKey);
     const invoice = await adapter.lockInvoice(tx, input.companyId, input.invoiceId);
     if (!invoice || invoice.companyId !== input.companyId
       || invoice.invoiceId !== input.invoiceId) {
