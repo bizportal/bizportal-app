@@ -4313,8 +4313,9 @@ router.post("/bank-reconciliation/:mutationId/post", async (req, res): Promise<v
     const mutationResult = await client.query<{
       status: string;
       journal_entry_id: number | null;
+      company_id: number;
     }>(
-      `select status,journal_entry_id
+      `select status,journal_entry_id,company_id
          from public.bank_mutations
         where id=$1
         for update`,
@@ -4322,8 +4323,27 @@ router.post("/bank-reconciliation/:mutationId/post", async (req, res): Promise<v
     );
     const mutation = mutationResult.rows[0];
     if (!mutation) throw new ApprovalError("Mutasi tidak ditemukan.", 404, "NOT_FOUND");
+    if (actor.companyId != null && Number(mutation.company_id) !== actor.companyId) {
+      throw new ApprovalError("Mutasi berada di perusahaan yang berbeda.", 403, "COMPANY_SCOPE_FORBIDDEN");
+    }
 
     if (mutation.status === "posted" && mutation.journal_entry_id != null) {
+      // Never acknowledge a replay using only the mutation's historical marker.
+      // The source journal must still be posted and company-owned, not voided.
+      const receipt = await client.query<{ id: number }>(
+        `select id from public.accounting_entries
+          where id=$1 and company_id=$2 and status='posted'
+            and cancelled_at is null and voided_at is null
+          for update`,
+        [mutation.journal_entry_id, mutation.company_id],
+      );
+      if (!receipt.rows[0]) {
+        throw new ApprovalError(
+          "Jurnal mutasi tidak posted, sudah dibatalkan, atau berbeda perusahaan.",
+          409,
+          "POSTED_JOURNAL_RECEIPT_INVALID",
+        );
+      }
       await client.query("commit");
       res.json({ ok: true, status: "posted", journal_entry_id: mutation.journal_entry_id, idempotent: true });
       return;
