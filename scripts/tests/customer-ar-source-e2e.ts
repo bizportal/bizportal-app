@@ -227,6 +227,22 @@ async function main() {
   });
   check("real company logins enforce RLS; GUC, SET ROLE, foreign AR and direct GL writes denied");
 
+  await admin.query(sqlFile("customer_ar_bank_read_dev_INSTALL_REVIEW.sql"));
+  const bankRead = "select id,company_id,direction,status,amount,description,bank_reference,provider_order_id,created_at from public.bank_mutations order by id";
+  assert.deepEqual((await cst.query(bankRead)).rows.map((item) => item.id), [1]);
+  assert.deepEqual((await diva.query(bankRead)).rows.map((item) => item.id), [3]);
+  await cst.query("select set_config('app.marketplace_company_id','3',false)");
+  assert.deepEqual((await cst.query(bankRead)).rows.map((item) => item.id), [1]);
+  await admin.query("create policy fixture_bank_broad_read on public.bank_mutations for select to bizportal_finance_cst_login_dev,bizportal_finance_diva_login_dev using(true)");
+  assert.deepEqual((await cst.query(bankRead)).rows.map((item) => item.id), [1]);
+  await denied(cst, "select * from public.bank_mutations");
+  await denied(cst, "select private_payload from public.bank_mutations");
+  await denied(cst, "update public.bank_mutations set status='matched' where id=1");
+  await denied(cst, "delete from public.bank_mutations where id=1");
+  await denied(cst, "insert into public.bank_mutations(id,company_id,direction,status,amount) values(999,1,'IN','unmatched',1)");
+  await admin.query("drop policy fixture_bank_broad_read on public.bank_mutations");
+  check("bank preview exposes only nine columns of own-company unmatched IN; no writes or GUC/broad-policy bypass");
+
   // Only this isolated fixture grants source writes, to prove INVOKER behavior
   // when a separately approved issuer uses the existing company role. The
   // release SQL itself grants no source invoice/GL writes or login activation.
@@ -299,6 +315,8 @@ async function main() {
   const noPayments = JSON.stringify((await admin.query("select jsonb_build_object('bank',(select jsonb_agg(b) from public.bank_mutations b),'payment',(select jsonb_agg(p) from public.payments p)) data")).rows[0].data);
   assert.equal(noPayments, immutable);
   const arBeforeRollback = (await admin.query("select coalesce(jsonb_agg(to_jsonb(a) order by id),'[]') data from public.ar_subledger a")).rows[0].data;
+  await admin.query(sqlFile("customer_ar_bank_read_dev_ROLLBACK_REVIEW.sql"));
+  assert.equal((await admin.query("select has_any_column_privilege('bizportal_finance_cst_login_dev','public.bank_mutations','SELECT') allowed")).rows[0].allowed, false);
   await admin.query(sqlFile("customer_ar_source_dev_ROLLBACK_REVIEW.sql"));
   assert.deepEqual((await admin.query("select coalesce(jsonb_agg(to_jsonb(a) order by id),'[]') data from public.ar_subledger a")).rows[0].data, arBeforeRollback);
   assert.equal((await admin.query("select count(*)::int n from pg_trigger where tgname like 'customer_ar_%_dev'")).rows[0].n, 0);

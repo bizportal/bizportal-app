@@ -102,6 +102,33 @@ Do not automatically enable other actors or replay historical invoices. The
 Finance actors would require separately owned invoice issuance privileges to
 originate source events; this change does not grant them.
 
+## Private preview routing and bank reads
+
+In company-role mode the preview requires a verified signed session and company
+1 or 3. A company-bound account cannot widen its scope through a query. An
+allowlisted global Super Admin must use the existing session-bound Finance
+company selection. Each request rechecks company activity using the OTP
+connection's existing company authentication metadata permission.
+
+Invoice and bank queries run in one dedicated
+`withMarketplaceFinanceDevReadOnlyTransaction`, which verifies the fixed login,
+TLS and existing Finance RLS and sets PostgreSQL READ ONLY. An error returns
+503; it never falls back to the general OTP pool for financial reads. Legacy
+mode behavior stays behind its original default-OFF mount flag.
+
+`customer_ar_bank_read_dev_INSTALL_REVIEW.sql` separately grants only the nine
+columns needed by the preview. Its permissive and restrictive policies expose
+only the real login's company and unmatched incoming bank mutations. It grants
+no sequence or write privilege and preserves existing Payroll/settlement
+policies. Its paired rollback removes exactly those new permissions.
+
+With the Customer preview flag enabled, company selection emits a second copy
+of the same signed Finance scope cookie at the exact Customer AR GET path.
+The existing `/api/mkt/admin` cookie path remains unchanged. Cookie-path-aware
+verification covers both intended paths, unrelated-path denial and session
+replay rejection. Existing sessions must select their company again to receive
+the additional path-scoped cookie after deployment.
+
 ## Executable verification
 
 ```sh
@@ -121,7 +148,7 @@ pnpm --dir artifacts/api-server typecheck
 
 The integration harness uses an internal Docker network, no published ports,
 synthetic credentials, a temporary PostgreSQL volume, and no live database or
-outbound business integration. Its 20 scenario groups execute the exact
+outbound business integration. Its 21 scenario groups execute the exact
 release/rollback SQL and the real preview SQL/matcher. They cover deferred
 completion, missing/ambiguous/void/reversed evidence, both reversal ID
 conventions, cross-company lines/accounts/headers, absolute partial payments,
@@ -135,8 +162,14 @@ under RLS. The release SQL does not grant those source writes. This fixture
 tests the projection and its permissions; it does not replace the deployed
 issuer's other posting/period/immutability constraints.
 
-Local executor evidence on 2026-11-17: PostgreSQL 16 passed all 20 scenario
-groups, Customer Vitest passed 20/20, and canonical API TypeScript passed.
+Local executor evidence on 2026-11-17: PostgreSQL 16 passed all 21 scenario
+groups. The expanded Customer/read-only session/cookie Vitest suite passed
+59/59, and canonical API TypeScript passed. The actual CST-DEV PostgreSQL 17.6
+rollback probe also passed: exactly one generated invoice→posted source→AR,
+idempotent replay and absolute paid 25/outstanding 75. After rollback, QA sales,
+journal and AR counts were zero, total AR remained zero, and all four actor
+activation rows remained OFF. The probe is preserved in
+`customer_ar_source_dev_ROLLBACK_PROBE.sql`; no source guard was disabled.
 The first PG17 image download on that executor was blocked by a registry
 network timeout. The canonical workflow runs PG17; its result must be inspected
 before claiming a PG17 PASS. No live release is implied by this file.

@@ -7,6 +7,8 @@ from pathlib import Path
 import re
 import tempfile
 import unittest
+from email.message import Message
+from urllib.error import HTTPError
 from unittest.mock import patch
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "deploy-invoice-finance-preview-dev.py"
@@ -16,6 +18,34 @@ spec.loader.exec_module(deploy)
 
 
 class DeployBoundaries(unittest.TestCase):
+    def test_only_throttle_responses_are_retried_with_bounded_delay(self):
+        headers = Message()
+        headers["Retry-After"] = "90"
+        errors = [HTTPError("https://example.invalid", 429, "throttled", headers, None),
+                  HTTPError("https://example.invalid", 401, "denied", None, None)]
+        with patch.object(deploy.urllib.request, "urlopen", side_effect=errors) as request, \
+             patch.object(deploy.time, "sleep") as sleep:
+            self.assertEqual(deploy.status("https://example.invalid", "POST"), 401)
+            self.assertEqual(request.call_count, 2)
+            sleep.assert_called_once_with(30.0)
+            for call in request.call_args_list:
+                self.assertEqual(call.args[0].get_method(), "POST")
+                self.assertEqual(call.args[0].data, b"{}")
+
+        with patch.object(deploy.urllib.request, "urlopen", side_effect=OSError("offline")) as request, \
+             patch.object(deploy.time, "sleep") as sleep:
+            self.assertEqual(deploy.status("https://example.invalid"), 0)
+            request.assert_called_once()
+            sleep.assert_not_called()
+
+    def test_throttling_stops_after_three_attempts(self):
+        errors = [HTTPError("https://example.invalid", 429, "throttled", None, None) for _ in range(3)]
+        with patch.object(deploy.urllib.request, "urlopen", side_effect=errors) as request, \
+             patch.object(deploy.time, "sleep") as sleep:
+            self.assertEqual(deploy.status("https://example.invalid"), 429)
+            self.assertEqual(request.call_count, 3)
+            self.assertEqual([call.args for call in sleep.call_args_list], [(6.2,), (6.2,)])
+
     def test_additional_routes_refuse_payments_and_invalid_resource_paths(self):
         patterns = [re.compile(p) for p in re.findall(r'location ~ "([^"]+)"', deploy.nginx_block())]
         admitted = lambda path: any(p.fullmatch(path) for p in patterns)

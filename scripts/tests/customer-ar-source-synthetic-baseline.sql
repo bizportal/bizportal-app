@@ -37,9 +37,13 @@ CREATE TABLE public.ar_subledger (
  updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 CREATE UNIQUE INDEX idx_ar_sub_invoice ON public.ar_subledger(company_id,invoice_id) WHERE invoice_id IS NOT NULL;
-CREATE TABLE public.bank_mutations (id integer PRIMARY KEY, company_id integer, direction text, status text, amount numeric);
+CREATE TABLE public.bank_mutations (id integer PRIMARY KEY, company_id integer, direction text, status text, amount numeric,
+ description text, bank_reference text, provider_order_id text, created_at timestamptz DEFAULT clock_timestamp(), private_payload text);
+ALTER TABLE public.bank_mutations ENABLE ROW LEVEL SECURITY;
 CREATE TABLE public.payments (id integer PRIMARY KEY, company_id integer, amount numeric, status text);
-INSERT INTO public.bank_mutations VALUES (1,1,'IN','unmatched',100),(3,3,'IN','unmatched',100);
+INSERT INTO public.bank_mutations(id,company_id,direction,status,amount) VALUES
+ (1,1,'IN','unmatched',100),(3,3,'IN','unmatched',100),(4,1,'OUT','unmatched',100),
+ (5,1,'IN','matched',100),(6,3,'OUT','unmatched',100),(7,2,'IN','unmatched',100);
 INSERT INTO public.payments VALUES (1,1,7,'pending');
 INSERT INTO public.accounting_settings(company_id,ar_account_id,sales_journal_id) VALUES(1,101,11),(3,301,31),(2,201,21);
 INSERT INTO public.chart_of_accounts(id,company_id,type,subtype) VALUES

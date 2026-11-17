@@ -329,9 +329,10 @@ export async function createMarketplaceVendorInvoice(
     });
 
     if (result.ok && !result.alreadyExists) {
-      const publish = () => {
-      void logActivity({
+      const publish = async () => {
+      await logActivity({
         mktPurchaseOrderId: input.poId,
+        marketplaceFinanceCompanyId: result.invoice.companyId,
         actorType: actor.actorType,
         actorId: actor.actorId ?? null,
         actorName: actor.actorName ?? null,
@@ -347,7 +348,7 @@ export async function createMarketplaceVendorInvoice(
         deduplicationKey: `mkt_vendor_invoice_uploaded:${result.invoice.id}`,
       });
       };
-      if (scopedDb === db) publish();
+      if (scopedDb === db) await publish();
       else onMarketplaceFinanceCommit(scopedDb, publish);
     }
     return result;
@@ -484,10 +485,11 @@ export async function submitMarketplaceVendorInvoice(
   });
 
   if (result.ok && !result.alreadyExists) {
-    const publish = () => {
+    const publish = async () => {
     const action = result.match?.ok ? "invoice_ready_for_ap" : "invoice_submitted";
-    void logActivity({
+    await logActivity({
       mktPurchaseOrderId: result.invoice.mktPurchaseOrderId,
+      marketplaceFinanceCompanyId: result.invoice.companyId,
       actorType: actor.actorType,
       actorId: actor.actorId ?? null,
       actorName: actor.actorName ?? null,
@@ -495,8 +497,9 @@ export async function submitMarketplaceVendorInvoice(
       description: `Vendor invoice ${result.invoice.vendorInvoiceRef} berstatus ${result.invoice.status}`,
       newValue: { invoiceId: result.invoice.id, status: result.invoice.status, matchStatus: result.invoice.threeWayMatchStatus },
     });
-    void logActivity({
+    await logActivity({
       mktPurchaseOrderId: result.invoice.mktPurchaseOrderId,
+      marketplaceFinanceCompanyId: result.invoice.companyId,
       actorType: "system",
       action: result.match?.ok ? "three_way_match_passed" : "three_way_match_failed",
       description: result.match?.ok
@@ -516,7 +519,7 @@ export async function submitMarketplaceVendorInvoice(
       deduplicationKey: `mkt_vendor_invoice:${result.invoice.id}:${result.invoice.status}`,
     });
     };
-    if (scopedDb === db) publish();
+    if (scopedDb === db) await publish();
     else onMarketplaceFinanceCommit(scopedDb, publish);
   }
   return result;

@@ -8,6 +8,9 @@ on:
       - 'artifacts/api-server/src/lib/reconciliation/customerAr*'
       - 'artifacts/api-server/src/routes/customer-ar*'
       - 'scripts/sql/customer_ar_source_dev_*'
+      - 'scripts/sql/customer_ar_bank_read_dev_*'
+      - 'artifacts/api-server/src/routes/dev-auth.ts'
+      - 'artifacts/api-server/src/routes/dev-finance-company-scope.test.ts'
       - 'scripts/tests/customer-ar-*'
       - '.github/workflows/customer-ar-source-dev.yml'
   workflow_dispatch:
@@ -37,7 +40,9 @@ jobs:
           pnpm --dir artifacts/api-server exec vitest run \
             src/__tests__/customer-ar-match-preview.test.ts \
             src/__tests__/customer-ar-dev-only-gate.test.ts \
-            src/routes/customer-ar-company-scope-http.test.ts
+            src/routes/customer-ar-company-scope-http.test.ts \
+            src/routes/dev-finance-company-scope.test.ts \
+            src/routes/dev-finance-dedicated-session.test.ts
       - name: Canonical API TypeScript
         run: pnpm --dir artifacts/api-server typecheck
       - name: No source changes from integration execution
