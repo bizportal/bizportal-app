@@ -50,43 +50,7 @@ BEGIN
     OR p_po_id IS NULL OR p_po_id<=0
     OR p_gr_id IS NULL OR p_gr_id<=0
     OR p_supplier_id IS NULL OR p_supplier_id<=0
-    OR p_vendor_token IS NULL OR p_vendor_token !~ '^([0-9a-fA-F]{48}|[0-9a-fA-F]{64})
-  THEN RETURN FALSE; END IF;
-
-  -- The row locks are held until the outer canonical Invoice transaction
-  -- commits/rolls back. Fixed PO -> Goods Receipt -> Shipment order.
-  PERFORM 1 FROM public.mkt_purchase_orders po
-    WHERE po.id=p_po_id AND po.company_id=v_company
-      AND po.vendor_id=p_supplier_id
-      AND po.vendor_token=p_vendor_token
-      AND (po.vendor_token_expires_at IS NULL OR
-           po.vendor_token_expires_at > (pg_catalog.clock_timestamp() AT TIME ZONE 'UTC'))
-    FOR UPDATE OF po;
-  IF NOT FOUND THEN RETURN FALSE; END IF;
-
-  PERFORM 1 FROM public.mkt_po_goods_receipts gr
-    INNER JOIN public.mkt_po_shipments sh ON sh.id=gr.shipment_id
-    WHERE gr.id=p_gr_id AND sh.po_id=p_po_id
-    FOR UPDATE OF gr;
-  IF NOT FOUND THEN RETURN FALSE; END IF;
-
-  PERFORM 1 FROM public.mkt_po_shipments sh
-    INNER JOIN public.mkt_po_goods_receipts gr ON gr.shipment_id=sh.id
-    WHERE gr.id=p_gr_id AND sh.po_id=p_po_id
-    FOR UPDATE OF sh;
-  IF NOT FOUND THEN RETURN FALSE; END IF;
-
-  -- Waiting for a PO, GR or Shipment lock can outlast a token that was valid
-  -- when the first SELECT started. Revalidate with wall-clock time AFTER all
-  -- locks are held; the caller must not create an invoice with an expired token.
-  PERFORM 1 FROM public.mkt_purchase_orders po
-    WHERE po.id=p_po_id AND po.company_id=v_company
-      AND po.vendor_id=p_supplier_id AND po.vendor_token=p_vendor_token
-      AND (po.vendor_token_expires_at IS NULL OR
-           po.vendor_token_expires_at > (pg_catalog.clock_timestamp() AT TIME ZONE 'UTC'));
-  RETURN FOUND;
-END
-
+    OR p_vendor_token IS NULL OR p_vendor_token !~ '^([0-9a-fA-F]{48}|[0-9a-fA-F]{64})$'
   THEN RETURN FALSE; END IF;
 
   -- The row locks are held until the outer canonical Invoice transaction
