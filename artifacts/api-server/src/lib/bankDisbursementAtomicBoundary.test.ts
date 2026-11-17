@@ -44,6 +44,10 @@ function makeHarness(
       calls.push("find-key");
       return tx.payments.find(x => x.companyId === companyId && x.idempotencyKey === key) ?? null;
     },
+    verifyCommittedReceipt: async () => {
+      calls.push("verify-receipt");
+      return true;
+    },
     postJournal: async (tx) => {
       calls.push("journal");
       if (options.failAt === "journal") throw Error("SIMULATED_JOURNAL_FAILURE");
@@ -159,6 +163,18 @@ describe("Unregistered candidate bank payment atomic boundary", () => {
     await expect(commitVendorInvoicePaymentAtomic(input, corrupted))
       .rejects.toThrow("ATOMIC_SETTLEMENT_INCOMPLETE_RECEIPT");
     expect(h.snapshot()).toMatchObject({ journalCount: 1, disbursementCount: 1 });
+  });
+
+  it("does not acknowledge a replay with revoked or unverifiable payment custody", async () => {
+    const h=makeHarness();
+    await commitVendorInvoicePaymentAtomic(input,h.adapter);
+    const guarded: AtomicSettlementAdapter<State>={
+      ...h.adapter,
+      verifyCommittedReceipt: async () => false,
+    };
+    await expect(commitVendorInvoicePaymentAtomic(input,guarded))
+      .rejects.toThrow("ATOMIC_SETTLEMENT_UNVERIFIED_REPLAY");
+    expect(h.snapshot()).toMatchObject({journalCount:1,disbursementCount:1,outstanding:4000});
   });
 
   it("does not commit an invalid journal ID or disbursement ID", async () => {
