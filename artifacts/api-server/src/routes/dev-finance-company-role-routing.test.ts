@@ -60,6 +60,7 @@ const KEYS=[
  "APP_ENV","BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV",
  "BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV",
  "BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV",
+ "BIZPORTAL_MARKETPLACE_FINANCE_SINGLE_GCP_SECRET_DEV",
  "BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV",
  "BIZPORTAL_MARKETPLACE_FINANCE_GCP_SECRET_NAME_DEV",
 ] as const;
@@ -78,6 +79,15 @@ const url=(role:string,password="synthetic")=>
   "@aws-0-ap-southeast-2.pooler.supabase.com:6543/postgres"+
   "?sslmode=verify-full&sslrootcert=/trusted/synthetic-ca.crt";
 
+const BUNDLE_SECRET="bizportal-marketplace-finance-dev-companies";
+const BUNDLE_FLAG="BIZPORTAL_MARKETPLACE_FINANCE_SINGLE_GCP_SECRET_DEV";
+const bundle=(cst=url(ROLE.cst),diva=url(ROLE.diva))=>JSON.stringify({
+  version:1,
+  companies:{
+    "1":{role:ROLE.cst,databaseUrl:cst},
+    "3":{role:ROLE.diva,databaseUrl:diva},
+  },
+});
 const load=async()=>import("@workspace/db");
 describe("DEV-only company Finance pool routing is fail closed",()=>{
  beforeEach(()=>{
@@ -292,4 +302,134 @@ describe("DEV-only company Finance pool routing is fail closed",()=>{
   expect(m.poolOptions.map(p=>p.user)).toEqual([ROLE.cst+"."+PROJECT,ROLE.diva+"."+PROJECT]);
   expect(m.transactions.map(t=>t.role)).toEqual([ROLE.cst,ROLE.cst,ROLE.diva]);
  });
+
+ it("one GCP secret yields distinct authenticated CST/Diva pools, even concurrently",async()=>{
+  process.env[BUNDLE_FLAG]="true";
+  m.secret.mockReset().mockResolvedValue(bundle());
+  const mod=await load();
+  const [cst,diva]=await Promise.all([
+    mod.withMarketplaceFinanceDevTransaction(1,async()=>"cst"),
+    mod.withMarketplaceFinanceDevTransaction(3,async()=>"diva"),
+  ]);
+  expect([cst,diva]).toEqual(["cst","diva"]);
+  expect(m.secret.mock.calls.map(call=>call[0])).toEqual([BUNDLE_SECRET]);
+  expect(m.poolOptions.map(p=>p.user).sort()).toEqual([
+    ROLE.cst+"."+PROJECT,ROLE.diva+"."+PROJECT,
+  ].sort());
+  expect(m.transactions.map(t=>t.company).sort()).toEqual(["1","3"]);
+  expect(m.poolOptions.every(p=>p.max===1 && p.ssl?.rejectUnauthorized===true)).toBe(true);
+ });
+ it("one-secret format rejects missing, extra, swapped or duplicated company identities before any DB connection",async()=>{
+  process.env[BUNDLE_FLAG]="true";
+  const mod=await load();
+  m.secret.mockReset();
+  for(const bad of [
+    "not JSON",
+    "{}",
+    JSON.stringify({version:1,companies:{"1":{role:ROLE.cst,databaseUrl:url(ROLE.cst)}}}),
+    JSON.stringify({version:1,companies:{"1":{role:ROLE.cst,databaseUrl:url(ROLE.cst)},"3":{role:ROLE.diva,databaseUrl:url(ROLE.diva)},"4":{role:"injected",databaseUrl:"bad"}}}),
+    JSON.stringify({version:1,companies:{"1":{role:ROLE.diva,databaseUrl:url(ROLE.diva)},"3":{role:ROLE.cst,databaseUrl:url(ROLE.cst)}}}),
+    JSON.stringify({version:1,companies:{"1":{role:ROLE.cst,databaseUrl:url(ROLE.cst),unexpected:true},"3":{role:ROLE.diva,databaseUrl:url(ROLE.diva)}}}),
+    JSON.stringify({version:2,companies:{"1":{role:ROLE.cst,databaseUrl:url(ROLE.cst)},"3":{role:ROLE.diva,databaseUrl:url(ROLE.diva)}}}),
+    "x".repeat(8193),
+  ]){
+    m.secret.mockResolvedValueOnce(bad);
+    await expect(mod.withMarketplaceFinanceDevTransaction(1,async()=>true))
+      .rejects.toThrow("DEV_FINANCE_COMPANY_BUNDLE_INVALID");
+  }
+  expect(m.secret).toHaveBeenCalledTimes(8);
+  expect(m.poolOptions).toHaveLength(0);
+ });
+ it("single bundle rejects a swapped, privileged or TLS-downgraded DSN before creating either pool",async()=>{
+  process.env[BUNDLE_FLAG]="true";
+  const mod=await load();
+  m.secret.mockReset();
+  for(const bad of [
+    bundle(url(ROLE.diva),url(ROLE.cst)),
+    bundle(url("postgres"),url(ROLE.diva)),
+    bundle(url(ROLE.cst).replace("sslmode=verify-full","sslmode=disable"),url(ROLE.diva)),
+    bundle(url(ROLE.cst)+"&user=postgres",url(ROLE.diva)),
+    bundle(url(ROLE.cst).replace(PROJECT,"nzdweipzckfszczzqtuw"),url(ROLE.diva)),
+  ]){
+    m.secret.mockResolvedValueOnce(bad);
+    await expect(mod.withMarketplaceFinanceDevTransaction(1,async()=>true)).rejects.toThrow();
+    expect(m.poolOptions).toHaveLength(0);
+  }
+ });
+ it("one bundle does not bypass missing-secret errors or fall back to generic Finance",async()=>{
+  process.env[BUNDLE_FLAG]="true";
+  const mod=await load();
+  m.secret.mockReset().mockRejectedValue(new Error("SYNTHETIC_COMPANY_BUNDLE_MISSING"));
+  const business=vi.fn();
+  await expect(mod.withMarketplaceFinanceDevTransaction(1,business))
+    .rejects.toThrow("SYNTHETIC_COMPANY_BUNDLE_MISSING");
+  await expect(mod.resolveMarketplaceFinanceDevDatabaseUrl())
+    .rejects.toThrow("DEV_FINANCE_LEGACY_ROLE_DISABLED_IN_COMPANY_MODE");
+  expect(business).not.toHaveBeenCalled();
+  expect(m.poolOptions).toHaveLength(0);
+ });
+ it("single-bundle flag cannot silently enable company-less legacy credentials",async()=>{
+  process.env[BUNDLE_FLAG]="true";
+  delete process.env.BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV;
+  process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV=url("bizportal_marketplace_finance_login_dev");
+  const mod=await load();
+  await expect(mod.resolveMarketplaceFinanceDevDatabaseUrl())
+    .rejects.toThrow("DEV_FINANCE_BUNDLE_REQUIRES_COMPANY_MODE");
+  expect(m.secret).not.toHaveBeenCalled();
+  expect(m.poolOptions).toHaveLength(0);
+ });
+ it("one bundle preserves read-only GET and never enables Writer without its independent flag",async()=>{
+  process.env[BUNDLE_FLAG]="true";
+  delete process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV;
+  process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV="true";
+  m.secret.mockReset().mockResolvedValue(bundle());
+  const mod=await load();
+  await expect(mod.withMarketplaceFinanceDevTransaction(1,async()=>true))
+    .rejects.toThrow("DEV_FINANCE_WRITER_DISABLED");
+  expect(m.secret).not.toHaveBeenCalled();
+  await expect(mod.withMarketplaceFinanceDevReadOnlyTransaction(1,async()=>true)).resolves.toBe(true);
+  expect(m.transactions[0].queries[0].trim().toUpperCase()).toBe("SET TRANSACTION READ ONLY");
+ });
+ it("switching separate-secret to bundle-secret mode requires a controlled restart",async()=>{
+  const mod=await load();
+  await mod.withMarketplaceFinanceDevTransaction(1,async()=>true);
+  expect(m.poolOptions).toHaveLength(1);
+  process.env[BUNDLE_FLAG]="true";
+  m.secret.mockReset().mockResolvedValue(bundle());
+  const business=vi.fn();
+  await expect(mod.withMarketplaceFinanceDevTransaction(1,business))
+    .rejects.toThrow("DEV_FINANCE_CREDENTIAL_MODE_CHANGED_RESTART_REQUIRED");
+  expect(m.secret).not.toHaveBeenCalled();
+  expect(business).not.toHaveBeenCalled();
+ });
+ it("rotation of a bundle never silently reuses an initialized company DB pool",async()=>{
+  process.env[BUNDLE_FLAG]="true";
+  m.secret.mockReset().mockResolvedValue(bundle());
+  const mod=await load();
+  const start=Date.now();
+  const clock=vi.spyOn(Date,"now");
+  try {
+    await mod.withMarketplaceFinanceDevTransaction(1,async()=>true);
+    clock.mockReturnValue(start+61_000);
+    m.secret.mockResolvedValueOnce(bundle(url(ROLE.cst,"synthetic-rotated"),url(ROLE.diva)));
+    const business=vi.fn();
+    await expect(mod.withMarketplaceFinanceDevTransaction(1,business))
+      .rejects.toThrow("DEV_FINANCE_COMPANY_CREDENTIAL_CHANGED_RESTART_REQUIRED");
+    expect(business).not.toHaveBeenCalled();
+    expect(m.poolOptions).toHaveLength(1);
+  } finally { clock.mockRestore(); }
+ });
+ it("a single bundle is DEV-only and unsupported companies cannot access it",async()=>{
+  process.env[BUNDLE_FLAG]="true";
+  m.secret.mockReset().mockResolvedValue(bundle());
+  const mod=await load();
+  await expect(mod.withMarketplaceFinanceDevTransaction(2,async()=>true))
+    .rejects.toThrow("DEV_FINANCE_COMPANY_NOT_ALLOWLISTED");
+  process.env.APP_ENV="production";
+  await expect(mod.withMarketplaceFinanceDevTransaction(1,async()=>true))
+    .rejects.toThrow("DEV_FINANCE_DISABLED");
+  expect(m.secret).not.toHaveBeenCalled();
+  expect(m.poolOptions).toHaveLength(0);
+ });
+
 });

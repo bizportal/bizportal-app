@@ -21,12 +21,18 @@ const COMPANY_FINANCE_IDENTITIES = {
 } as const;
 type CompanyFinanceId = keyof typeof COMPANY_FINANCE_IDENTITIES;
 const COMPANY_MODE_FLAG = "BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV";
+// Separate PostgreSQL LOGIN roles remain mandatory even when GCP stores both URLs in one secret.
+const COMPANY_BUNDLE_MODE_FLAG = "BIZPORTAL_MARKETPLACE_FINANCE_SINGLE_GCP_SECRET_DEV";
+const COMPANY_BUNDLE_SECRET_NAME = "bizportal-marketplace-finance-dev-companies";
 const companyFinancePools = new Map<CompanyFinanceId, {
   url: string; db: FinanceDatabase; pool: pg.Pool
 }>();
 const companyFinanceSecretCache = new Map<CompanyFinanceId, { value: string; expiresAt: number }>();
-/** A running process cannot change its Finance credential mode without restart. */
-let activeFinanceMode: "legacy" | "company" | null = null;
+type CompanyFinanceUrls = Record<CompanyFinanceId, string>;
+let companyBundleCache: { value: CompanyFinanceUrls; expiresAt: number } | null = null;
+let companyBundlePending: Promise<CompanyFinanceUrls> | null = null;
+/** A running process cannot change the database role or secret source without restart. */
+let activeFinanceMode: "legacy" | "company-separate" | "company-bundle" | null = null;
 
 function companyIdentity(companyId: number) {
   if (!Number.isSafeInteger(companyId) ||
@@ -96,6 +102,55 @@ function validateFinanceDatabaseUrl(raw: string, expectedRole: string): string {
   return raw;
 }
 
+/** Parse both company identities together; never authorize a company via user-supplied
+ * JSON, a shared Finance login, or a partial/rotated secret. One GCP version
+ * supplies two separate company-scoped PostgreSQL logins to the SAME DEV DB.
+ * The secret is read once per cache window, including concurrent requests.
+ */
+async function readCompanyFinanceBundle(
+  secretReader: (secretName: string) => Promise<string>,
+): Promise<CompanyFinanceUrls> {
+  if (companyBundleCache && companyBundleCache.expiresAt > Date.now()) {
+    return companyBundleCache.value;
+  }
+  if (companyBundlePending) return companyBundlePending;
+  const pending = (async (): Promise<CompanyFinanceUrls> => {
+    const raw = await secretReader(COMPANY_BUNDLE_SECRET_NAME);
+    if (!raw || Buffer.byteLength(raw, "utf8") > 8 * 1024) {
+      throw new Error("DEV_FINANCE_COMPANY_BUNDLE_INVALID");
+    }
+    let parsed: unknown;
+    try { parsed = JSON.parse(raw); }
+    catch { throw new Error("DEV_FINANCE_COMPANY_BUNDLE_INVALID"); }
+    const exact = (value: unknown, keys: string[]): value is Record<string, unknown> =>
+      value !== null && typeof value === "object" && !Array.isArray(value)
+      && Object.keys(value).length === keys.length
+      && keys.every(key => Object.prototype.hasOwnProperty.call(value, key));
+    if (!exact(parsed, ["version", "companies"]) || parsed.version !== 1 ||
+        !exact(parsed.companies, ["1", "3"])) {
+      throw new Error("DEV_FINANCE_COMPANY_BUNDLE_INVALID");
+    }
+    const urls = {} as CompanyFinanceUrls;
+    for (const id of [1, 3] as const) {
+      const item = parsed.companies[String(id)];
+      const expected = companyIdentity(id);
+      if (!exact(item, ["role", "databaseUrl"]) ||
+          item.role !== expected.role || typeof item.databaseUrl !== "string") {
+        throw new Error("DEV_FINANCE_COMPANY_BUNDLE_INVALID");
+      }
+      urls[id] = validateFinanceDatabaseUrl(item.databaseUrl, expected.role);
+    }
+    if (urls[1] === urls[3]) throw new Error("DEV_FINANCE_COMPANY_BUNDLE_INVALID");
+    companyBundleCache = { value: urls, expiresAt: Date.now() + 60_000 };
+    return urls;
+  })();
+  companyBundlePending = pending;
+  try { return await pending; }
+  finally {
+    if (companyBundlePending === pending) companyBundlePending = null;
+  }
+}
+
 export async function resolveMarketplaceFinanceDevDatabaseUrl(
   secretReader: (secretName: string) => Promise<string> = readSecret,
 ): Promise<string> {
@@ -106,6 +161,9 @@ export async function resolveMarketplaceFinanceDevDatabaseUrl(
   }
   if (process.env[COMPANY_MODE_FLAG] === "true") {
     throw new Error("DEV_FINANCE_LEGACY_ROLE_DISABLED_IN_COMPANY_MODE");
+  }
+  if (process.env[COMPANY_BUNDLE_MODE_FLAG] === "true") {
+    throw new Error("DEV_FINANCE_BUNDLE_REQUIRES_COMPANY_MODE");
   }
   const direct = process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV?.trim();
   const secretName = process.env.BIZPORTAL_MARKETPLACE_FINANCE_GCP_SECRET_NAME_DEV?.trim();
@@ -152,6 +210,9 @@ export async function resolveMarketplaceFinanceCompanyDevDatabaseUrl(
     throw new Error("DEV_FINANCE_LEGACY_CREDENTIAL_IN_COMPANY_MODE");
   }
   const id = companyId as CompanyFinanceId;
+  if (process.env[COMPANY_BUNDLE_MODE_FLAG] === "true") {
+    return (await readCompanyFinanceBundle(secretReader))[id];
+  }
   const cache = companyFinanceSecretCache.get(id);
   let raw: string;
   if (cache && cache.expiresAt > Date.now()) {
@@ -258,7 +319,9 @@ export async function withMarketplaceFinanceDevTransaction<T>(
     throw new Error("DEV_FINANCE_COMPANY_INVALID");
   }
   const companyMode = process.env[COMPANY_MODE_FLAG] === "true";
-  const requestedMode = companyMode ? "company" : "legacy";
+  const requestedMode = companyMode
+    ? (process.env[COMPANY_BUNDLE_MODE_FLAG] === "true" ? "company-bundle" : "company-separate")
+    : "legacy";
   if (activeFinanceMode && activeFinanceMode !== requestedMode) {
     throw new Error("DEV_FINANCE_CREDENTIAL_MODE_CHANGED_RESTART_REQUIRED");
   }
