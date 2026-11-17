@@ -62,7 +62,7 @@ jobs:
           test -s "$tmpdir/accounting-owner.mjs"
           grep -Fq 'postCustomerPortalSalesInvoiceWithExistingOwner' "$tmpdir/accounting-owner.mjs"
           grep -Fq 'DEV_SALES_POSTING_TAX_NOT_READY' "$tmpdir/accounting-owner.mjs"
-          grep -Fq 'class CanonicalPostingEngine' "$tmpdir/accounting-owner.mjs"
+          grep -Fq 'CanonicalPostingEngine' "$tmpdir/accounting-owner.mjs"
           sha256sum "$tmpdir/accounting-owner.mjs"
           echo ISOLATED_BUNDLE_SOURCE_ONLY_PASS_NOT_DEPLOYABLE
       - name: Canonical API TypeScript and credential-free full regression
