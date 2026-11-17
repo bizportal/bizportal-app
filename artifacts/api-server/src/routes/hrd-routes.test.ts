@@ -104,6 +104,13 @@ describe("canonical gated HRD directory stage-one",()=>{
     vi.stubEnv("HRD_CANONICAL_READONLY_ENABLED","true");
     vi.stubEnv("APP_ENV","development");
     expect((await get()).status).toBe(404);
+    // Isolated DEV reader must require its own flag and a signed session.
+    vi.stubEnv("HRD_CANONICAL_READONLY_ENABLED","");
+    vi.stubEnv("HRD_CANONICAL_READONLY_ENABLED_DEV","true");
+    state.session=false;
+    expect((await get()).status).toBe(401);
+    vi.stubEnv("HRD_CANONICAL_READONLY_ENABLED_DEV","");
+    expect((await get()).status).toBe(404);
     expect(state.dbQueries).toHaveLength(0);
     expect(state.scoped).toHaveLength(0);
   });
