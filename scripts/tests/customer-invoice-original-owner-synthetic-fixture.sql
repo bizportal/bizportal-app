@@ -43,7 +43,8 @@ VALUES
  (179,'QA-ORDER-179','order','confirmed','invoiced','Synthetic PPN CST',100,11,111,1,'QA-CST-179','2026-11-18','2026-12-18','exclusive',1),
  (183,'QA-ORDER-183','order','confirmed','invoiced','Synthetic PPN DIVA',100,11,111,3,'QA-DIVA-183','2026-11-18','2026-12-18','exclusive',3),
  (185,'QA-ORDER-185','order','confirmed','invoiced','Synthetic PPN wrong amount',100,101.75,201.75,1,'QA-CST-185','2026-11-18','2026-12-18','exclusive',1),
- (187,'QA-ORDER-187','order','confirmed','invoiced','Synthetic foreign company tax',100,11,111,3,'QA-DIVA-187','2026-11-18','2026-12-18','exclusive',1);
+ (187,'QA-ORDER-187','order','confirmed','invoiced','Synthetic foreign company tax',100,11,111,3,'QA-DIVA-187','2026-11-18','2026-12-18','exclusive',1),
+ (189,'QA-ORDER-189','order','confirmed','invoiced','Synthetic taxable rollback',100,11,111,1,'QA-CST-189','2026-11-18','2026-12-18','exclusive',1);
 INSERT INTO public.sales_document_lines(document_id,name,quantity,unit_price,subtotal)
 VALUES (171,'Synthetic service',1,100,100),
  (173,'Synthetic service',1,100,100),
@@ -52,4 +53,5 @@ VALUES (171,'Synthetic service',1,100,100),
  (179,'Synthetic PPN CST service',1,100,100),
  (183,'Synthetic PPN DIVA service',1,100,100),
  (185,'Synthetic invalid PPN service',1,100,100),
- (187,'Synthetic cross-company PPN',1,100,100);
+ (187,'Synthetic cross-company PPN',1,100,100),
+ (189,'Synthetic taxable rollback PPN',1,100,100);
