@@ -329,26 +329,45 @@ async function exercise(f: Fixture) {
   const { sql } = await import("drizzle-orm");
   const services = await import("../../artifacts/api-server/src/lib/services/mktApPreparationService");
   const actor = { actorId: marker, actorName: "Synthetic DEV acceptance operator (backend session)" };
-  await app!.withMarketplaceFinanceDevTransaction(f.companyId, async tx => {
-    const other = fixtures.find(row => row.companyId !== f.companyId)!;
-    await tx.execute(sql`select set_config('app.marketplace_company_id',${String(other.companyId)},true)`);
-    const hidden = await tx.execute(sql`select count(*)::int n from public.mkt_purchase_orders where id=${other.poId}`);
-    requireThat(hidden.rows[0]?.n === 0, "CROSS_COMPANY_GUC_SPOOF");
-    await tx.execute(sql`select set_config('app.marketplace_company_id',${String(f.companyId)},true)`);
-    const preparation = await services.createApPreparation(f.invoiceId!, actor, tx);
-    requireThat(preparation.ok && !preparation.alreadyExists, "AP_CREATE");
-    f.apId = preparation.preparation.id;
-    const repeated = await services.createApPreparation(f.invoiceId!, actor, tx);
-    requireThat(repeated.ok && repeated.alreadyExists && repeated.preparation.id === f.apId, "AP_REPLAY");
-    requireThat((await services.reviewApPreparation(f.apId, actor, tx)).ok, "AP_REVIEW");
-    requireThat((await services.markApPreparationWaitingPayment(f.apId, actor, tx)).ok, "AP_WAITING");
-    const handoff = await services.createMarketplaceAccountingHandoff(f.apId, actor, tx);
-    requireThat(handoff.ok && !handoff.alreadyExists, "ACCOUNTING_DRAFT_CREATE");
-    f.handoffId = handoff.handoffId; f.paymentRequestId = handoff.paymentRequestId;
-    const repeatedHandoff = await services.createMarketplaceAccountingHandoff(f.apId, actor, tx);
-    requireThat(repeatedHandoff.ok && repeatedHandoff.alreadyExists && repeatedHandoff.handoffId === f.handoffId &&
-      repeatedHandoff.paymentRequestId === f.paymentRequestId, "ACCOUNTING_DRAFT_REPLAY");
+  // Mimic the real Finance API lifecycle: each AP action is its own
+  // authenticated company transaction and releases row locks BEFORE the next
+  // action/audit callback. A single long outer QA transaction can otherwise
+  // hold parent/AP locks while post-commit work awaits another connection.
+  // These transaction-local timeouts prevent an interrupted test from leaving
+  // an unbounded idle-in-transaction session on the shared DEV database.
+  const step = async <T>(
+    label: string,
+    work: (tx: Parameters<typeof services.createApPreparation>[2]) => Promise<T>,
+  ): Promise<T> => {
+    stage = `company_${f.companyId}_canonical_${label}`;
+    return app!.withMarketplaceFinanceDevTransaction(f.companyId, async tx => {
+      await tx.execute(sql`SET LOCAL lock_timeout = '3s'`);
+      await tx.execute(sql`SET LOCAL idle_in_transaction_session_timeout = '15s'`);
+      return work(tx);
+    });
+  };
+  const other = fixtures.find(row => row.companyId !== f.companyId)!;
+  await step("company_spoof_denial",async tx=>{
+    await tx!.execute(sql`select set_config('app.marketplace_company_id',${String(other.companyId)},true)`);
+    const hidden = await tx!.execute(sql`select count(*)::int n from public.mkt_purchase_orders where id=${other.poId}`);
+    requireThat(hidden.rows[0]?.n===0,"CROSS_COMPANY_GUC_SPOOF");
   });
+  const preparation = await step("ap_create",tx=>services.createApPreparation(f.invoiceId!,actor,tx));
+  requireThat(preparation.ok && !preparation.alreadyExists,"AP_CREATE");
+  f.apId=preparation.preparation.id;
+  const repeated = await step("ap_replay",tx=>services.createApPreparation(f.invoiceId!,actor,tx));
+  requireThat(repeated.ok && repeated.alreadyExists && repeated.preparation.id===f.apId,"AP_REPLAY");
+  const reviewed=await step("ap_review",tx=>services.reviewApPreparation(f.apId!,actor,tx));
+  requireThat(reviewed.ok,"AP_REVIEW");
+  const waiting=await step("ap_waiting_payment",tx=>services.markApPreparationWaitingPayment(f.apId!,actor,tx));
+  requireThat(waiting.ok,"AP_WAITING");
+  const handoff=await step("accounting_draft",tx=>services.createMarketplaceAccountingHandoff(f.apId!,actor,tx));
+  requireThat(handoff.ok && !handoff.alreadyExists,"ACCOUNTING_DRAFT_CREATE");
+  f.handoffId=handoff.handoffId;f.paymentRequestId=handoff.paymentRequestId;
+  const replayHandoff=await step("accounting_draft_replay",tx=>services.createMarketplaceAccountingHandoff(f.apId!,actor,tx));
+  requireThat(replayHandoff.ok && replayHandoff.alreadyExists &&
+    replayHandoff.handoffId===f.handoffId &&
+    replayHandoff.paymentRequestId===f.paymentRequestId,"ACCOUNTING_DRAFT_REPLAY");
   const result = (await admin!.query(`select
     (select count(*)::int from public.vendor_invoices where mkt_purchase_order_id=$1) invoices,
     (select count(*)::int from public.vendor_invoice_lines where invoice_id=$2) lines,
