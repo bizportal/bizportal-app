@@ -68,6 +68,35 @@ Do not insert it into Git, chat, a command argument, or an artifact manifest.
 
 ## Commands
 
+On `srv1792369`, build the final integrated commit from an existing official
+Git checkout. The verified host has Node 22.23.3, pnpm 10.33.0 and Python 3.12.3:
+
+```bash
+python3 scripts/build-invoice-finance-preview-dev.py --source /opt/INTEGRATED_OFFICIAL_CHECKOUT --expected-commit FULL_SOURCE_SHA
+```
+
+The builder exports that exact commit with `git archive` into a disposable
+directory, installs the unchanged frozen lockfile from the pnpm store, runs the
+existing API and Vite builds, and uses `scripts/prepare-hostinger.mjs` to combine
+the outputs. `pnpm deploy --legacy --prod` supplies self-contained API production
+dependencies. It verifies the Node syntax, native/runtime dependency loading,
+and that every symlink stays inside the artifact. Only then does it atomically
+publish `/opt/bizportal-invoice-completion-20261117`; an existing target is always
+refused. No service is started or reconfigured by this command.
+
+If the existing store lacks a locked dependency, retry with `--allow-registry`.
+That permits the normal registry fetch while retaining the exact lockfile,
+existing minimum-release-age policy and approved install-script allowlist.
+It does not upgrade dependencies. A failed build leaves no final target.
+
+Build subprocesses inherit a small operating-system environment allowlist and
+never read runtime envfiles. The Finance selector compiles enabled, the readonly
+UI switch compiles disabled, and public Supabase/maps values compile empty for
+the existing same-origin signed-password flow. Manifests include all regular
+artifact files, internal symlinks, source commit, lock hash and tool versions.
+The candidate must still pass the integrated application regression gates;
+packaging is not a replacement for those tests or signed HTTP acceptance.
+
 Render the exact non-secret drop-in and allowlist first, without server writes:
 
 ```bash
@@ -121,6 +150,12 @@ the application's existing server-verified company selector. Inspect the UI or
 authenticated `/api/auth/user` response without exposing cookies or token values.
 Do not synthesize a signed cookie from the server secret or borrow a different
 application's session. If the session expired, use the existing login flow.
+The current legitimate flow is `POST /api/auth/email-login` using the owner-held
+password for the configured pinned Super Admin account. The server checks the
+stored bcrypt password, pinned ID/email, active status, `super_admin` role and
+global account scope before issuing its signed cookie. OTP is disabled. If no
+accessible authenticated tab or owner password login is available, record the
+positive signed HTTP step as pending; database/service tests cannot establish it.
 
 For one new DEV fixture, upload the PDF through the existing vendor token flow,
 read it back from private Storage, match invoice, prepare AP, review Finance,
@@ -154,9 +189,12 @@ routes; add those only after the customer integration is independently ready.
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p 'test_invoice_preview_deploy.py' -v
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p 'test_invoice_preview_build.py' -v
 ```
 
 Seven checks cover rejected payment/unrecognized paths, preserved authentication,
 stale Nginx baseline refusal, artifact manifest path traversal, concurrent-change
 rollback refusal and restoration after an injected Nginx validation failure.
 These checks never invoke a real service or replace the signed DEV business test.
+Five additional build-tool checks cover secret/environment isolation, portable
+symlinks, complete checksum generation and atomic no-overwrite publication.

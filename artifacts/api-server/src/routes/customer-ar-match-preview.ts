@@ -3,29 +3,10 @@ import { pool } from "@workspace/db";
 import { authenticateAdmin, type AdminRequest } from "./admin-auth";
 import { getProductionSession, isDevelopmentEnvironment, isSignedDevAuthEnabled } from "./dev-auth";
 import { buildCustomerArMatchPreview, type CustomerArInvoiceEvidence, type IncomingBankMutationEvidence } from "../lib/reconciliation/customerArMatchPreview";
+import { CUSTOMER_AR_INVOICES_SQL } from "../lib/reconciliation/customerArSourceSql";
 
 const router: IRouter = Router();
 router.use(authenticateAdmin);
-
-const INVOICES_SQL = [
-  "select sd.id, sd.company_id, sd.invoice_number, sd.customer_name,",
-  "sd.invoice_status::text as invoice_status, sd.status::text as document_status,",
-  "sd.payment_status::text as payment_status,",
-  "ar.outstanding_amount::text as outstanding_amount,",
-  "coalesce(ar.journal_posted, false) as ar_journal_posted",
-  "from public.sales_documents sd",
-  "left join lateral (",
-  "  select sum(ledger.outstanding_amount)::numeric as outstanding_amount,",
-  "         bool_and(ledger.gl_entry_id is not null and entry.status::text = 'posted') as journal_posted",
-  "  from public.ar_subledger ledger",
-  "  left join public.accounting_entries entry",
-  "    on entry.id = ledger.gl_entry_id and entry.company_id = sd.company_id",
-  "  where ledger.company_id = sd.company_id and ledger.invoice_id = sd.id",
-  ") ar on true",
-  "where sd.company_id = $1 and sd.invoice_status::text = 'invoiced'",
-  "and sd.status::text not in ('cancelled', 'canceled', 'void')",
-  "order by sd.id desc limit 300",
-].join("\n");
 
 const MUTATIONS_SQL = [
   "select id, company_id, direction, status, amount,",
@@ -78,7 +59,7 @@ router.get("/sales/customer-invoices/auto-match-preview", async (request, respon
         customer_name: string | null; invoice_status: string;
         document_status: string; payment_status: string;
         outstanding_amount: string | null; ar_journal_posted: boolean | null;
-      }>(INVOICES_SQL, [companyId]),
+      }>(CUSTOMER_AR_INVOICES_SQL, [companyId]),
       pool.query<{
         id: number; company_id: number; direction: string; status: string;
         amount: string; description: string | null; bank_reference: string | null;
