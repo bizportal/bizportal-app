@@ -165,6 +165,34 @@ async function preflight() {
   baselinePo14 = await po14Fingerprint();
   const baseline = baselinePo14 as { invoices: number; ap: number; handoffs: number };
   requireThat(baseline.invoices === 0 && baseline.ap === 0 && baseline.handoffs === 0, "PO14_BASELINE_NOT_ZERO");
+  if (recoveryMode) {
+    // Recovery does not perform Finance business transactions. It must never
+    // depend on opening an unrelated company reader pool that may be exhausted
+    // after a failed acceptance run; instead pin role/RLS metadata from the
+    // verified TLS administrator session, then check every owned QA record.
+    stage = "runtime_preflight_recovery_role_rls";
+    const metadata = (await admin.query(`
+      select
+        (select count(*)::int from pg_roles
+          where rolname in ('bizportal_finance_cst_login_dev','bizportal_finance_diva_login_dev')
+            and rolcanlogin and not rolsuper and not rolbypassrls and not rolinherit) roles,
+        (select count(*)::int from pg_policies
+          where schemaname='public' and policyname='pr107_company_role_restrictive_all'
+            and permissive='RESTRICTIVE') company_guards,
+        (select count(*)::int from pg_policies
+          where schemaname='public' and policyname in
+            ('pr108_definer_read','pr108_definer_lock')) lock_guards,
+        (select count(*)::int from pg_stat_activity
+          where usename in ('bizportal_finance_cst_login_dev','bizportal_finance_diva_login_dev')
+            and state='idle in transaction'
+            and clock_timestamp()-state_change>interval '90 seconds') stale_transactions
+    `)).rows[0];
+    requireThat(metadata?.roles===2 && metadata?.company_guards===11 &&
+      metadata?.lock_guards===6 && metadata?.stale_transactions===0,
+      "RECOVER_DATABASE_ROLES_OR_LOCKS_UNSAFE");
+    passed("RECOVER_ADMIN_TLS_RLS_METADATA_VERIFIED");
+    return;
+  }
   const { sql } = await import("drizzle-orm");
   for (const companyId of COMPANY_IDS) {
     stage = `runtime_preflight_company_${companyId}_read_only`;
