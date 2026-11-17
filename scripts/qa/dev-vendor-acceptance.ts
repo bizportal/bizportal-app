@@ -32,7 +32,11 @@ const FLAGS = ["BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV",
   "BIZPORTAL_MARKETPLACE_ACCOUNTING_HANDOFF_ENABLED_DEV",
   "BIZPORTAL_FINANCE_NOTIFICATIONS_SUPPRESSED_DEV", "ALLOW_DEV_STORAGE_WRITES"];
 const mode = process.argv[2];
-const marker = `QA-DEV-INVACCEPT-${Date.now()}-${randomBytes(4).toString("hex")}`;
+// --recover-check is read-only. --recover requires an additional explicit
+// local DEV recovery flag and only accepts a single known synthetic run marker.
+const recoveryMode = mode === "--recover-check" || mode === "--recover";
+const recoveryMarker = recoveryMode ? process.argv[3] : undefined;
+const marker = recoveryMarker ?? `QA-DEV-INVACCEPT-${Date.now()}-${randomBytes(4).toString("hex")}`;
 let stage = "arguments";
 let publicCertificateDirectory: string | undefined;
 let seeded = false;
@@ -323,6 +327,90 @@ async function exercise(f: Fixture) {
   passed("COMPANY_SESSION_AP_ACCOUNTING_DRAFT_REPLAY_AUDIT_NO_NOTIFICATION", { companyId: f.companyId,
     invoiceId: f.invoiceId, apId: f.apId, paymentRequestId: f.paymentRequestId, handoffId: f.handoffId });
 }
+/** Recover only the original QA-owned synthetic parents from an interrupted
+ * acceptance test. Never read or regenerate any vendor capability token.
+ * Recovery refuses incomplete, paid, posted, relabelled, cross-company or
+ * non-owned rows. It cannot be triggered without a matching marker argument.
+ */
+async function recoverExistingQaFixtures() {
+  stage = "synthetic_owned_fixture_recovery_preflight";
+  requireThat(recoveryMode && typeof recoveryMarker === "string" &&
+    /^QA-DEV-INVACCEPT-[0-9]{13}-[a-f0-9]{8}$/.test(recoveryMarker), "RECOVER_MARKER_INVALID");
+  requireThat(fixtures.length === 0 && !seeded, "RECOVER_ALREADY_INITIALIZED");
+  for (const companyId of COMPANY_IDS) {
+    const label = `${recoveryMarker}-${companyId}`;
+    const rows = (await admin!.query(`
+      select p.id,p.company_id,p.vendor_id as supplier_id,
+        p.rfq_id,p.quote_id,p.status::text as po_status,
+        s.name as supplier_name,r.rfq_number,
+        q.rfq_id as quote_rfq_id,q.vendor_id as quote_vendor_id,
+        sh.id as shipment_id,gr.id as gr_id
+      from public.mkt_purchase_orders p
+      join public.suppliers s on s.id=p.vendor_id
+      join public.mkt_rfqs r on r.id=p.rfq_id
+      join public.mkt_vendor_quotes q on q.id=p.quote_id
+      join public.mkt_po_shipments sh on sh.po_id=p.id
+        and sh.shipment_status='delivered'
+      join public.mkt_po_goods_receipts gr on gr.shipment_id=sh.id
+        and gr.inspection_status='passed'
+      where p.po_number=$1 and p.company_id=$2
+      order by p.id,sh.id,gr.id
+    `, [label, companyId])).rows;
+    requireThat(rows.length === 1, "RECOVER_PARENT_COUNT_UNEXPECTED");
+    const q = rows[0];
+    requireThat(q.id !== 14 && Number.isSafeInteger(q.id) && q.id > 0 &&
+      q.company_id === companyId && q.po_status === "delivered" &&
+      q.supplier_name === label && q.rfq_number === label &&
+      q.quote_rfq_id === q.rfq_id && q.quote_vendor_id === q.supplier_id &&
+      [q.supplier_id,q.rfq_id,q.quote_id,q.shipment_id,q.gr_id].every(
+        value => Number.isSafeInteger(value) && value > 0), "RECOVER_PARENT_OWNER_MISMATCH");
+    const evidence = (await admin!.query(`
+      select
+        (select count(*)::int from public.mkt_purchase_order_lines where po_id=$1) po_lines,
+        (select count(*)::int from public.mkt_po_shipment_items where shipment_id=$2) shipment_lines,
+        (select count(*)::int from public.mkt_po_goods_receipt_items where goods_receipt_id=$3) receipt_lines,
+        (select count(*)::int from public.vendor_invoice_lines vil
+          join public.vendor_invoices vi on vi.id=vil.invoice_id
+          where vi.mkt_purchase_order_id=$1) invoice_lines,
+        (select count(*)::int from public.vendor_invoices where mkt_purchase_order_id=$1
+          and vendor_invoice_ref=$4 and company_id=$5 and supplier_id=$6
+          and status='ready_for_ap' and amount_paid=0 and journal_entry_id is null
+          and attachment_object_path is not null) safe_invoice,
+        (select count(*)::int from public.mkt_ap_preparations where mkt_purchase_order_id=$1
+          and company_id=$5 and supplier_id=$6 and status='waiting_payment') safe_ap,
+        (select count(*)::int from public.payment_requests pr
+          join public.mkt_ap_preparations ap on ap.id=pr.mkt_ap_preparation_id
+          where ap.mkt_purchase_order_id=$1 and pr.company_id=$5
+          and pr.supplier_id=$6 and pr.status='draft'
+          and pr.paid_amount=0 and pr.journal_entry_id is null) safe_payment,
+        (select count(*)::int from public.mkt_accounting_handoffs
+          where mkt_purchase_order_id=$1 and company_id=$5 and supplier_id=$6
+          and accounting_status='draft_not_posted') safe_handoff,
+        (select count(*)::int from public.mkt_notification_queue where purchase_order_id=$1) notices,
+        (select count(*)::int from public.activity_logs where mkt_purchase_order_id=$1) audits
+    `, [q.id,q.shipment_id,q.gr_id,label,companyId,q.supplier_id])).rows[0];
+    requireThat(evidence?.po_lines === 2 && evidence.shipment_lines === 2 &&
+      evidence.receipt_lines === 2 && evidence.invoice_lines === 2 &&
+      evidence.safe_invoice === 1 && evidence.safe_ap === 1 &&
+      evidence.safe_payment === 1 && evidence.safe_handoff === 1 &&
+      evidence.notices === 0 && evidence.audits === 6, "RECOVER_SYNTHETIC_FLOW_DRIFT");
+    fixtures.push({
+      companyId, supplierId:q.supplier_id, rfqId:q.rfq_id,quoteId:q.quote_id,
+      poId:q.id,lineIds:[],shipmentId:q.shipment_id,grId:q.gr_id,
+      token:"", reference:label,
+    });
+  }
+  // Ensure there is no third row under this exact marker, nor any missing one.
+  const all = (await admin!.query(`
+    select count(*)::int n from public.mkt_purchase_orders
+    where po_number like $1 escape '!' and po_number in ($2,$3)
+  `, [recoveryMarker+"-%",recoveryMarker+"-1",recoveryMarker+"-3"])).rows[0];
+  requireThat(all?.n === 2, "RECOVER_MARKER_SCOPE_CHANGED");
+  seeded = true;
+  passed("RECOVER_QA_EXACT_OWNERSHIP_AND_UNPAID_DRAFTS_VERIFIED", {
+    marker,companies:[1,3],protectedPo14:14,validation:"read-only",
+  });
+}
 async function cleanup() {
   if (!seeded) return;
   stage = "owned_fixture_cleanup";
@@ -335,10 +423,10 @@ async function cleanup() {
       const owner = (await admin!.query(`select po_number,company_id,vendor_id from public.mkt_purchase_orders where id=$1 for update`, [f.poId])).rows[0];
       requireThat(owner?.po_number === f.reference && owner.company_id === f.companyId && owner.vendor_id === f.supplierId && f.poId !== 14, "CLEANUP_OWNERSHIP");
       const invoices = (await admin!.query(`select id,vendor_invoice_ref,company_id,supplier_id,status::text,
-        paid_amount,journal_entry_id,attachment_object_path
+        amount_paid,journal_entry_id,attachment_object_path
         from public.vendor_invoices where mkt_purchase_order_id=$1 for update`, [f.poId])).rows;
       requireThat(invoices.every(row => row.vendor_invoice_ref === f.reference && row.company_id === f.companyId &&
-        row.supplier_id === f.supplierId && Number(row.paid_amount) === 0 && row.journal_entry_id == null &&
+        row.supplier_id === f.supplierId && Number(row.amount_paid) === 0 && row.journal_entry_id == null &&
         ["draft", "submitted", "matched", "ready_for_ap"].includes(row.status)), "CLEANUP_INVOICE_CHANGED");
       const aps = (await admin!.query(`select id,company_id,supplier_id,vendor_invoice_id,mkt_goods_receipt_id
         from public.mkt_ap_preparations where mkt_purchase_order_id=$1 for update`, [f.poId])).rows;
@@ -387,10 +475,27 @@ async function cleanup() {
   passed("OWNED_QA_ROWS_AND_PRIVATE_OBJECTS_CLEANED_PO14_UNCHANGED", { marker, auditHistory: "retained" });
 }
 async function main() {
-  requireThat(mode === "--check" || mode === "--execute", "USE_CHECK_OR_EXECUTE");
-  requireThat(mode !== "--execute" || process.env.BIZPORTAL_VENDOR_ACCEPTANCE_EXECUTE_DEV === "true", "EXPLICIT_DEV_EXECUTION_REQUIRED");
+  requireThat(mode === "--check" || mode === "--execute" || recoveryMode,
+    "USE_CHECK_OR_EXECUTE_OR_EXACT_RECOVERY");
+  requireThat(mode !== "--execute" || process.env.BIZPORTAL_VENDOR_ACCEPTANCE_EXECUTE_DEV === "true",
+    "EXPLICIT_DEV_EXECUTION_REQUIRED");
+  requireThat(!recoveryMode || typeof recoveryMarker === "string" &&
+    /^QA-DEV-INVACCEPT-[0-9]{13}-[a-f0-9]{8}$/.test(recoveryMarker),
+    "RECOVER_MARKER_INVALID");
+  requireThat(mode !== "--recover" || process.env.BIZPORTAL_VENDOR_ACCEPTANCE_RECOVER_DEV === "true",
+    "EXPLICIT_RECOVER_REQUIRED");
   await preflight();
   if (mode === "--check") { passed("READ_ONLY_PREFLIGHT_COMPLETE"); return; }
+  if (recoveryMode) {
+    await recoverExistingQaFixtures();
+    if (mode === "--recover-check") {
+      passed("RECOVER_READ_ONLY_PREFLIGHT_COMPLETE", {marker,companies:[1,3]});
+      return;
+    }
+    await cleanup();
+    passed("RECOVER_OWNED_QA_ROWS_AND_PRIVATE_OBJECTS_CLEANED", {marker});
+    return;
+  }
   console.log(JSON.stringify({ run: marker, scope: "CST-DEV synthetic acceptance", signedAdminHttp: "not tested" }));
   let operationError: unknown;
   try { await seed(); for (const fixture of fixtures) await exercise(fixture); }
