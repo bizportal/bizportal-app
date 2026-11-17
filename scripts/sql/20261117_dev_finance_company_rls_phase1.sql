@@ -160,7 +160,7 @@ BEGIN
  THEN RAISE EXCEPTION 'DEV_FINANCE_PHASE1_BUSINESS_PREDICATE_DRIFT'; END IF;
  IF (SELECT count(*) FROM pg_policies WHERE schemaname='public'
     AND policyname LIKE 'pr50_finance_dev_%' AND
-    roles=ARRAY['bizportal_marketplace_finance_login_dev',
+    cardinality(roles)=3 AND roles @> ARRAY['bizportal_marketplace_finance_login_dev',
       'bizportal_finance_cst_login_dev','bizportal_finance_diva_login_dev']::name[])<>18
  THEN RAISE EXCEPTION 'DEV_FINANCE_PHASE1_ORIGINAL_ROLE_NOT_PRESERVED'; END IF;
  IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname IN
