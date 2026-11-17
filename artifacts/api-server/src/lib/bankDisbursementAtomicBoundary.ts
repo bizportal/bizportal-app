@@ -48,6 +48,11 @@ export interface AtomicSettlementAdapter<Tx> {
   lockInvoice(tx: Tx, companyId: number, invoiceId: number): Promise<LockedInvoice | null>;
   /** Lookup under unique(company_id,idempotency_key), within the same transaction. */
   findByKey(tx: Tx, companyId: number, key: string): Promise<CommittedSettlement | null>;
+  /** Verify an exact replay receipt still has posted, company-owned ledger,
+   * non-voided disbursement, and canonical active/final payment allocation.
+   * A receipt with only IDs is not proof that money is currently settled.
+   */
+  verifyCommittedReceipt(tx: Tx, receipt: CommittedSettlement): Promise<boolean>;
   /** Existing posting service, passed the *same* transaction context. */
   postJournal(tx: Tx, input: InvoiceSettlementInput): Promise<number>;
   /** Existing disbursement service, passed the same transaction context. */
@@ -99,13 +104,16 @@ export async function commitVendorInvoicePaymentAtomic<Tx>(
         || !Number.isSafeInteger(prior.disbursementId) || prior.disbursementId <= 0) {
         throw new Error("ATOMIC_SETTLEMENT_INCOMPLETE_RECEIPT");
       }
-      if (prior.companyId === input.companyId
-        && prior.invoiceId === input.invoiceId
-        && prior.grossMinor === input.grossMinor
-        && prior.withholdingMinor === input.withholdingMinor) {
-        return { outcome: "replayed", settlement: prior };
+      if (prior.companyId !== input.companyId
+        || prior.invoiceId !== input.invoiceId
+        || prior.grossMinor !== input.grossMinor
+        || prior.withholdingMinor !== input.withholdingMinor) {
+        return { outcome: "rejected", reason: "idempotency_conflict" };
       }
-      return { outcome: "rejected", reason: "idempotency_conflict" };
+      if (!(await adapter.verifyCommittedReceipt(tx, prior))) {
+        throw new Error("ATOMIC_SETTLEMENT_UNVERIFIED_REPLAY");
+      }
+      return { outcome: "replayed", settlement: prior };
     }
     if (invoice.status !== "posted") {
       return { outcome: "rejected", reason: "unavailable" };
