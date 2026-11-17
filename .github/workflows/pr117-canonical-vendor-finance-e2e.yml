@@ -11,6 +11,7 @@ on:
       - 'artifacts/api-server/src/lib/services/mktVendorInvoiceService.ts'
       - 'artifacts/api-server/src/lib/services/mktVendorInvoiceParentLock.dev.test.ts'
       - 'artifacts/api-server/src/lib/gcp-systemd-bootstrap.test.ts'
+      - 'artifacts/api-server/src/__tests__/dev-systemd-gcp-bootstrap.test.ts'
       - 'lib/db/src/gcp-database-secret.ts'
       - 'scripts/tests/pr117-*'
       - 'scripts/sql/20261117_pr107_*'
@@ -64,6 +65,7 @@ jobs:
             src/routes/mktVendorInvoice.dev-compat.test.ts \
             src/routes/dev-otp-to-finance-http.test.ts \
             src/lib/gcp-systemd-bootstrap.test.ts \
+            src/__tests__/dev-systemd-gcp-bootstrap.test.ts \
             src/lib/services/mktVendorInvoiceParentLock.dev.test.ts \
             src/lib/services/mktMarketplaceCompanyScope.test.ts \
             src/routes/dev-marketplace-finance-writer.test.ts \
