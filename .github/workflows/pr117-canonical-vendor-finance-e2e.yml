@@ -1,0 +1,71 @@
+name: PR117 Canonical Vendor Invoice + PR108 Session-Bound Finance E2E
+
+on:
+  pull_request:
+    branches:
+      - test/pr108-session-bound-vendor-lock-20261117
+      - develop
+    paths:
+      - 'artifacts/api-server/src/lib/services/mktVendorInvoiceService.ts'
+      - 'scripts/tests/pr117-*'
+      - 'scripts/sql/20261117_pr107_*'
+      - 'scripts/sql/20261117_pr108_*'
+      - '.github/workflows/pr117-canonical-vendor-finance-e2e.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canonical-finance-service-disposable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: [postgres:16-alpine, postgres:17-alpine]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Install canonical workspace packages without changing lockfile
+        run: pnpm install --frozen-lockfile
+      - name: Both original PR107/108 SQL migration and rollback files must remain review-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          for proposal in \
+            scripts/sql/20261117_pr107_finance_company_roles_RLS_REVIEW_ONLY.sql \
+            scripts/sql/20261117_pr107_finance_company_roles_ROLLBACK_REVIEW_ONLY.sql \
+            scripts/sql/20261117_pr108_session_bound_vendor_lock_REVIEW_ONLY.sql \
+            scripts/sql/20261117_pr108_session_bound_vendor_lock_ROLLBACK_REVIEW_ONLY.sql; do
+            grep -q 'DO \$no_go\$' "$proposal"
+          done
+      - name: Build original canonical Vendor Invoice and AP/Accounting services for isolated PG
+        run: node scripts/tests/pr117-build-vendor-service.cjs
+      - name: Test real source services with original PR107/108 RLS and native parent row locks
+        shell: bash
+        env:
+          PR117_DISPOSABLE_PG_IMAGE: ${{ matrix.postgres }}
+        run: bash scripts/tests/pr117-run-real-vendor-finance-pg16.sh
+      - name: Existing Marketplace API and Accounting regressions
+        run: |
+          pnpm --dir artifacts/api-server exec vitest run \
+            src/routes/mktVendorInvoice.dev-compat.test.ts \
+            src/lib/services/mktMarketplaceCompanyScope.test.ts \
+            src/routes/dev-marketplace-finance-writer.test.ts \
+            src/lib/services/mktAccountingHandoff.test.ts
+      - name: Canonical API + database TypeScript
+        run: pnpm --dir artifacts/api-server typecheck
+      - name: No tracked source or SQL modifications during integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- \
+            artifacts/api-server/src lib/db/src scripts/sql scripts/tests pnpm-lock.yaml
+          test ! -e artifacts/api-server/.pr117-real-vendor-finance-service.mjs
