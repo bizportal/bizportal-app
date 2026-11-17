@@ -34,6 +34,25 @@ describe("preserve canonical bank-mutation Vendor Invoice batch writer during PR
     expect(route).toContain("client.release()");
   });
 
+  it("fails closed when a posted Bank Disbursement owns a source journal",()=>{
+    const sourceGuard=route.indexOf("const postedSourceDisbursement = await client.query");
+    const journalInsert=route.indexOf("insert into public.accounting_entries");
+    expect(sourceGuard).toBeGreaterThan(route.indexOf("for update"));
+    expect(sourceGuard).toBeLessThan(journalInsert);
+    const guardBlock=route.slice(sourceGuard,journalInsert);
+    expect(guardBlock).toContain("public.bank_disbursement_items");
+    expect(guardBlock).toContain("public.bank_disbursements");
+    expect(guardBlock).toContain("public.accounting_entries");
+    expect(guardBlock).toContain("bdi.vendor_invoice_id = any($1::bigint[])");
+    expect(guardBlock).toContain("bd.company_id = $2");
+    expect(guardBlock).toContain("bd.status = 'posted'");
+    expect(guardBlock).toContain("bd.void_entry_id is null");
+    expect(guardBlock).toContain("ae.status = 'posted'");
+    expect(guardBlock).toContain("for update of bd");
+    expect(guardBlock).toContain("[vendorInvoiceIds, companyId]");
+    expect(guardBlock).toContain("VENDOR_INVOICE_SOURCE_JOURNAL_REUSE_REQUIRED");
+  });
+
   it("requires a real mutation_id for canonical allocations, never a fabricated disbursement link",()=>{
     expect(route).toContain("mutation_id, allocated_amount");
     expect(route).toContain("mutationId,");
