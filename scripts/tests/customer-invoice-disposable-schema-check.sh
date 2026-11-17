@@ -30,6 +30,31 @@ docker exec "$NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic -f 
 count="$(docker exec "$NAME" psql -At -U postgres -d invoice_synthetic -c "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'")"
 test "$count" = 90 || { echo "EXPECTED_90_TABLES_GOT_$count"; exit 5; }
 echo DISPOSABLE_ACCOUNTING_SCHEMA_90_TABLES_PASS
+
+# Exact same source ID may legitimately be posted by two distinct companies.
+# This proves code-generated DDL does not retain the old global source key.
+docker exec "$NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic \
+  -c "INSERT INTO companies(id, company_name, company_code) VALUES (1,'Synthetic CST','SCST'),(3,'Synthetic DIVA','SDIVA');
+      INSERT INTO accounting_journals(id, company_id, code, name, type) VALUES (11,1,'S-CST','Synthetic CST Sales','sales'),(31,3,'S-DIVA','Synthetic DIVA Sales','sales');
+      INSERT INTO accounting_entries(company_id,entry_number,journal_id,date,status,source,source_id,total_debit,total_credit)
+      VALUES (1,'SCST-ONE',11,current_date,'posted','sales_invoice',777,100,100),
+             (3,'SDIVA-ONE',31,current_date,'posted','sales_invoice',777,100,100);" \
+  > "$WORK/companies.log"
+actual="$(docker exec "$NAME" psql -At -U postgres -d invoice_synthetic \
+  -c "SELECT count(*) FROM accounting_entries WHERE source='sales_invoice' AND source_id=777")"
+test "$actual" = 2 || { echo "FAIL_COMPANY_SOURCE_ISOLATION_$actual"; exit 8; }
+echo IDENTICAL_SOURCE_ID_SEPARATE_COMPANIES_PASS
+
+# Same-company source replay must never produce another journal row.
+if docker exec "$NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic \
+  -c "INSERT INTO accounting_entries(company_id,entry_number,journal_id,date,status,source,source_id,total_debit,total_credit)
+      VALUES (1,'SCST-TWO',11,current_date,'posted','sales_invoice',777,100,100)" \
+  > "$WORK/duplicate.log" 2>&1; then
+  echo FAIL_SAME_COMPANY_DUPLICATE_ACCEPTED; exit 9
+fi
+grep -q 'duplicate key value violates unique constraint' "$WORK/duplicate.log"
+echo SAME_COMPANY_SOURCE_DUPLICATE_REJECTED_PASS
+
 docker exec "$NAME" createdb -U postgres not_invoice_synthetic
 if docker exec "$NAME" psql -v ON_ERROR_STOP=1 -U postgres -d not_invoice_synthetic -f /tmp/parity.sql > "$WORK/wrong.log" 2>&1; then
  echo FAIL_WRONG_DATABASE_ACCEPTED; exit 6
