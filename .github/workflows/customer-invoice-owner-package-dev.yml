@@ -1,0 +1,34 @@
+name: DEV Customer Invoice — original owner ESM packaging
+
+on:
+  pull_request:
+    branches:
+      - fix/customer-invoice-preview-ui-20261117
+    paths:
+      - 'artifacts/api-server/src/lib/posting-engine/**'
+      - 'artifacts/api-server/src/lib/accounting.ts'
+      - 'artifacts/api-server/src/lib/logger.ts'
+      - 'scripts/tests/customer-invoice-owner-package-dev.sh'
+      - '.github/workflows/customer-invoice-owner-package-dev.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  original-owner-esm-import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Install locked, exact workspace packages
+        run: pnpm install --frozen-lockfile
+      - name: Bundle and import existing owner with same-client adapter; flags OFF
+        run: bash scripts/tests/customer-invoice-owner-package-dev.sh
