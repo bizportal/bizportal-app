@@ -96,6 +96,16 @@ export interface EnqueueNotifOpts {
  * Setelah insert berhasil, fires mkt_notification_queued ke activity_log (non-fatal).
  */
 export async function enqueueNotification(opts: EnqueueNotifOpts): Promise<number> {
+  // Explicit isolated Finance QA mode: prevent invoice/AP test events from
+  // entering the shared outbound queue. Never affects PROD or other events.
+  if (process.env.APP_ENV?.trim().toLowerCase() === "development" &&
+      process.env.BIZPORTAL_FINANCE_NOTIFICATIONS_SUPPRESSED_DEV === "true" &&
+      opts.recipientType === "admin" &&
+      ["mkt_vendor_invoice_uploaded", "mkt_vendor_invoice_ready_for_ap",
+        "mkt_vendor_invoice_submitted", "mkt_ap_preparation_created",
+        "mkt_ap_finance_reviewed", "mkt_ap_waiting_payment"].includes(opts.eventType)) {
+    return 0;
+  }
   if (!(await validateNotifQueueTableReadiness())) return 0;
 
   try {
