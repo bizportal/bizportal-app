@@ -175,7 +175,24 @@ BEGIN
 END
 $body$;
 REVOKE ALL ON FUNCTION finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text) FROM PUBLIC;
+-- Supabase's non-superuser postgres CREATEROLE has ADMIN but not SET on new role.
+-- Temporarily grant SET only for this exact ownership transfer; immediately
+-- revoke solely the grant made by postgres (GRANTED BY postgres), leaving
+-- the system's original ADMIN/NOSET membership intact for controlled rollback.
+GRANT bizportal_finance_parent_lock_owner_dev TO postgres WITH SET TRUE;
 ALTER FUNCTION finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text) OWNER TO bizportal_finance_parent_lock_owner_dev;
+REVOKE bizportal_finance_parent_lock_owner_dev FROM postgres GRANTED BY postgres;
+DO $assert_no_set_membership$
+BEGIN
+ IF EXISTS (
+  SELECT 1 FROM pg_auth_members m
+  JOIN pg_roles r ON r.oid=m.roleid
+  JOIN pg_roles member ON member.oid=m.member
+  WHERE r.rolname='bizportal_finance_parent_lock_owner_dev'
+    AND member.rolname='postgres' AND m.set_option
+ ) THEN RAISE EXCEPTION 'DEV_FINANCE_PHASE2_TEMPORARY_OWNER_SET_NOT_REVOKED'; END IF;
+END
+$assert_no_set_membership$;
 REVOKE CREATE ON SCHEMA finance_ops_private FROM bizportal_finance_parent_lock_owner_dev;
 GRANT EXECUTE ON FUNCTION finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text) TO bizportal_finance_cst_login_dev,bizportal_finance_diva_login_dev;
 
