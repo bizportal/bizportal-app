@@ -25,6 +25,7 @@ import {
 } from "../../artifacts/api-server/src/lib/services/mktApPreparationService";
 
 const BASE = "scripts/tests/pr107-finance-synthetic-baseline.sql";
+const REAL_LEGACY_RLS = "scripts/tests/pr121-real-finance-rls-predicates-disposable.sql";
 const INSTALL107 = "scripts/sql/20261117_pr107_finance_company_roles_RLS_REVIEW_ONLY.sql";
 const BACK107 = "scripts/sql/20261117_pr107_finance_company_roles_ROLLBACK_REVIEW_ONLY.sql";
 const INSTALL108 = "scripts/sql/20261117_pr108_session_bound_vendor_lock_REVIEW_ONLY.sql";
@@ -123,6 +124,24 @@ async function setup() {
   await admin.query(reviewOnlySQL(INSTALL107));
   await admin.query(reviewOnlySQL(INSTALL108));
   await addMissingActualServiceColumns();
+  // PR121: Upgrade the simplified PR107 permissions fixture to all 18
+  // actual CST-DEV RLS expressions (no data/credentials copied). The overlay
+  // operates only inside the no-network disposable PostgreSQL container.
+  await admin.query(readFileSync(REAL_LEGACY_RLS, "utf8"));
+  const predicates = await admin.query(`
+    SELECT count(*)::integer AS n,
+      md5(string_agg(
+        tablename || '|' || policyname || '|' || cmd || '|' ||
+        coalesce(qual,'') || '|' || coalesce(with_check,''),
+        E'\\n' ORDER BY tablename,policyname,cmd)) AS fingerprint
+    FROM pg_catalog.pg_policies
+    WHERE schemaname='public' AND policyname LIKE 'pr50_finance_dev_%'
+  `);
+  assert.equal(Number(predicates.rows[0].n),18,"Original Finance policy count changed");
+  assert.equal(predicates.rows[0].fingerprint,
+    "5ef6b3e6c9c7a41cd0fb94ebbb243c66",
+    "Canonical real CST-DEV policy expressions drifted");
+  console.log("PR121_EXACT_LIVE_RLS_PREDICATES_REPLAYED_DISPOSABLE_PASS");
   await admin.query(`
     create table public.accounting_entries(id integer primary key,company_id integer);
     update public.mkt_purchase_orders
