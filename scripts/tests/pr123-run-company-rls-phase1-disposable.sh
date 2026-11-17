@@ -58,7 +58,7 @@ echo PR123_ELEVEN_ROLE_RESTRICTIVE_AND_EIGHTEEN_LEGACY_POLICY_TARGETS_PASS
 # Spoof the tenant GUC in each direction; new role identity still isolates.
 for pair in "bizportal_finance_cst_login_dev:3" "bizportal_finance_diva_login_dev:1"; do
  role="${pair%%:*}"; spoof="${pair##*:}"
- n="$(printf '%s\n' "BEGIN;SET LOCAL ROLE $role;SELECT set_config('app.marketplace_company_id','$spoof',true);SELECT count(*) FROM public.mkt_purchase_orders;ROLLBACK;" | admin | grep -x '1' | wc -l)"
+ n="$(printf '%s\n' "BEGIN;SET LOCAL ROLE $role;SET LOCAL app.marketplace_company_id='$spoof';SELECT count(*) FROM public.mkt_purchase_orders;ROLLBACK;" | admin | grep -x '1' | wc -l)"
  test "$n" = 1
 done
 echo PR123_COMPANY_ROLE_TENANT_GUC_SPOOF_DENIED_PASS
