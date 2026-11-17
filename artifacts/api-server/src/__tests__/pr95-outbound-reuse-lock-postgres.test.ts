@@ -18,7 +18,9 @@ suite("PR95 locked outbound source journal preflight on disposable PostgreSQL 16
     await client.query(`
       CREATE TABLE public.bank_mutations
         (id integer primary key, company_id integer not null, direction text not null,
-         status text not null, journal_entry_id integer, amount numeric not null);
+         status text not null, journal_entry_id integer, amount numeric not null,bank_account_id text);
+      CREATE TABLE public.company_bank_accounts(id integer primary key, company_id integer,coa_id integer,is_active boolean);
+      CREATE TABLE public.chart_of_accounts(id integer primary key,company_id integer,is_active boolean);
       CREATE TABLE public.vendor_invoices
         (id integer primary key, company_id integer not null,status text not null,cancelled_at timestamptz);
       CREATE TABLE public.bank_disbursements
@@ -31,7 +33,7 @@ suite("PR95 locked outbound source journal preflight on disposable PostgreSQL 16
          status text not null,cancelled_at timestamptz,voided_at timestamptz,
          total_debit numeric not null,total_credit numeric not null);
       CREATE TABLE public.accounting_entry_lines
-        (id integer primary key,entry_id integer not null,debit numeric not null,credit numeric not null);
+        (id integer primary key,entry_id integer not null,debit numeric not null,credit numeric not null,account_id integer);
       CREATE TABLE public.bank_reconciliation_matches
         (id integer primary key,mutation_id integer,status text not null);
       CREATE TABLE public.payment_matching_groups
@@ -39,18 +41,20 @@ suite("PR95 locked outbound source journal preflight on disposable PostgreSQL 16
       CREATE TABLE public.payment_allocations
         (id integer primary key,company_id integer not null,invoice_id integer not null,
          group_id integer,mutation_id integer not null,is_active boolean);
-      INSERT INTO public.bank_mutations VALUES(90001,1,'OUT','unmatched',NULL,100.00);
+      INSERT INTO public.bank_mutations VALUES(90001,1,'OUT','unmatched',NULL,100.00,'17');
+      INSERT INTO public.company_bank_accounts VALUES(17,1,1023,true);
+      INSERT INTO public.chart_of_accounts VALUES(1010,1,true),(1023,1,true);
       INSERT INTO public.vendor_invoices VALUES(7,1,'posted',NULL);
       INSERT INTO public.bank_disbursements VALUES(2,1,314,'posted',NULL);
       INSERT INTO public.bank_disbursement_items VALUES(1,2,7,100.00);
       INSERT INTO public.accounting_entries VALUES(314,1,'manual_payment','posted',NULL,NULL,100.00,100.00);
-      INSERT INTO public.accounting_entry_lines VALUES(1,314,100.00,0),(2,314,0,100.00);
+      INSERT INTO public.accounting_entry_lines VALUES(1,314,100.00,0,1010),(2,314,0,100.00,1023);
       INSERT INTO public.payment_matching_groups VALUES(5,'active');
     `);
   });
   afterAll(async()=>{
     if(!client)return;
-    await client.query(`DROP TABLE public.payment_allocations,public.accounting_entry_lines,public.payment_matching_groups,
+    await client.query(`DROP TABLE public.payment_allocations,public.accounting_entry_lines,public.company_bank_accounts,public.chart_of_accounts,public.payment_matching_groups,
       public.bank_reconciliation_matches,public.accounting_entries,
       public.bank_disbursement_items,public.bank_disbursements,
       public.vendor_invoices,public.bank_mutations;`);
