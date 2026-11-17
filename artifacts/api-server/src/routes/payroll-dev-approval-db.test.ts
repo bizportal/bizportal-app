@@ -40,13 +40,17 @@ describe("separate DEV Payroll approval database identity (source-only)", () => 
       expect(devApprovalDedicatedEnabled()).toBe(true);
     }
   });
-  it("keeps approval routes unmounted from the shipped API", () => {
+  it("keeps the separate approval handler under an explicit DEV-only mount gate", () => {
     const index = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
     const payroll = readFileSync(new URL("./payroll.ts", import.meta.url), "utf8");
-    for (const source of [index, payroll]) {
-      expect(source).not.toContain("registerPayrollSuperAdminApprovalRoutes");
-      expect(source).not.toContain("super-admin-approve");
-    }
+    expect(index).not.toContain("registerPayrollSuperAdminApprovalRoutes");
+    expect(payroll).toContain('process.env.APP_ENV?.trim().toLowerCase() === "development"');
+    expect(payroll).toContain('process.env.PAYROLL_DEV_SUPER_ADMIN_ROUTE_MOUNT_ENABLED === "true"');
+    expect(payroll).toContain("registerPayrollSuperAdminApprovalRoutes(approvalRouter)");
+    expect(payroll).toContain("getProductionSession(req)");
+    expect(payroll).toContain("getProductionUser(signedSession)");
+    // The regression HTTP suite proves this gated source is still 404 in PROD
+    // and by default, and cannot write without an independent DEV approver.
   });
   it("never enables the DEV writer in production", () => {
     vi.stubEnv("APP_ENV", "production");
