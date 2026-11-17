@@ -16,6 +16,8 @@ function build(overrides: { mutation?: Record<string, unknown> | null; invoice?:
         : sql.includes("from public.bank_disbursements") ? (overrides.bd ?? [{id:2,entry_id:314}])
         : sql.includes("from public.bank_disbursement_items") ? (overrides.sourceItems ?? [{vendor_invoice_id:7,amount:"100.00"}])
         : sql.includes("from public.accounting_entries") ? (overrides.entry === false ? [] : [{id:314,total_debit:overrides.header??"100.00",total_credit:overrides.header??"100.00"}])
+        : sql.includes("join public.company_bank_accounts") ? [{coa_id:1023}]
+        : sql.includes("join public.chart_of_accounts") ? [{credit_minor:"10000",debit_minor:"0",line_count:"1"}]
         : sql.includes("from public.accounting_entry_lines") ? (overrides.lineItems ?? [{debit:"100.00",credit:"0.00"},{debit:"0.00",credit:"100.00"}])
         : [{n:String((overrides.counts ?? [0,0,0])[n++])}];
       return {rows:row as unknown as T[]};
@@ -46,7 +48,9 @@ describe("PR95 unregistered PostgreSQL lock-scoped outbound reuse preflight", ()
     expect(seen[6].sql).toContain("for update");
     expect(seen[7].sql).toContain("from public.accounting_entry_lines");
     expect(seen[7].sql).toContain("for update");
-    expect(seen.slice(8)).toHaveLength(3);
+    expect(seen[8].sql).toContain("company_bank_accounts");
+    expect(seen[9].sql).toContain("chart_of_accounts");
+    expect(seen.slice(10)).toHaveLength(3);
     expect(seen.every(q=>!/(insert into|update public|delete from)/i.test(q.sql))).toBe(true);
   });
   it("rejects mismatch of mutation, disbursement, and source ledger amounts", async () => {
