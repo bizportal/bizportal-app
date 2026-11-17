@@ -89,7 +89,7 @@ export async function finalizeOutboundSourceReuseCandidate(
          total_invoice_amount,total_allocated,remaining_amount,
          confidence,algorithm_used,status,created_by)
        values($1,'MULTI_INVOICE','MULTI_INVOICE',$2,$2,$2,0,100,
-              'bank_source_journal_reuse_verified','final',$3)
+              'bank_source_journal_reuse_verified','active',$3)
        returning id`,
     [input.companyId,locked.verifiedAmountMinor/100,input.verifiedActorEmail],
   );
