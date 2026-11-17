@@ -19,6 +19,7 @@ export type OutboundReuseEvidence = Readonly<{
   disbursementStatus: string;
   disbursementVoidEntryId: number | null;
   disbursementAmountMinor: number;
+  disbursementEntryId: number;
   entryId: number;
   entryCompanyId: number;
   entrySource: string;
@@ -29,6 +30,7 @@ export type OutboundReuseEvidence = Readonly<{
   entryCreditMinor: number;
   lines: readonly Readonly<{ accountId: number; debitMinor: number; creditMinor: number }>[];
   bankAccountId: number;
+  mutationBankCoaId: number;
   payableAccountId: number;
   postedSourceEntryCount: number;
   activeApprovedMutationLinkCount: number;
@@ -54,6 +56,8 @@ export function assessOutboundSourceJournalReuse(e: OutboundReuseEvidence): Outb
   if (e.mutationDirection.toUpperCase() !== "OUT"
     || !["unmatched", "matched", "pending", "pending_review"].includes(e.mutationStatus.toLowerCase())
     || e.mutationJournalEntryId !== null) return reject("MUTATION_NOT_AVAILABLE");
+  if (e.disbursementEntryId !== e.entryId || e.mutationBankCoaId !== e.bankAccountId)
+    return reject("SOURCE_OR_BANK_IDENTITY_MISMATCH");
   if (e.disbursementStatus !== "posted" || e.disbursementVoidEntryId !== null
     || e.entrySource !== "manual_payment" || e.entryStatus !== "posted"
     || e.entryCancelled || e.entryVoided) return reject("SOURCE_NOT_POSTED");
