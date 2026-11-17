@@ -54,7 +54,8 @@ suite("PR95 unregistered source-owned OUT reuse transition on disposable Postgre
         id serial primary key,company_id integer,group_type text,matching_type text,
         total_mutation_amount numeric,total_invoice_amount numeric,
         total_allocated numeric,remaining_amount numeric,confidence integer,
-        algorithm_used text,status text,created_by text
+        algorithm_used text,status text CHECK(status IN ('active','reversed','void')),
+        created_by text
       );
       CREATE TABLE public.payment_allocations(
         id serial primary key,group_id integer,company_id integer,
