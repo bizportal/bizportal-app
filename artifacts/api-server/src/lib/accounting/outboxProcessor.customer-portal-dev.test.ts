@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const m = vi.hoisted(() => ({
   transaction: vi.fn(),
@@ -59,6 +61,26 @@ afterEach(() => {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
   }
+});
+
+describe("legacy and strict outbox ownership boundary", () => {
+  it("legacy poll excludes only the new exact-prefix sales-invoice events", () => {
+    const src = readFileSync(
+      join(process.cwd(), "src/lib/accounting/outboxProcessor.ts"), "utf8",
+    );
+    const legacyStart = src.indexOf("async function processOutboxBatch()");
+    const strictStart = src.indexOf("export async function processCustomerPortalSalesInvoiceOutboxDevOnce");
+    expect(legacyStart).toBeGreaterThan(-1);
+    expect(strictStart).toBeGreaterThan(legacyStart);
+    const legacy = src.slice(legacyStart, strictStart);
+    const strict = src.slice(strictStart);
+    expect(legacy).toContain("AND NOT (");
+    expect(legacy).toContain("payload->>'sourceType' = 'sales_invoice'");
+    expect(legacy).toContain("left(coalesce(payload->>'dedupeKey', ''), 14) = 'sales_invoice:'");
+    expect(strict).toContain("left(coalesce(payload->>'dedupeKey', ''), 14) = 'sales_invoice:'");
+    expect(strict).toContain("FOR UPDATE SKIP LOCKED");
+    expect(strict).toContain("CUSTOMER_PORTAL_OUTBOX_SAFE_CONSUME_DEV");
+  });
 });
 
 describe("original outbox worker: strict Customer Portal invoice DEV extension", () => {
