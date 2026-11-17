@@ -78,6 +78,18 @@ class DeployBoundaries(unittest.TestCase):
         ]:
             self.assertFalse(admitted(path), path)
 
+    def test_vendor_qa_requires_the_migrated_session_bound_token_lock(self):
+        qa = (MODULE_PATH.parent / "qa/dev-vendor-acceptance.ts").read_text()
+        sql = (MODULE_PATH.parent / "sql/20261117_dev_finance_po_vendor_token_48_64_compat.sql").read_text() if (
+            MODULE_PATH.parent / "sql/20261117_dev_finance_po_vendor_token_48_64_compat.sql"
+        ).exists() else None
+        self.assertIn("f74ae1995c4ec52505b06624c6010950", qa)
+        self.assertNotIn("06d261a1ec4908c31b681d7a0f1f26cd", qa)
+        self.assertIn('mode === "--check"', qa)
+        self.assertIn("BIZPORTAL_VENDOR_ACCEPTANCE_EXECUTE_DEV", qa)
+        if sql is not None:
+            self.assertIn("f74ae1995c4ec52505b06624c6010950", sql)
+
     def test_source_stage_preserves_auth_and_disables_writers(self):
         value = deploy.drop_content("stage")
         self.assertIn("CANONICAL_FINANCE_ENABLED_DEV=false", value)
