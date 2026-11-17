@@ -39,6 +39,9 @@ const recoveryMarker = recoveryMode ? process.argv[3] : undefined;
 const marker = recoveryMarker ?? `QA-DEV-INVACCEPT-${Date.now()}-${randomBytes(4).toString("hex")}`;
 let stage = "arguments";
 let publicCertificateDirectory: string | undefined;
+// Pooler sessions can report a different backend TLS state. Always verify
+// the actual Node client's encrypted/authorized socket; direct also needs DB TLS.
+let adminConnectsDirectly = true;
 let seeded = false;
 let baselinePo14: unknown;
 let app: typeof import("../../lib/db/src/index") | undefined;
@@ -87,6 +90,7 @@ function configureFromVerifiedServices() {
   const source = new URL(raw);
   const user = decodeURIComponent(source.username);
   const direct = source.hostname === `db.${PROJECT}.supabase.co`;
+  adminConnectsDirectly = direct;
   requireThat(["postgres:", "postgresql:"].includes(source.protocol) &&
     (direct || source.hostname.endsWith(".pooler.supabase.com")) &&
     (user === `postgres.${PROJECT}` || (direct && user === "postgres")) &&
@@ -132,8 +136,17 @@ async function preflight() {
   admin = await app.pool.connect();
   const identity = (await admin.query(`select current_user::text usr,session_user::text login,
     current_database() db,(select ssl from pg_stat_ssl where pid=pg_backend_pid()) tls`)).rows[0];
+  const clientTls = (admin as PoolClient & {
+    connection?: { stream?: { encrypted?: boolean; authorized?: boolean } };
+  }).connection?.stream;
+  // pg_stat_ssl describes the pooler's internal DB connection when pooling is
+  // used. Always verify our actual client TLS; direct DB also needs backend TLS.
   requireThat(identity.usr === "postgres" && identity.login === "postgres" &&
-    identity.db === "postgres" && identity.tls === true, "ADMIN_SESSION_IDENTITY_OR_TLS");
+    identity.db === "postgres" && clientTls?.encrypted === true && clientTls.authorized === true &&
+    (!adminConnectsDirectly || identity.tls === true), "ADMIN_SESSION_IDENTITY_OR_TLS");
+  passed("ADMIN_IDENTITY_AND_CLIENT_TLS_VERIFIED", {
+    connection: adminConnectsDirectly ? "direct" : "pooler", backendTls: identity.tls === true,
+  });
   const lock = (await admin.query(`select md5(prosrc) fingerprint,prosecdef from pg_proc
     where oid=to_regprocedure('finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text)')`)).rows[0];
   requireThat(lock?.fingerprint === "f74ae1995c4ec52505b06624c6010950" && lock.prosecdef === true, "LOCK_FUNCTION_DRIFT");
