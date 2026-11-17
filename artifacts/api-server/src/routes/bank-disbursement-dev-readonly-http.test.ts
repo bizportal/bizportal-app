@@ -104,6 +104,18 @@ describe("Bank Disbursement DEV read-only HTTP parity", () => {
     expect(state.calls).toHaveLength(0);
   });
 
+  it("requires a verified session company even when URL supplies one", async () => {
+    state.actor = { role: "owner", companyId: null };
+    for (const endpoint of [
+      "/accounting/bank-disbursements?company=1",
+      "/accounting/bank-disbursements/9?company=1",
+      "/accounting/bank-disbursements/vendor-invoices/outstanding?company=1",
+    ]) {
+      expect((await get(endpoint)).status).toBe(400);
+    }
+    expect(state.calls).toHaveLength(0);
+  });
+
   it("rejects invalid limits without database calls", async () => {
     expect((await get("/accounting/bank-disbursements?company=1&limit=101")).status).toBe(400);
     expect((await get("/accounting/bank-disbursements?company=1&limit=0")).status).toBe(400);
