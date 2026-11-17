@@ -85,4 +85,16 @@ describe("PR95 outgoing bank source-journal reuse: unregistered fail-closed pref
     reject({ lines: [{ accountId: 1010, debitMinor: 3169439200, creditMinor: 1 },
       { accountId: 1023, debitMinor: 0, creditMinor: 3169439200 }] }, "INVALID_ENTRY_LINE");
   });
+  it("rejects unsafe numeric, stale statuses and out-of-bounds source totals", () => {
+    reject({ mutationAmountMinor: 3169439200.5 }, "AMOUNT_OR_PARTIAL_PAYMENT_NOT_PROVEN");
+    reject({ mutationAmountMinor: Number.MAX_SAFE_INTEGER + 1 }, "AMOUNT_OR_PARTIAL_PAYMENT_NOT_PROVEN");
+    reject({ mutationStatus: "reconciled" }, "MUTATION_NOT_AVAILABLE");
+    reject({ entryCompanyId: 2 }, "COMPANY_SCOPE_MISMATCH");
+    reject({ postedSourceEntryCount: 0 }, "AMBIGUOUS_SOURCE_CUSTODY");
+    reject({ activeApprovedMutationLinkCount: 2 }, "AMBIGUOUS_SOURCE_CUSTODY");
+    reject({ lines: [] }, "ENTRY_TOTAL_MISMATCH");
+    reject({ lines: [{ accountId: 1010, debitMinor: -1, creditMinor: 0 },
+      { accountId: 1023, debitMinor: 0, creditMinor: 3169439200 }] }, "INVALID_ENTRY_LINE");
+  });
+
 });
