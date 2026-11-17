@@ -1,0 +1,49 @@
+name: PR129 Finance IPv4 Session Pooler TLS CST/Diva
+
+on:
+  pull_request:
+    branches:
+      - fix/invoice-dev-completion-20261117
+    paths:
+      - 'lib/db/src/marketplace-finance-dev.ts'
+      - 'artifacts/api-server/src/routes/dev-finance-company-role-routing.test.ts'
+      - '.github/workflows/pr129-finance-ipv4-pooler-tls.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dev-finance-session-pooler-tls:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Install exact dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Assert verified public CA, hostname and fail-closed finance identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'SUPABASE_FINANCE_ROOT_2021_FINGERPRINT256' lib/db/src/marketplace-finance-dev.ts
+          grep -Fq 'rootCertificates, SUPABASE_FINANCE_ROOT_2021_PEM' lib/db/src/marketplace-finance-dev.ts
+          grep -Fq 'rejectUnauthorized: true, servername: hostname, ca' lib/db/src/marketplace-finance-dev.ts
+          grep -Fq 'DEV_FINANCE_COMPANY_CREDENTIAL_CHANGED_RESTART_REQUIRED' lib/db/src/marketplace-finance-dev.ts
+          ! grep -Eq 'rejectUnauthorized: false|ssl: false' lib/db/src/marketplace-finance-dev.ts
+          echo FINANCE_IPV4_POOLER_SECURE_TLS_SOURCE_PASS
+      - name: Both company identities, verified CA and writer fail-closed regression
+        run: |
+          pnpm --dir artifacts/api-server exec vitest run \
+            src/routes/dev-finance-company-role-routing.test.ts \
+            src/lib/gcp-systemd-bootstrap.test.ts
+      - name: Canonical API and database TypeScript
+        run: pnpm --dir artifacts/api-server typecheck
+      - name: Source remains clean
+        run: git diff --exit-code -- lib/db/src artifacts/api-server/src pnpm-lock.yaml
