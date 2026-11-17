@@ -108,7 +108,7 @@ async function verifyPosted(companyId, sourceId, { gross = 100, tax = 0 } = {}) 
   if(tax) {
     assert.equal(Number(taxRows.rows[0].tax_amount),tax);
     assert.equal(Number(taxRows.rows[0].base_amount),gross-tax);
-    assert.equal(Number(taxRows.rows[0].tax_rate),11);
+    assert.equal(Number(taxRows.rows[0].tax_rate),tax);
     assert.equal(taxRows.rows[0].status,"posted");
     assert.equal(taxRows.rows[0].direction,"output");
     console.log("ATOMIC_OUTPUT_PPN_RECORD_PASS",companyId,sourceId);
@@ -117,6 +117,17 @@ async function verifyPosted(companyId, sourceId, { gross = 100, tax = 0 } = {}) 
   console.log("POST_COMMIT_BALANCED_AUDIT_OUTBOX_PASS", companyId, sourceId);
 }
 try {
+  // Reproduce actual CST-DEV configuration: DIVA default still points to CST.
+  // A clearly selected, company-owned tax on the source invoice must be
+  // allowed, while any cross-company tax selected by the invoice is rejected.
+  const divaMapping = await pool.query(
+    "SELECT s.company_id,s.default_sales_tax_id, foreign_tax.company_id AS default_tax_owner, own_tax.company_id AS selected_tax_owner,own_tax.account_id=s.ppn_output_account_id AS own_account_matches FROM accounting_settings s JOIN accounting_taxes foreign_tax ON foreign_tax.id=s.default_sales_tax_id JOIN accounting_taxes own_tax ON own_tax.id=3 WHERE s.company_id=3",
+  );
+  assert.equal(divaMapping.rows.length,1);
+  assert.equal(Number(divaMapping.rows[0].default_tax_owner),1);
+  assert.equal(Number(divaMapping.rows[0].selected_tax_owner),3);
+  assert.equal(divaMapping.rows[0].own_account_matches,true);
+  console.log("DIVA_FOREIGN_DEFAULT_OWNED_INVOICE_TAX_REPRODUCED_PASS");
   await assertReceipt(1, 171);
   await assertReceipt(3, 173);
   await verifyPosted(1, 171);
@@ -143,6 +154,12 @@ try {
   assert.equal(await counts(183),1);
   await verifyPosted(1,179,{gross:111,tax:11});
   await verifyPosted(3,183,{gross:111,tax:11});
+  await assertReceipt(3,191);
+  await verifyPosted(3,191,{gross:112,tax:12});
+  await assertReceipt(3,191);
+  assert.equal(await counts(191),1);
+  await verifyPosted(3,191,{gross:112,tax:12});
+  console.log("DIVA_12_PERCENT_EXPLICIT_SOURCE_PPN_PASS");
   console.log("ATOMIC_PPN_AND_REPLAY_PASS");
   await assertReceipt(1,189,{rollback:true});
   assert.equal(await counts(189),0);

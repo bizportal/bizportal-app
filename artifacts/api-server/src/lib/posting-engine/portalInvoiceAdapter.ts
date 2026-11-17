@@ -223,7 +223,9 @@ export async function postCustomerInvoiceWithOriginalOwner(
     taxRate = Number(t.rate);
     if (!outputTaxAccountId || !taxName || t.kind !== "sale" || t.is_active !== true
         || Number(t.company_id) !== companyId
-        || Number(t.default_sales_tax_id) !== taxId
+        // Explicit invoice tax wins over a company default, but it MUST be
+        // active, company-owned and backed by that company's PPN output COA.
+        // A foreign default never authorizes a foreign invoice tax.
         || Number(t.account_id) !== outputTaxAccountId
         || Number(t.coa_company) !== companyId || t.coa_type !== "liability"
         || t.coa_active !== true || t.coa_postable !== true
