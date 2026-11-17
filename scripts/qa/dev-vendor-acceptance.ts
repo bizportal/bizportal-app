@@ -52,6 +52,23 @@ function requireThat(value: unknown, code: string): asserts value {
 function passed(code: string, data?: Record<string, unknown>) {
   checks.push(code); console.log(JSON.stringify({ check: code, result: "PASS", ...data }));
 }
+function reportFailure(failure: string, error: unknown, failureStage = stage) {
+  // Only allowlisted error classifications; never emit messages, SQL or parameters.
+  let code = error instanceof Error && /^QA_[A-Z0-9_]+$/.test(error.message)
+    ? error.message : "QA_UNEXPECTED_FAILURE";
+  let cause: unknown = error;
+  let sqlState: string | undefined;
+  let transportCode: string | undefined;
+  for (let depth = 0; depth < 5 && cause instanceof Error; depth++) {
+    const possibleCode = (cause as Error & { code?: unknown }).code;
+    if (typeof possibleCode === "string" && /^[0-9A-Z]{5}$/.test(possibleCode)) sqlState = possibleCode;
+    if (typeof possibleCode === "string" &&
+      ["ETIMEDOUT", "ECONNRESET", "EPIPE", "ECONNREFUSED", "ENETUNREACH", "EAI_AGAIN"].includes(possibleCode)) transportCode = possibleCode;
+    if (cause.message === "Query read timeout") code = "QA_DATABASE_CLIENT_READ_TIMEOUT";
+    cause = cause.cause;
+  }
+  console.error(JSON.stringify({ result: "FAIL", failure, stage: failureStage, code, sqlState, transportCode, marker }));
+}
 function serviceEnvironment(unit: string) {
   const pid = Number(execFileSync("systemctl", ["show", "--property=MainPID", "--value", unit],
     { encoding: "utf8", timeout: 5_000 }).trim());
@@ -296,20 +313,27 @@ async function exercise(f: Fixture) {
     const hidden = await tx.execute(sql`select count(*)::int n from public.mkt_purchase_orders where id=${other.poId}`);
     requireThat(hidden.rows[0]?.n === 0, "CROSS_COMPANY_GUC_SPOOF");
     await tx.execute(sql`select set_config('app.marketplace_company_id',${String(f.companyId)},true)`);
+    stage = `company_${f.companyId}_canonical_ap_create`;
     const preparation = await services.createApPreparation(f.invoiceId!, actor, tx);
     requireThat(preparation.ok && !preparation.alreadyExists, "AP_CREATE");
     f.apId = preparation.preparation.id;
+    stage = `company_${f.companyId}_canonical_ap_replay`;
     const repeated = await services.createApPreparation(f.invoiceId!, actor, tx);
     requireThat(repeated.ok && repeated.alreadyExists && repeated.preparation.id === f.apId, "AP_REPLAY");
+    stage = `company_${f.companyId}_canonical_ap_review`;
     requireThat((await services.reviewApPreparation(f.apId, actor, tx)).ok, "AP_REVIEW");
+    stage = `company_${f.companyId}_canonical_ap_waiting`;
     requireThat((await services.markApPreparationWaitingPayment(f.apId, actor, tx)).ok, "AP_WAITING");
+    stage = `company_${f.companyId}_canonical_handoff_create`;
     const handoff = await services.createMarketplaceAccountingHandoff(f.apId, actor, tx);
     requireThat(handoff.ok && !handoff.alreadyExists, "ACCOUNTING_DRAFT_CREATE");
     f.handoffId = handoff.handoffId; f.paymentRequestId = handoff.paymentRequestId;
+    stage = `company_${f.companyId}_canonical_handoff_replay`;
     const repeatedHandoff = await services.createMarketplaceAccountingHandoff(f.apId, actor, tx);
     requireThat(repeatedHandoff.ok && repeatedHandoff.alreadyExists && repeatedHandoff.handoffId === f.handoffId &&
       repeatedHandoff.paymentRequestId === f.paymentRequestId, "ACCOUNTING_DRAFT_REPLAY");
   });
+  stage = `company_${f.companyId}_verify_committed_flow`;
   const result = (await admin!.query(`select
     (select count(*)::int from public.vendor_invoices where mkt_purchase_order_id=$1) invoices,
     (select count(*)::int from public.vendor_invoice_lines where invoice_id=$2) lines,
@@ -332,6 +356,7 @@ async function exercise(f: Fixture) {
   f.objectPath = result.object_path;
   const { ObjectStorageService } = await import("../../artifacts/api-server/src/lib/objectStorage");
   const storage = new ObjectStorageService();
+  stage = `company_${f.companyId}_verify_private_storage`;
   requireThat(await storage.getObjectEntitySize(f.objectPath!) === invoicePdf(f.reference).length, "PRIVATE_STORAGE_BYTES");
   passed("COMPANY_SESSION_AP_ACCOUNTING_DRAFT_REPLAY_AUDIT_NO_NOTIFICATION", { companyId: f.companyId,
     invoiceId: f.invoiceId, apId: f.apId, paymentRequestId: f.paymentRequestId, handoffId: f.handoffId });
@@ -342,60 +367,72 @@ async function cleanup() {
   const { ObjectStorageService } = await import("../../artifacts/api-server/src/lib/objectStorage");
   const storage = new ObjectStorageService();
   for (const f of fixtures) {
-    await admin!.query("BEGIN");
+    const query = (step: string, text: string, values?: unknown[]) => {
+      stage = `company_${f.companyId}_cleanup_${step}`;
+      return admin!.query(text, values);
+    };
+    await query("begin", "BEGIN");
     try {
-      await admin!.query("SET LOCAL lock_timeout='3s'");
-      const owner = (await admin!.query(`select po_number,company_id,vendor_id from public.mkt_purchase_orders where id=$1 for update`, [f.poId])).rows[0];
+      await query("lock_timeout", "SET LOCAL lock_timeout='3s'");
+      const owner = (await query("lock_po", `select po_number,company_id,vendor_id from public.mkt_purchase_orders where id=$1 for update`, [f.poId])).rows[0];
       requireThat(owner?.po_number === f.reference && owner.company_id === f.companyId && owner.vendor_id === f.supplierId && f.poId !== 14, "CLEANUP_OWNERSHIP");
-      const invoices = (await admin!.query(`select id,vendor_invoice_ref,company_id,supplier_id,status::text,
+      const invoices = (await query("lock_invoices", `select id,vendor_invoice_ref,company_id,supplier_id,status::text,
         amount_paid as paid_amount,journal_entry_id,attachment_object_path
         from public.vendor_invoices where mkt_purchase_order_id=$1 for update`, [f.poId])).rows;
       requireThat(invoices.every(row => row.vendor_invoice_ref === f.reference && row.company_id === f.companyId &&
         row.supplier_id === f.supplierId && Number(row.paid_amount) === 0 && row.journal_entry_id == null &&
         ["draft", "submitted", "matched", "ready_for_ap"].includes(row.status)), "CLEANUP_INVOICE_CHANGED");
-      const aps = (await admin!.query(`select id,company_id,supplier_id,vendor_invoice_id,mkt_goods_receipt_id
+      const aps = (await query("lock_ap", `select id,company_id,supplier_id,vendor_invoice_id,mkt_goods_receipt_id
         from public.mkt_ap_preparations where mkt_purchase_order_id=$1 for update`, [f.poId])).rows;
       requireThat(aps.every(row => row.company_id === f.companyId && row.supplier_id === f.supplierId &&
         row.mkt_goods_receipt_id === f.grId && invoices.some(invoice => invoice.id === row.vendor_invoice_id)), "CLEANUP_AP_CHANGED");
-      const payments = (await admin!.query(`select id,company_id,supplier_id,status::text,paid_amount,journal_entry_id
+      const payments = (await query("lock_payments", `select id,company_id,supplier_id,status::text,paid_amount,journal_entry_id
         from public.payment_requests where mkt_ap_preparation_id=any($1::int[]) for update`, [aps.map(row => row.id)])).rows;
       requireThat(payments.every(row => row.status === "draft" && Number(row.paid_amount) === 0 &&
         row.journal_entry_id == null && row.company_id === f.companyId && row.supplier_id === f.supplierId), "CLEANUP_REFUSES_PAYMENT_OR_GL");
-      const handoffs = (await admin!.query(`select company_id,supplier_id,payment_request_id,accounting_status
+      const handoffs = (await query("lock_handoffs", `select company_id,supplier_id,payment_request_id,accounting_status
         from public.mkt_accounting_handoffs where mkt_purchase_order_id=$1 for update`, [f.poId])).rows;
       requireThat(handoffs.every(row => row.company_id === f.companyId && row.supplier_id === f.supplierId &&
         row.accounting_status === "draft_not_posted" && payments.some(payment => payment.id === row.payment_request_id)), "CLEANUP_HANDOFF_CHANGED");
-      const notification = await admin!.query(`select count(*)::int n from public.mkt_notification_queue where purchase_order_id=$1`, [f.poId]);
+      const notification = await query("check_notifications", `select count(*)::int n from public.mkt_notification_queue where purchase_order_id=$1`, [f.poId]);
       requireThat(notification.rows[0].n === 0, "CLEANUP_NOTIFICATION_BOUNDARY_FAILED");
       // Delete only private paths read from this run's verified invoice rows.
       for (const invoice of invoices) {
         const path = invoice.attachment_object_path;
         if (path == null) continue;
         requireThat(typeof path === "string" && /^\/objects\/uploads\/[a-f0-9-]+\.pdf$/.test(path), "CLEANUP_STORAGE_PATH");
+        stage = `company_${f.companyId}_cleanup_delete_private_object`;
         await storage.deletePrivateEntity(path);
-        const remainingObject = await admin!.query(`select count(*)::int n from storage.objects
+        const remainingObject = await query("verify_private_object_absent", `select count(*)::int n from storage.objects
           where bucket_id='private-uploads' and name=$1`, [path.slice("/objects/".length)]);
         requireThat(remainingObject.rows[0].n === 0, "CLEANUP_STORAGE_OBJECT_REMAINS");
       }
-      await admin!.query("delete from public.mkt_accounting_handoffs where mkt_purchase_order_id=$1", [f.poId]);
-      await admin!.query(`delete from public.payment_requests where mkt_ap_preparation_id in
+      await query("delete_handoffs", "delete from public.mkt_accounting_handoffs where mkt_purchase_order_id=$1", [f.poId]);
+      await query("delete_payments", `delete from public.payment_requests where mkt_ap_preparation_id in
         (select id from public.mkt_ap_preparations where mkt_purchase_order_id=$1)`, [f.poId]);
-      await admin!.query("delete from public.mkt_ap_preparations where mkt_purchase_order_id=$1", [f.poId]);
-      await admin!.query(`delete from public.vendor_invoice_lines where invoice_id in
+      await query("delete_ap", "delete from public.mkt_ap_preparations where mkt_purchase_order_id=$1", [f.poId]);
+      await query("delete_invoice_lines", `delete from public.vendor_invoice_lines where invoice_id in
         (select id from public.vendor_invoices where mkt_purchase_order_id=$1)`, [f.poId]);
-      await admin!.query("delete from public.vendor_invoices where mkt_purchase_order_id=$1", [f.poId]);
-      await admin!.query("delete from public.mkt_po_goods_receipt_items where goods_receipt_id=$1", [f.grId]);
-      await admin!.query("delete from public.mkt_po_goods_receipts where id=$1", [f.grId]);
-      await admin!.query("delete from public.mkt_po_shipment_items where shipment_id=$1", [f.shipmentId]);
-      await admin!.query("delete from public.mkt_po_shipments where id=$1", [f.shipmentId]);
-      await admin!.query("delete from public.mkt_purchase_order_lines where po_id=$1", [f.poId]);
-      await admin!.query("delete from public.mkt_purchase_orders where id=$1", [f.poId]);
-      await admin!.query("delete from public.mkt_vendor_quotes where id=$1 and rfq_id=$2 and vendor_id=$3", [f.quoteId, f.rfqId, f.supplierId]);
-      await admin!.query("delete from public.mkt_rfqs where id=$1 and rfq_number=$2", [f.rfqId, f.reference]);
-      await admin!.query("delete from public.suppliers where id=$1 and name=$2", [f.supplierId, f.reference]);
-      await admin!.query("COMMIT");
-    } catch (error) { await admin!.query("ROLLBACK"); throw error; }
+      await query("delete_invoices", "delete from public.vendor_invoices where mkt_purchase_order_id=$1", [f.poId]);
+      await query("delete_receipt_items", "delete from public.mkt_po_goods_receipt_items where goods_receipt_id=$1", [f.grId]);
+      await query("delete_receipt", "delete from public.mkt_po_goods_receipts where id=$1", [f.grId]);
+      await query("delete_shipment_items", "delete from public.mkt_po_shipment_items where shipment_id=$1", [f.shipmentId]);
+      await query("delete_shipment", "delete from public.mkt_po_shipments where id=$1", [f.shipmentId]);
+      await query("delete_po_lines", "delete from public.mkt_purchase_order_lines where po_id=$1", [f.poId]);
+      await query("delete_po", "delete from public.mkt_purchase_orders where id=$1", [f.poId]);
+      await query("delete_quote", "delete from public.mkt_vendor_quotes where id=$1 and rfq_id=$2 and vendor_id=$3", [f.quoteId, f.rfqId, f.supplierId]);
+      await query("delete_rfq", "delete from public.mkt_rfqs where id=$1 and rfq_number=$2", [f.rfqId, f.reference]);
+      await query("delete_supplier", "delete from public.suppliers where id=$1 and name=$2", [f.supplierId, f.reference]);
+      await query("commit", "COMMIT");
+    } catch (error) {
+      const failedCleanupStage = stage;
+      try { await admin!.query("ROLLBACK"); }
+      catch (rollbackError) { reportFailure("cleanup_rollback", rollbackError, `${failedCleanupStage}_rollback`); }
+      stage = failedCleanupStage;
+      throw error;
+    }
   }
+  stage = "cleanup_verify_protected_po";
   requireThat(JSON.stringify(await po14Fingerprint()) === JSON.stringify(baselinePo14), "PO14_CHANGED");
   passed("OWNED_QA_ROWS_AND_PRIVATE_OBJECTS_CLEANED_PO14_UNCHANGED", { marker, auditHistory: "retained" });
 }
@@ -407,24 +444,20 @@ async function main() {
   console.log(JSON.stringify({ run: marker, scope: "CST-DEV synthetic acceptance", signedAdminHttp: "not tested" }));
   let operationError: unknown;
   try { await seed(); for (const fixture of fixtures) await exercise(fixture); }
-  catch (error) { operationError = error; }
+  catch (error) { operationError = error; reportFailure("operation", error); }
   const failedStage = stage;
-  await cleanup();
+  try { await cleanup(); }
+  catch (cleanupError) {
+    reportFailure("cleanup", cleanupError);
+    if (operationError) { stage = failedStage; throw operationError; }
+    throw cleanupError;
+  }
   if (operationError) { stage = failedStage; throw operationError; }
   passed("DEV_VENDOR_BACKEND_AND_CAPABILITY_HTTP_ACCEPTANCE_COMPLETE", { marker, checks: checks.length,
     signedAdminHttp: "requires genuine owner session; not claimed by this harness" });
 }
 main().catch(error => {
-  // Never print Error objects, SQL parameters, request URLs or raw credential errors.
-  const message = error instanceof Error && /^QA_[A-Z0-9_]+$/.test(error.message) ? error.message : "QA_UNEXPECTED_FAILURE";
-  let cause: unknown = error;
-  let sqlState: string | undefined;
-  for (let depth = 0; depth < 5 && cause instanceof Error; depth++) {
-    const possibleCode = (cause as Error & { code?: unknown }).code;
-    if (typeof possibleCode === "string" && /^[0-9A-Z]{5}$/.test(possibleCode)) sqlState = possibleCode;
-    cause = cause.cause;
-  }
-  console.error(JSON.stringify({ result: "FAIL", stage, code: message, sqlState, marker }));
+  reportFailure("final", error);
   process.exitCode = 1;
 }).finally(async () => {
   admin?.release();
