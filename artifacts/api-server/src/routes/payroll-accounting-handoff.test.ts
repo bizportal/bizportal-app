@@ -125,6 +125,39 @@ describe("reviewed Payroll handoff to existing accrual service — read-only", (
       totalDeductions: "300001.00", netSalary: "4899999.00" }));
     expect(() => prepareReviewedPayrollAccrual(sign(input))).toThrow("OTHER_DEDUCTION_MAPPING_REQUIRED");
   });
+  it.each(["0.01", "1.00", "150000.50"])("includes mapped other deduction %s without hiding or rounding it", value => {
+    const input = fixture();
+    const cents = Math.round(Number(value) * 100);
+    input.items = input.items.map(i => ({ ...i, otherDeductions: value,
+      totalDeductions: ((30000000 + cents) / 100).toFixed(2), netSalary: ((490000000 - cents) / 100).toFixed(2) }));
+    input.mapping.otherDeductionPayableAccountId = 15;
+    input.accounts = [...input.accounts, { id: 15, companyId: 1, type: "liability",
+      isActive: true, isPostable: true, isHeader: false, status: "ACTIVE" }];
+    const plan = prepareReviewedPayrollAccrual(sign(input));
+    expect(plan.params.totalOtherDeductions).toBe(Number(value));
+    expect(plan.params.totalSalaryPayable).toBe(Number(input.items[0]!.netSalary));
+    expect(plan.debitTotal).toBe("5200000.00");expect(plan.creditTotal).toBe(plan.debitTotal);
+    expect(plan.params.kasbonByAccount).toEqual([{ accountId: 14, amount: 100000 }]);
+    expect(plan.mapping.otherDeductionPayableAccountId).toBe(15);
+  });
+  it.each([{companyId:2},{type:"expense"},{type:"asset"},{isActive:false},{isPostable:false},{isHeader:true},{status:"INACTIVE"}])
+    ("rejects wrong other-deduction account metadata %j", mutation => {
+      const input = fixture();
+      input.items = input.items.map(i => ({ ...i,otherDeductions:"1.00",totalDeductions:"300001.00",netSalary:"4899999.00" }));
+      input.mapping.otherDeductionPayableAccountId=15;
+      input.accounts=[...input.accounts,{id:15,companyId:1,type:"liability",isActive:true,isPostable:true,isHeader:false,status:"ACTIVE",...mutation}];
+      expect(()=>prepareReviewedPayrollAccrual(sign(input))).toThrow("ACCOUNT_MAPPING_INVALID");
+    });
+  it("preserves the zero-other-deduction contract without requiring a new account", () => {
+    const plan=prepareReviewedPayrollAccrual(fixture());
+    expect(plan.params).not.toHaveProperty("totalOtherDeductions");
+    expect(plan.mapping).not.toHaveProperty("otherDeductionPayableAccountId");
+  });
+  it("refuses a nonzero deduction if the explicitly mapped account is absent", () => {
+    const input=fixture();input.mapping.otherDeductionPayableAccountId=15;
+    input.items=input.items.map(i=>({...i,otherDeductions:"1.00",totalDeductions:"300001.00",netSalary:"4899999.00"}));
+    expect(()=>prepareReviewedPayrollAccrual(sign(input))).toThrow("ACCOUNT_MAPPING_INVALID");
+  });
   it("rejects missing or changed kasbon evidence and does not settle balances", () => {
     const input = fixture(); input.reservations = [];
     expect(() => prepareReviewedPayrollAccrual(input)).toThrow("KASBON_RESERVATIONS_INVALID");

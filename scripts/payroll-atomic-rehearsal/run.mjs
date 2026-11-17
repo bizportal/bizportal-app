@@ -126,6 +126,11 @@ console.log('VERIFIED_PACKAGE_LOADER_USED',true,'HTTP_SESSION_TESTED',false);
 `;
   harness=harness.replace(originalImport,verifiedImport);
  }
+ if(suite==='packaged'){
+  const marker=" console.log('APPLICATION_REAL_POSTGRES_CHECKS_PASS'";
+  const at=harness.indexOf(marker);if(at<0)throw Error('OTHER_DEDUCTION_CASE_LOCATION_CHANGED');
+  harness=harness.slice(0,at)+fs.readFileSync(root+'/scripts/payroll-other-deductions/postgres-tests.ts','utf8')+'\n'+harness.slice(at);
+ }
  harness=harness.replaceAll('__ROOT__',root).replaceAll('__BASE__',baseOut).replaceAll('__FIXED__',fixedOut).replaceAll('__PREVIOUS__',previousOut);
  fs.writeFileSync(entry,helpers+'\n'+harness,{flag:'wx',mode:0o600});
  await build({entryPoints:[entry],outfile:output,bundle:true,platform:'node',format:'esm',logLevel:'silent',nodePaths:[api+'/node_modules',root+'/node_modules'],external:['pg','drizzle-orm','drizzle-orm/*',baseOut,fixedOut,previousOut],banner:{js:`import {createRequire as createNodeRequire} from 'node:module'; const require=createNodeRequire(import.meta.url);`}});

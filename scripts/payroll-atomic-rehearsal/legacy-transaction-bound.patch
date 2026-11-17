@@ -176,22 +176,37 @@
 +  }
 --- a/artifacts/api-server/src/lib/payroll/PayrollJournalService.ts
 +++ b/artifacts/api-server/src/lib/payroll/PayrollJournalService.ts
-@@ -54,2 +54,2 @@
+@@ -32,0 +33 @@
++  otherDeductionPayableAccountId?: number;
+@@ -54,2 +55,2 @@
 -async function requireJournal(companyId: number, type: "bank" | "cash" | "general") {
 -  const rows = await db.execute<{ id: number; code: string }>(sql`
 +async function requireJournal(companyId: number, type: "bank" | "cash" | "general", client: DbClient = db) {
 +  const rows = await client.execute<{ id: number; code: string }>(sql`
-@@ -60 +60 @@
+@@ -60 +61 @@
 -  const j = rows[0] ?? await db.execute<{ id: number; code: string }>(sql`
 +  const j = rows[0] ?? await client.execute<{ id: number; code: string }>(sql`
-@@ -117,2 +117,3 @@
+@@ -75,0 +77,2 @@
++  /** Explicitly mapped non-kasbon deductions; never inferred or zero-filled. */
++  totalOtherDeductions?: number;
+@@ -117,2 +120,8 @@
 -  async postAccrualJournal(mapping: PayrollAccountMapping, p: AccrualJournalParams): Promise<AccrualJournalResult> {
 -    const j = await requireJournal(p.companyId, "general");
 +  transactionalAccrualVersion: "payroll-accrual-atomic-v1" as const,
 +  async postAccrualJournal(mapping: PayrollAccountMapping, p: AccrualJournalParams, client: DbClient = db): Promise<AccrualJournalResult> {
++    const other = p.totalOtherDeductions ?? 0;
++    if (!Number.isFinite(other) || other < 0 || (other > 0 &&
++        (!Number.isSafeInteger(mapping.otherDeductionPayableAccountId) || mapping.otherDeductionPayableAccountId! <= 0))) {
++      throw new AccountingConfigError("PAYROLL_OTHER_DEDUCTION_MAPPING_REQUIRED");
++    }
 +    const j = await requireJournal(p.companyId, "general", client);
-@@ -143 +144,4 @@
+@@ -143 +152,9 @@
 -    const entry = await postEntry(
++    if (other > 0) {
++      lines.push({ accountId: mapping.otherDeductionPayableAccountId!, debit: 0, credit: other,
++        description: "Potongan Lainnya" });
++    }
++
 +    const post = client === db
 +      ? postEntry
 +      : (input: PostingInput, code: string) => postEntryWithClient(client, input, code);

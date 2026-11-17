@@ -94,6 +94,9 @@ try{
  await admin.query(`ALTER TABLE accounting_entries ADD COLUMN checksum_hash text, ADD COLUMN previous_entry_id integer;
  CREATE UNIQUE INDEX ci_source_company ON accounting_entries(company_id,source,source_id);
  CREATE TABLE journal_sequences(journal_prefix text,company_id integer,year integer,next_seq integer,PRIMARY KEY(journal_prefix,company_id,year));
+ -- Actual CST-DEV has this legacy account_type field in addition to type;
+ -- the canonical Drizzle schema omits it. Model that inspected column explicitly.
+ ALTER TABLE chart_of_accounts ADD COLUMN account_type text;
  CREATE TABLE financial_periods(company_id integer,year integer,month integer,is_closed boolean,override_allowed boolean);
  CREATE TABLE ledger_events(id serial PRIMARY KEY,company_id integer,event_type text,period text,entry_id integer,ledger_entry_id bigint,actor text,payload jsonb);
  CREATE TABLE financial_outbox_events(id serial PRIMARY KEY,event_type text,payload jsonb,entry_id integer,company_id integer);
@@ -117,6 +120,11 @@ try{
  credit numeric(15,2) NOT NULL DEFAULT 0,description text,cost_center_id integer,
  currency text NOT NULL DEFAULT 'IDR',is_voided boolean NOT NULL DEFAULT false,void_ref_id bigint,
  created_by text,created_at timestamptz NOT NULL DEFAULT now());
+ CREATE TABLE payroll_coa_mappings(id bigint PRIMARY KEY,company_id integer NOT NULL,
+ component text NOT NULL CHECK(component IN ('salary_expense','salary_payable','income_tax_payable','jht_payable','health_payable','other_deduction','cash_advance')),
+ account_id integer NOT NULL REFERENCES chart_of_accounts(id),created_by text NOT NULL,updated_by text NOT NULL,
+ created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now(),UNIQUE(company_id,component));
+ ALTER TABLE payroll_coa_mappings ENABLE ROW LEVEL SECURITY;
  CREATE TABLE salary_payments(id serial PRIMARY KEY);
  INSERT INTO employees(id,company_id,status) VALUES(101,1,'active'),(201,2,'active');
  INSERT INTO financial_periods VALUES(1,2026,11,false,false);
@@ -125,6 +133,20 @@ try{
  GRANT USAGE ON SCHEMA public TO bizportal_payroll_settlement_dev;
  GRANT SELECT,INSERT,UPDATE ON accounting_entries,accounting_entry_lines,journal_sequences,ledger_events,financial_outbox_events TO bizportal_payroll_settlement_dev;
  GRANT SELECT ON employees,chart_of_accounts,accounting_journals,financial_periods,payroll_items TO bizportal_payroll_settlement_dev;
+ GRANT SELECT ON payroll_coa_mappings TO bizportal_payroll_settlement_dev;
+ GRANT UPDATE(id) ON payroll_coa_mappings TO bizportal_payroll_settlement_dev;
+ CREATE FUNCTION ci_other_mapping_no_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+ IF current_user='bizportal_payroll_settlement_dev' THEN RAISE EXCEPTION 'MAPPING_LOCK_ONLY' USING ERRCODE='42501'; END IF;
+ RETURN NEW; END $$;
+ CREATE TRIGGER ci_other_mapping_no_write BEFORE UPDATE ON payroll_coa_mappings FOR EACH ROW EXECUTE FUNCTION ci_other_mapping_no_write();
+ CREATE POLICY ci_other_mapping_read ON payroll_coa_mappings FOR SELECT TO bizportal_payroll_settlement_dev
+ USING(company_id=NULLIF(current_setting('app.payroll_company_id',true),'')::integer);
+ -- PostgreSQL applies UPDATE policy visibility to SELECT FOR SHARE as well.
+ -- WITH CHECK(false) plus the mutation trigger still prohibit actual changes.
+ CREATE POLICY ci_other_mapping_lock ON payroll_coa_mappings FOR UPDATE TO bizportal_payroll_settlement_dev
+ USING(company_id=NULLIF(current_setting('app.payroll_company_id',true),'')::integer) WITH CHECK(false);
+
+
  GRANT UPDATE(id) ON employees,chart_of_accounts,payroll_items TO bizportal_payroll_settlement_dev;
  GRANT SELECT,UPDATE ON payroll_runs,cash_advances,payroll_kasbon_auto_reservations TO bizportal_payroll_settlement_dev;
  GRANT SELECT,INSERT ON cash_advance_repayments TO bizportal_payroll_settlement_dev;

@@ -19,6 +19,8 @@ export type PayrollAccrualMapping = {
   salaryPayableAccountId: number;
   taxPayableAccountId: number;
   bpjsPayableAccountId: number;
+  /** Optional unless a nonzero other deduction is explicitly mapped by company. */
+  otherDeductionPayableAccountId?: number;
 };
 export type PayrollHandoffAccount = {
   id: number; companyId: number; type: string; isActive: boolean;
@@ -126,10 +128,14 @@ export function prepareReviewedPayrollAccrual(input: PayrollHandoffInput) {
   const salary = sum("baseSalary"), allowance = sum("allowance"), tax = sum("pph21");
   const bpjs = sum("bpjsJhtEmployee") + sum("bpjsKesEmployee");
   const kasbon = sum("kasbonDeduction"), net = sum("netSalary");
-  // The existing five-account service has no other-deduction journal line.
-  // Never zero it, silently credit salary payable, or select an arbitrary COA.
-  if (sum("otherDeductions") !== 0n) reject("OTHER_DEDUCTION_MAPPING_REQUIRED");
-  if (salary + allowance !== net + tax + bpjs + kasbon) reject("ACCRUAL_UNBALANCED");
+  const other = sum("otherDeductions");
+  // Existing company-scoped payroll_coa_mappings supplies this optional account.
+  // Never infer a balancing account from salary payable, tax, BPJS or kasbon.
+  if (other > 0n) {
+    if (!validId(mapping.otherDeductionPayableAccountId ?? 0)) reject("OTHER_DEDUCTION_MAPPING_REQUIRED");
+    account(mapping.otherDeductionPayableAccountId!, "liability");
+  }
+  if (salary + allowance !== net + tax + bpjs + kasbon + other) reject("ACCRUAL_UNBALANCED");
   const kasbonByAccount = new Map<number, bigint>();
   for (const r of reservations) {
     kasbonByAccount.set(r.receivableAccountId,
@@ -146,11 +152,12 @@ export function prepareReviewedPayrollAccrual(input: PayrollHandoffInput) {
       companyId, payrollRunId: run.id, period, date: input.postingDate,
       totalSalary: asLegacyAmount(salary), totalAllowance: asLegacyAmount(allowance),
       totalTax: asLegacyAmount(tax), totalBpjs: asLegacyAmount(bpjs),
+      ...(other > 0n ? { totalOtherDeductions: asLegacyAmount(other) } : {}),
       kasbonByAccount: [...kasbonByAccount].sort(([a], [b]) => a - b)
         .map(([accountId, amount]) => ({ accountId, amount: asLegacyAmount(amount) })),
       totalSalaryPayable: asLegacyAmount(net),
     },
-    debitTotal: centsToMoney(salary + allowance), creditTotal: centsToMoney(net + tax + bpjs + kasbon),
+    debitTotal: centsToMoney(salary + allowance), creditTotal: centsToMoney(net + tax + bpjs + kasbon + other),
     readOnly: true as const, requiresAtomicPosting: true as const,
     accountingPosted: false as const, readyForPayment: false as const,
   };

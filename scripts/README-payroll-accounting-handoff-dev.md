@@ -56,3 +56,13 @@ lock. Verify returned journal company, source identity, status and amounts.
 Then test rollback after a partial failure, replay, concurrent approval and
 payment evidence on disposable DEV data. PROD remains untouched until all
 operational gates pass.
+
+## Other-deduction support update — 17 November 2026
+
+The original unconditional nonzero-other-deduction rejection described above is
+now narrowed: the candidate accepts an explicitly configured, validated
+same-company `payroll_coa_mappings.other_deduction` liability mapping and the
+existing native patch writes its exact credit. Missing/invalid mappings remain
+blocked. No live configuration is created, and legacy installment gates remain.
+See `scripts/payroll-other-deductions/README.md` for current cases, changed
+artifact fingerprint, permission requirements and remaining release limits.

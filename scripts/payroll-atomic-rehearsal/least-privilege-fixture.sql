@@ -93,4 +93,7 @@ CREATE POLICY ci_installment_scope ON cash_advance_installment_schedules FOR SEL
  TO bizportal_payroll_settlement_dev USING(EXISTS(
  SELECT 1 FROM cash_advances a WHERE a.id=cash_advance_installment_schedules.advance_id
  AND a.company_id=NULLIF(current_setting('app.payroll_company_id',true),'')::integer));
+-- Optional existing component table: read/row-lock only for nonzero deductions.
+-- The fixture trigger ci_other_mapping_no_write rejects actual UPDATEs.
+GRANT SELECT,UPDATE(id) ON payroll_coa_mappings TO bizportal_payroll_settlement_dev;
 COMMIT;

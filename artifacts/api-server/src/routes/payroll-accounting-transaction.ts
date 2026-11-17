@@ -70,7 +70,11 @@ function expectedLines(items: readonly Item[], mapping: Plan["mapping"], holds: 
     totals.set(accountId, { debit: prior.debit + debit, credit: prior.credit + credit });
   };
   for (const i of items) {
-    if (moneyToCents(i.otherDeductions) !== 0n) fail("OTHER_DEDUCTION_MAPPING_REQUIRED");
+    const other = moneyToCents(i.otherDeductions);
+    if (other > 0n) {
+      if (!id(mapping.otherDeductionPayableAccountId ?? 0)) fail("OTHER_DEDUCTION_MAPPING_REQUIRED");
+      add(mapping.otherDeductionPayableAccountId!, 0n, other);
+    }
     add(mapping.salaryExpenseAccountId, moneyToCents(i.baseSalary), 0n);
     add(mapping.allowanceExpenseAccountId, moneyToCents(i.allowance), 0n);
     add(mapping.salaryPayableAccountId, 0n, moneyToCents(i.netSalary));
@@ -156,6 +160,26 @@ async function execute(client: PoolClient, writer: TransactionBoundPayrollWriter
     FROM public.accounting_settings WHERE company_id=$1 FOR SHARE`, [companyId]);
   const mapping = mappingRows.rows[0];
   if (mappingRows.rows.length !== 1 || !mapping || Object.values(mapping).some(v => !id(v))) fail("MAPPING_NOT_UNIQUE_OR_COMPLETE");
+  // Optional existing component mapping is read only when actually needed.
+  // Lock the mapping AND its COA on this same transaction, including replay.
+  // No grants, configuration writes, or cross-company/global account fallback.
+  if (items.some(i => moneyToCents(i.otherDeductions) > 0n)) {
+    const otherMapping = await client.query<{ accountId: number; accountCompany: number;
+      type: string; effectiveType: string; active: boolean; postable: boolean; header: boolean; status: string }>(`
+      SELECT a.id AS "accountId",a.company_id AS "accountCompany",a.type::text,
+        COALESCE(a.account_type::text,a.type::text) AS "effectiveType",
+        a.is_active AS active,a.is_postable AS postable,a.is_header AS header,a.status
+      FROM public.payroll_coa_mappings m
+      JOIN public.chart_of_accounts a ON a.id=m.account_id
+      WHERE m.company_id=$1 AND m.component='other_deduction'
+      ORDER BY m.id FOR SHARE OF m,a`, [companyId]);
+    const m = otherMapping.rows[0];
+    if (otherMapping.rows.length !== 1 || !m || !id(m.accountId) || m.accountCompany !== companyId ||
+        m.type !== "liability" || m.effectiveType !== "liability" || m.active !== true ||
+        m.postable !== true || m.header !== false || m.status !== "ACTIVE")
+      fail("OTHER_DEDUCTION_MAPPING_REQUIRED");
+    mapping.otherDeductionPayableAccountId = m.accountId;
+  }
   const legacyAllocations = await client.query(`SELECT a.id FROM public.payroll_cash_advance_allocations a
     JOIN public.payroll_items i ON i.id=a.payroll_item_id WHERE i.run_id=$1 LIMIT 1`, [runId]);
   if (legacyAllocations.rows.length) fail("LEGACY_ALLOCATIONS_REQUIRE_RECONCILIATION");

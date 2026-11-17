@@ -120,3 +120,10 @@ application period-registration service and unchanged CST-DEV audit trigger
 snapshots. It uses fresh synthetic run/period IDs while retaining append-only
 audit guards. See `../payroll-financial-period/README.md`; no live registration,
 new grant, funding approval, session handling or bank/payment effect is enabled.
+
+## Nonzero mapped other deductions
+
+The existing `packaged` mode now also executes the 22 new mapped-other-deduction
+PostgreSQL checks in `scripts/payroll-other-deductions/postgres-tests.ts`, after
+all original scenarios, using the same native package and restricted pool. It
+does not create a signed HTTP session or use any live configuration.

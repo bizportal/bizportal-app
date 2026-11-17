@@ -36,6 +36,12 @@ try{
  const fake={execute(){queries++;throw Error('SYNTHETIC_TRANSACTION_FAILURE');},select(){throw Error('UNEXPECTED');},insert(){throw Error('UNEXPECTED');},update(){throw Error('UNEXPECTED');}};
  await assert.rejects(native.PayrollJournalService.postAccrualJournal({},{companyId:1},fake),/SYNTHETIC_TRANSACTION_FAILURE/);
  assert.equal(queries,1);ok('transaction failure propagates without another pool or retry');
+ queries=0;
+ await assert.rejects(native.PayrollJournalService.postAccrualJournal({},{companyId:1,totalOtherDeductions:1},fake),/OTHER_DEDUCTION_MAPPING_REQUIRED/);
+ assert.equal(queries,0);ok('nonzero other deduction without explicit mapping rejected before SQL');
+ await assert.rejects(native.PayrollJournalService.postAccrualJournal({otherDeductionPayableAccountId:15},{companyId:1,totalOtherDeductions:-1},fake),/OTHER_DEDUCTION_MAPPING_REQUIRED/);
+ assert.equal(queries,0);ok('negative other deduction rejected before SQL');
+
 }finally{for(const [key,value] of Object.entries(original)){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
 await assert.rejects(buildNativePayrollArtifact('relative-source'),/EXPLICIT_LEGACY_SOURCE_REQUIRED/);ok('unqualified source roots rejected');
 const scratch=fs.mkdtempSync(path.join(os.tmpdir(),'payroll-native-build-negative-'));
