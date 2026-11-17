@@ -16,6 +16,10 @@ on:
       - "artifacts/api-server/src/__tests__/pr95-outbound-bank-coa-postgres.test.ts"
       - "artifacts/api-server/src/lib/outboundSourceReuseCandidate.ts"
       - "artifacts/api-server/src/__tests__/pr95-outbound-source-reuse-candidate-postgres.test.ts"
+      - "artifacts/api-server/src/lib/outboundSourceReuseDevAuth.ts"
+      - "artifacts/api-server/src/lib/outboundSourceReuseDevBridge.ts"
+      - "artifacts/api-server/src/__tests__/pr95-outbound-dev-superadmin-gate.test.ts"
+      - "artifacts/api-server/src/__tests__/pr95-outbound-dev-bridge-contract.test.ts"
       - ".github/workflows/pr95-bank-writer-disposable-gate.yml"
   workflow_dispatch:
 
@@ -58,7 +62,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Run candidate boundary through real isolated PG transactions
-        run: pnpm --filter @workspace/api-server exec vitest run src/lib/bankDisbursementAtomicBoundary.postgres.test.ts src/__tests__/pr95-outbound-reuse-finality-postgres.test.ts src/__tests__/pr95-outbound-reuse-lock-postgres.test.ts src/__tests__/pr95-outbound-bank-coa-postgres.test.ts src/__tests__/pr95-outbound-source-reuse-candidate-postgres.test.ts --maxWorkers=1 --no-file-parallelism
+        run: pnpm --filter @workspace/api-server exec vitest run src/lib/bankDisbursementAtomicBoundary.postgres.test.ts src/__tests__/pr95-outbound-reuse-finality-postgres.test.ts src/__tests__/pr95-outbound-reuse-lock-postgres.test.ts src/__tests__/pr95-outbound-bank-coa-postgres.test.ts src/__tests__/pr95-outbound-source-reuse-candidate-postgres.test.ts src/__tests__/pr95-outbound-dev-superadmin-gate.test.ts src/__tests__/pr95-outbound-dev-bridge-contract.test.ts --maxWorkers=1 --no-file-parallelism
   atomic-contract:
     name: Isolated bank payment invariants (not legacy writer)
     runs-on: ubuntu-latest
