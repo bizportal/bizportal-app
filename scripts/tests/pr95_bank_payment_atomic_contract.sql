@@ -10,7 +10,9 @@ CREATE TABLE pr95_atomic.invoices (
 CREATE TABLE pr95_atomic.journals (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   company_id int NOT NULL, invoice_id int NOT NULL,
-  idempotency_key text NOT NULL, UNIQUE(company_id,idempotency_key)
+  idempotency_key text NOT NULL,
+  gross numeric(14,2) NOT NULL, wht numeric(14,2) NOT NULL,
+  UNIQUE(company_id,idempotency_key)
 );
 CREATE TABLE pr95_atomic.journal_lines (
   journal_id bigint NOT NULL REFERENCES pr95_atomic.journals(id),
@@ -33,19 +35,25 @@ CREATE OR REPLACE FUNCTION pr95_atomic.pay(
   p_fail_after_disbursement boolean DEFAULT false
 ) RETURNS text LANGUAGE plpgsql AS $fn$
 DECLARE v pr95_atomic.invoices%ROWTYPE; j bigint;
+        previous pr95_atomic.journals%ROWTYPE;
 BEGIN
   -- Lock invoice before replay lookup and available balance validation.
   SELECT * INTO v FROM pr95_atomic.invoices
    WHERE id=p_invoice AND company_id=p_company FOR UPDATE;
   IF NOT FOUND THEN RETURN 'FORBIDDEN'; END IF;
-  IF EXISTS(SELECT 1 FROM pr95_atomic.journals
-             WHERE company_id=p_company AND idempotency_key=p_key)
-  THEN RETURN 'REPLAY'; END IF;
+  SELECT * INTO previous FROM pr95_atomic.journals
+    WHERE company_id=p_company AND idempotency_key=p_key;
+  IF FOUND THEN
+    IF previous.invoice_id=p_invoice
+       AND previous.gross=p_gross AND previous.wht=p_wht
+    THEN RETURN 'REPLAY'; END IF;
+    RETURN 'IDEMPOTENCY_CONFLICT';
+  END IF;
   IF p_gross<=0 OR p_wht<0 OR p_wht>=p_gross OR v.paid+p_gross>v.gross
   THEN RETURN 'INVALID_OR_OVERPAY'; END IF;
 
-  INSERT INTO pr95_atomic.journals(company_id,invoice_id,idempotency_key)
-  VALUES(p_company,p_invoice,p_key) RETURNING id INTO j;
+  INSERT INTO pr95_atomic.journals(company_id,invoice_id,idempotency_key,gross,wht)
+  VALUES(p_company,p_invoice,p_key,p_gross,p_wht) RETURNING id INTO j;
   INSERT INTO pr95_atomic.journal_lines(journal_id,account,debit)
   VALUES(j,'AP',p_gross);
   IF p_wht>0 THEN
@@ -74,6 +82,12 @@ DECLARE before_j bigint; before_disb bigint; before_paid numeric;
 BEGIN
  IF pr95_atomic.pay(1,1,'A',60,10)<>'CREATED' THEN RAISE EXCEPTION 'initial'; END IF;
  IF pr95_atomic.pay(1,1,'A',60,10)<>'REPLAY' THEN RAISE EXCEPTION 'replay'; END IF;
+ IF pr95_atomic.pay(1,1,'A',59,10)<>'IDEMPOTENCY_CONFLICT'
+ THEN RAISE EXCEPTION 'same key changed amount'; END IF;
+ IF pr95_atomic.pay(1,1,'A',60,9)<>'IDEMPOTENCY_CONFLICT'
+ THEN RAISE EXCEPTION 'same key changed WHT'; END IF;
+ IF pr95_atomic.pay(1,4,'A',60,10)<>'IDEMPOTENCY_CONFLICT'
+ THEN RAISE EXCEPTION 'same key changed invoice'; END IF;
  IF pr95_atomic.pay(1,1,'B',50,0)<>'INVALID_OR_OVERPAY'
  THEN RAISE EXCEPTION 'overpay'; END IF;
  IF pr95_atomic.pay(1,2,'C',10,0)<>'FORBIDDEN'
@@ -106,7 +120,7 @@ BEGIN
     (SELECT count(*) FROM pr95_atomic.disbursements)<>1 OR
     (SELECT paid FROM pr95_atomic.invoices WHERE id=1)<>60
  THEN RAISE EXCEPTION 'duplicate or mismatched payment'; END IF;
- RAISE NOTICE 'PASS: initial, replay, overpay, tenant, WHT balance, injected rollback at two stages';
+ RAISE NOTICE 'PASS: exact replay, mismatch conflict, overpay, tenant, WHT balance, rollback at two stages';
 END;$test$;
 -- Concurrent two-client replay is tested separately by opening two psql clients:
 --   SELECT pr95_atomic.pay(1,3,'X',80,8);
