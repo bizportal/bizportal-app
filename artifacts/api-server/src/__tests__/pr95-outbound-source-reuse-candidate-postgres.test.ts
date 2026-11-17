@@ -127,6 +127,35 @@ suite("PR95 unregistered source-owned OUT reuse transition on disposable Postgre
       {...input,verifiedActorEmail:"not-authorized"})).rejects.toThrow("PR95_SOURCE_REUSE_INVALID_ACTOR_SCOPE");
     expect(await counts()).toMatchObject({journals:1,allocations:0,matches:0,audits:0});
   });
+  it("rejects fractional-cent invoice totals without rounding",async()=>{
+    await client.query("BEGIN");
+    try{
+      await client.query("update public.vendor_invoices set grand_total=100.001 where id=7");
+      await expect(execute()).rejects.toThrow("PR95_SOURCE_REUSE_PARTIAL_OR_TAX_UNSUPPORTED");
+    }finally{await client.query("ROLLBACK");}
+    expect(await counts()).toMatchObject({journals:1,allocations:0,matches:0,audits:0});
+  });
+  it("blocks a second real OUT mutation from reusing the same finalized invoice source",async()=>{
+    await client.query("BEGIN");
+    try {
+      await client.query(`INSERT INTO public.bank_mutations
+         (id,company_id,direction,status,journal_entry_id,amount,bank_account_id)
+         VALUES(90002,1,'OUT','unmatched',NULL,100.00,'17')`);
+      await execute();
+      await expect(finalizeOutboundSourceReuseCandidate(
+        client as unknown as OutboundReuseQueryClient,
+        {...input,mutationId:90002}
+      )).rejects.toThrow("PR95_OUTBOUND_FINALIZED_CUSTODY_EXISTS");
+      expect(await counts()).toMatchObject({
+        journals:1,allocations:1,matches:1,audits:1,
+      });
+    }finally{await client.query("ROLLBACK");}
+    expect(await counts()).toMatchObject({
+      journals:1,allocations:0,matches:0,audits:0,mutation_status:"unmatched",
+    });
+    const absent=await client.query("select count(*)::int as n from public.bank_mutations where id=90002");
+    expect(absent.rows[0].n).toBe(0);
+  });
   it("rejects invalid AP debit account before financial writes",async()=>{
     await client.query("BEGIN");
     try{
