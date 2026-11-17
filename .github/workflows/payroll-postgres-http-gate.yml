@@ -100,6 +100,11 @@ jobs:
           set -euo pipefail
           docker pull postgres@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
           docker tag postgres@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea postgres:16-alpine
+      - name: DEV Calculate restricted real PostgreSQL, replay, company scope and rollback
+        run: |
+          set -euo pipefail
+          bash scripts/payroll-calculate/run-disposable.sh | tee "$RUNNER_TEMP/payroll-calculate.log"
+          grep -qx 'REAL_POSTGRES_DISPOSABLE_PASS' "$RUNNER_TEMP/payroll-calculate.log"
       - name: Build and check the actual pinned native package
         run: |
           set -euo pipefail
@@ -131,9 +136,14 @@ jobs:
           if docker ps --format '{{.Names}}' | grep -q '^cst-payroll-atomic-fixture-'; then
             echo 'Temporary Payroll database still running'; exit 1
           fi
-          if ss -lnt '( sport = :65432 )' | tail -n +2 | grep -q .; then
-            echo 'Temporary Payroll database port still listening'; exit 1
+          if docker ps --format '{{.Names}}' | grep -q '^payroll-calculate-fixture-'; then
+            echo 'Temporary Calculate fixture still running'; exit 1
           fi
+          for port in 65432 65436; do
+            if ss -lnt "( sport = :${port} )" | tail -n +2 | grep -q .; then
+              echo "Temporary Payroll database port ${port} still listening"; exit 1
+            fi
+          done
           {
             echo '### Payroll native/source-pinned PostgreSQL evidence'
             echo 'Synthetic, disposable data only. No live signed-session HTTP posting or deployment is claimed.'
@@ -150,6 +160,6 @@ jobs:
         run: |
           set -euo pipefail
           while IFS= read -r name; do
-            case "$name" in cst-payroll-atomic-fixture-*) docker rm -f "$name" ;; esac
+            case "$name" in cst-payroll-atomic-fixture-*|payroll-calculate-fixture-*) docker rm -f "$name" ;; esac
           done < <(docker ps -a --format '{{.Names}}')
           rm -rf -- "$RUNNER_TEMP/payroll-pinned-source"

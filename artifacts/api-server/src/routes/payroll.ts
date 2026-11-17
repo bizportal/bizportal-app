@@ -6,6 +6,7 @@ import { registerPayrollSetupReadinessRoutes } from "./payroll-setup-readiness";
 import { registerPayrollProdConnectionPreflightRoutes } from "./payroll-prod-connection-preflight";
 import { registerPayrollSuperAdminApprovalRoutes } from "./payroll-super-admin-approval";
 import { createPayrollAtomicAccountingRouter } from "./payroll-accounting-http";
+import { createDevPayrollCalculateRouter } from "./payroll-calculate-http";
 import { createPayrollFinancialPeriodRouter } from "./payroll-financial-period-http";
 import { readPayrollSuperAdminApprovalReceipt } from "./payroll-super-admin-approval-receipt";
 import { buildPayrollPreview, type PayrollPreviewItem } from "./payroll-preview";
@@ -70,6 +71,8 @@ function serializeRun(row: Record<string, unknown>) {
 // Exact POST path has its own signed-session + Origin checks; no DEV cookie fallback.
 // It stays absent unless both DEV gates are explicit and cannot write before trusted runtime binding.
 router.use(createPayrollAtomicAccountingRouter());
+// DEV canary Calculate is signed-session-only and stays absent in PROD.
+router.use(createDevPayrollCalculateRouter());
 // Reuses the existing audited period-registration contract; no funding/payroll approval.
 router.use(createPayrollFinancialPeriodRouter());
 router.use("/payroll", authorize);
