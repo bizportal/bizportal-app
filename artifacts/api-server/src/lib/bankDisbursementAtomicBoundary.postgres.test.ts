@@ -23,6 +23,7 @@ describe.skipIf(!enabled)("PR95 boundary with real disposable PostgreSQL transac
   let httpBase: string;
   let failAfter: "journal" | "disbursement" | null = null;
   let corruptJournal = false;
+  let corruptHeader = false;
 
   function adapter(): AtomicSettlementAdapter<PoolClient> {
     return {
@@ -78,8 +79,8 @@ describe.skipIf(!enabled)("PR95 boundary with real disposable PostgreSQL transac
       },
       postJournal: async (tx, input) => {
         const r = await tx.query(
-          `INSERT INTO pr95_real.journals(company_id,invoice_id,idempotency_key,gross_minor,withholding_minor)
-           VALUES($1,$2,$3,$4,$5) RETURNING id`,
+          `INSERT INTO pr95_real.journals(company_id,invoice_id,idempotency_key,gross_minor,withholding_minor,header_debit,header_credit,status)
+           VALUES($1,$2,$3,$4,$5,$4,$4,'posted') RETURNING id`,
           [input.companyId,input.invoiceId,input.idempotencyKey,input.grossMinor,input.withholdingMinor],
         );
         const id = r.rows[0].id as number;
@@ -90,6 +91,12 @@ describe.skipIf(!enabled)("PR95 boundary with real disposable PostgreSQL transac
         if (corruptJournal) {
           await tx.query(
             "UPDATE pr95_real.lines SET credit=credit+1 WHERE journal_id=$1 AND account='BANK'",
+            [id],
+          );
+        }
+        if (corruptHeader) {
+          await tx.query(
+            "UPDATE pr95_real.journals SET header_credit=header_credit+1 WHERE id=$1",
             [id],
           );
         }
@@ -109,16 +116,19 @@ describe.skipIf(!enabled)("PR95 boundary with real disposable PostgreSQL transac
         const result = await tx.query(
           `SELECT COUNT(*)::int AS line_count,
                   COALESCE(SUM(l.debit),0)::int AS debit_total,
-                  COALESCE(SUM(l.credit),0)::int AS credit_total
+                  COALESCE(SUM(l.credit),0)::int AS credit_total,
+                  j.header_debit,j.header_credit,j.status
              FROM pr95_real.journals j
              JOIN pr95_real.lines l ON l.journal_id=j.id
             WHERE j.id=$1 AND j.company_id=$2
-            GROUP BY j.id`,
+            GROUP BY j.id,j.header_debit,j.header_credit,j.status`,
           [journalId, companyId],
         );
         const row=result.rows[0];
-        return Boolean(row && row.line_count>=2 &&
-          row.debit_total>0 && row.debit_total===row.credit_total);
+        return Boolean(row && row.status==="posted" && row.line_count>=2 &&
+          row.debit_total>0 && row.debit_total===row.credit_total &&
+          row.header_debit===row.debit_total &&
+          row.header_credit===row.credit_total);
       },
       updateInvoiceBalance: async (tx, input) => {
         const r = await tx.query(
@@ -148,6 +158,7 @@ describe.skipIf(!enabled)("PR95 boundary with real disposable PostgreSQL transac
       CREATE TABLE pr95_real.journals(
         id serial PRIMARY KEY,company_id integer NOT NULL,invoice_id integer NOT NULL,
         idempotency_key text NOT NULL,gross_minor integer NOT NULL,withholding_minor integer NOT NULL,
+        header_debit integer NOT NULL,header_credit integer NOT NULL,status text NOT NULL,
         UNIQUE(company_id,idempotency_key));
       CREATE TABLE pr95_real.lines(
         journal_id integer NOT NULL REFERENCES pr95_real.journals(id),account text NOT NULL,
@@ -188,6 +199,7 @@ describe.skipIf(!enabled)("PR95 boundary with real disposable PostgreSQL transac
   beforeEach(async () => {
     failAfter=null;
     corruptJournal=false;
+    corruptHeader=false;
     await pool.query("TRUNCATE pr95_real.disbursements,pr95_real.lines,pr95_real.journals,pr95_real.invoices RESTART IDENTITY");
     await pool.query("INSERT INTO pr95_real.invoices(id,company_id,outstanding_minor,status) VALUES(77,1,10000,'posted'),(78,1,10000,'posted'),(88,2,10000,'posted')");
   });
@@ -236,6 +248,15 @@ describe.skipIf(!enabled)("PR95 boundary with real disposable PostgreSQL transac
   });
   it("rolls back real PostgreSQL journal and disbursement when ledger lines are unbalanced", async () => {
     corruptJournal=true;
+    await expect(commitVendorInvoicePaymentAtomic(base,adapter()))
+      .rejects.toThrow("ATOMIC_SETTLEMENT_UNBALANCED_JOURNAL");
+    expect(await counters()).toMatchObject({
+      journal_count:0,disbursement_count:0,outstanding:10000,unbalanced:0,
+    });
+  });
+
+  it("rolls back when Accounting header totals diverge from otherwise balanced lines", async () => {
+    corruptHeader=true;
     await expect(commitVendorInvoicePaymentAtomic(base,adapter()))
       .rejects.toThrow("ATOMIC_SETTLEMENT_UNBALANCED_JOURNAL");
     expect(await counters()).toMatchObject({
