@@ -66,3 +66,21 @@ This review branch includes the signed-session DEV-only mount code from PR #110
 so its cumulative test gates can run against official `main`. Neither draft PR
 is authorized for automatic merge or deployment; compare exact commit SHAs
 and retain the current production runtime unchanged.
+
+
+## Reuse existing GCP DEV systemd credentials (PR #81)
+
+This candidate reuses the tested existing PR #81 \`LoadCredential\` reader. It
+only opens the fixed credential filename \`gcp-secret-manager-bootstrap.json\`
+from systemd's \`CREDENTIALS_DIRECTORY\` when both
+\`APP_ENV=development\` and
+\`BIZPORTAL_DEV_SYSTEMD_GCP_BOOTSTRAP_ENABLED=true\`.
+The regular environment credential remains supported and takes precedence.
+The file is bounded to 1–32768 bytes and invalid credentials fail closed.
+The systemd fallback is disabled in PROD. The same six synthetic-only tests
+were ported without any real key or live GCP network calls.
+
+The existing GCP DEV infrastructure can therefore be reused; no new GCP
+project, bootstrap key, login system or secret-store implementation is needed.
+A *dedicated* Payroll approver secret entry and PostgreSQL LOGIN are still
+separate authorization requirements and have not been verified or activated.
