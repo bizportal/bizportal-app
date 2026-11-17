@@ -89,6 +89,18 @@ async function verifyPosted(companyId, sourceId) {
     const results = await pool.query("SELECT COUNT(*)::int AS n FROM " + table + " WHERE company_id=$1 AND entry_id=$2", [companyId, entryId]);
     assert.equal(Number(results.rows[0].n), 1, table + " should be once per source");
   }
+  const ar = await pool.query(
+    "SELECT company_id,invoice_id,gl_entry_id,gross_amount,outstanding_amount,paid_amount,status,notes FROM public.ar_subledger WHERE company_id=$1 AND invoice_id=$2",
+    [companyId, sourceId],
+  );
+  assert.equal(ar.rows.length, 1, "exactly one original reviewed AR projection");
+  assert.equal(Number(ar.rows[0].gl_entry_id), entryId);
+  assert.equal(Number(ar.rows[0].gross_amount), 100);
+  assert.equal(Number(ar.rows[0].outstanding_amount), 100);
+  assert.equal(Number(ar.rows[0].paid_amount), 0);
+  assert.equal(ar.rows[0].status, "OPEN");
+  assert.equal(ar.rows[0].notes, "bizportal:customer-ar-source:v1");
+  console.log("POST_COMMIT_GL_AND_ORIGINAL_AR_PASS", companyId, sourceId);
   console.log("POST_COMMIT_BALANCED_AUDIT_OUTBOX_PASS", companyId, sourceId);
 }
 try {
@@ -105,10 +117,14 @@ try {
   console.log("IDEMPOTENT_REPLAY_PASS");
   await assertReceipt(1, 175, { rollback: true });
   assert.equal(await counts(175), 0);
-  console.log("ROLLBACK_LEAVES_NO_JOURNAL_PASS");
+  const rbAr = await pool.query("SELECT COUNT(*)::int AS n FROM public.ar_subledger WHERE invoice_id=175");
+  assert.equal(Number(rbAr.rows[0].n), 0);
+  console.log("ROLLBACK_LEAVES_NO_JOURNAL_OR_AR_PASS");
   await assertReceipt(1, 177, { expectTaxRefusal: true });
   assert.equal(await counts(177), 0);
-  console.log("TAXABLE_REJECTION_LEAVES_NO_JOURNAL_PASS");
+  const taxAr = await pool.query("SELECT COUNT(*)::int AS n FROM public.ar_subledger WHERE invoice_id=177");
+  assert.equal(Number(taxAr.rows[0].n), 0);
+  console.log("TAXABLE_REJECTION_LEAVES_NO_JOURNAL_OR_AR_PASS");
 } finally {
   await pool.end();
 }
