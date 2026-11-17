@@ -22,7 +22,17 @@ It imports the real BizPortal Payroll router, real HMAC cookie signature verific
 
 Other focused tests: `pnpm --filter @workspace/api-server exec vitest run src/routes/payroll-calculate.test.ts src/routes/payroll-calculate-http.test.ts`.
 
-The GitHub Payroll disposable workflow runs the restricted PostgreSQL Calculate test and the HMAC-signed Calculate→approval test as **separate isolated fixture runs**, then preserves all prior native accrual/legacy installment suites. Test counts overlap other regression families and should not be summed into unique acceptance coverage.
+The GitHub Payroll disposable workflow runs the restricted PostgreSQL Calculate test and HMAC-signed Calculate→approval test as separate fixture runs, then adds a **third single-database integration** using the **actual pinned native accounting artifact**, without replacing prior native accrual/legacy installment suites. Test counts overlap other regression families and should not be summed into unique acceptance coverage.
+
+### One-database signed approval → native journal / kasbon
+
+Use the **existing verified five-file source snapshot** as an explicit argument:
+
+`bash scripts/payroll-atomic-rehearsal/run-disposable.sh /absolute/path/to/verified-pinned-source integrated`
+
+The existing native runner verifies each pinned original file and native package hash, creates a localhost-only PostgreSQL 16 container and scoped **three PostgreSQL LOGIN identities** (Calculate, Super Admin approver, settlement), and adds only synthetic fixture tables/policies. The real application Calculate and approval handlers validate a fixture-issued HMAC cookie, company authorization, reserved holds and approval receipt. Then the existing `postReviewedPayrollAccrualTransaction` calls the verified native writer **against the same database**, committing one balanced accrual journal with ledger, audit, outbox and noncash kasbon repayment. Additional assertions prove idempotent replay, cross-company rejection, forced financial failure rollback with no journal residue, and successful safe recovery. All six integration checks PASS on the disposable fixture; payroll salary payment count remains zero.
+
+**Boundary:** the first two stages are actual HTTP requests but the last posting stage calls the real atomic transaction *service* directly rather than the public `post-accounting` HTTP route. The cookie is cryptographically signed by a synthetic test issuer, **not a real email-delivered OTP**. Synthetic roles have fixture-only passwords and never connect to Supabase or GCP. These results must not be promoted to claims about a live CST-DEV user session, live secret provisioning, operational settlement rights or salary payment.
 
 ## Operational NO-GO
 

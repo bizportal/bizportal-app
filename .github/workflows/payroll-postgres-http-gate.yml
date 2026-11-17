@@ -122,6 +122,11 @@ jobs:
           for marker in PERMISSION_BOUNDARY_CHECKS_PASS MAPPED_OTHER_DEDUCTION_POSTGRES_PASS KASBON_CROSS_PERIOD_POSTGRES_PASS LEGACY_INSTALLMENT_LINK_POSTGRES_PASS APPLICATION_REAL_POSTGRES_CHECKS_PASS; do
             grep -Eq "^${marker} [1-9][0-9]* " "$RUNNER_TEMP/payroll-packaged.log"
           done
+      - name: Signed Calculate -> Super Admin approval -> real native journal and kasbon ledger in ONE disposable PostgreSQL
+        run: |
+          set -euo pipefail
+          bash scripts/payroll-atomic-rehearsal/run-disposable.sh "$RUNNER_TEMP/payroll-pinned-source" integrated | tee "$RUNNER_TEMP/payroll-integrated.log"
+          grep -Eq '^PAYROLL_SIGNED_CALCULATE_APPROVAL_NATIVE_LEDGER_POSTGRES_PASS [1-9][0-9]* ' "$RUNNER_TEMP/payroll-integrated.log"
       - name: Original transaction, permission, trigger, native and period regressions
         run: |
           set -euo pipefail
@@ -158,6 +163,8 @@ jobs:
               echo "SUITE $mode"
               grep -E '^(PERMISSION_BOUNDARY_CHECKS_PASS|MAPPED_OTHER_DEDUCTION_POSTGRES_PASS|KASBON_CROSS_PERIOD_POSTGRES_PASS|LEGACY_INSTALLMENT_LINK_POSTGRES_PASS|APPLICATION_REAL_POSTGRES_CHECKS_PASS|SELECTED_DEV_TRIGGER_CHECKS_PASS|REAL_POSTGRES_CHECKS_PASS|AUDITED_PERIOD_REGISTRATION_POSTGRES_PASS)' "$RUNNER_TEMP/payroll-${mode}.log"
             done
+            echo "SUITE integrated single synthetic signed-session database"
+            grep -E '^PAYROLL_SIGNED_CALCULATE_APPROVAL_NATIVE_LEDGER_POSTGRES_PASS ' "$RUNNER_TEMP/payroll-integrated.log"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Remove this job's disposable database and downloaded source

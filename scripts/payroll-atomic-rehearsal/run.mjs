@@ -11,7 +11,7 @@ const here=path.dirname(fileURLToPath(import.meta.url));
 const root=path.resolve(here,'../..'),api=root+'/artifacts/api-server';
 const legacy=process.argv[2];
 const suite=process.argv[3]||'native';
-if(!['native','application','triggers','permissions','packaged','financial-setup'].includes(suite))throw Error('UNKNOWN_REHEARSAL_SUITE');
+if(!['native','application','triggers','permissions','packaged','financial-setup','integrated'].includes(suite))throw Error('UNKNOWN_REHEARSAL_SUITE');
 if(!legacy||!path.isAbsolute(legacy))throw Error('EXPLICIT_LEGACY_SOURCE_REQUIRED');
 const u=new URL(process.env.PAYROLL_PG_E2E_URL||'invalid:');
 if(u.protocol!=='postgresql:'||u.hostname!=='127.0.0.1'||u.port!=='65432'||u.pathname!=='/payroll_ci'||u.username!=='postgres.xssrfshdrtdfupgqwfdw')throw Error('REFUSE_NON_DISPOSABLE_POSTGRES');
@@ -30,6 +30,24 @@ if(artifactFiles.some(p=>fs.existsSync(p)))throw Error('SCRATCH_ALREADY_EXISTS')
 const baselineLib=path.join(stage,'baseline',sourceLib),fixedLib=path.join(stage,'patched',sourceLib);
 const previousLib=path.join(stage,'previous',sourceLib);
 const variants=suite==='triggers'?['baseline','patched','previous']:['baseline','patched'];
+/** ONLY for the integrated disposable suite. Replaces connection plumbing,
+ * not any financial or auth logic. Three actual PostgreSQL LOGIN roles connect
+ * to the same isolated database and are checked by the real services.
+ */
+function integratedBoundaryPlugin(){
+ const db="const state=()=>{if(!globalThis.__payrollIntegrated)throw Error('INTEGRATED_DB_NOT_READY');return globalThis.__payrollIntegrated;}; export const pool={query:(...args)=>state().admin.query(...args),connect:(...args)=>state().admin.connect(...args)}; export async function getRuntimeDatabaseUrl(){throw Error('NO_LIVE_DATABASE_URL');} export function createDedicatedPayrollPool(){throw Error('NO_SHARED_WRITER_FALLBACK');}";
+ const payroll="const state=()=>{if(!globalThis.__payrollIntegrated)throw Error('INTEGRATED_DB_NOT_READY');return globalThis.__payrollIntegrated;}; export const payrollDedicatedEnabled=()=>!!state().calculate; export const getPayrollPool=()=>state().calculate; export async function setPayrollCompanyScope(c,id){await c.query(\"SELECT set_config('app.payroll_company_id',$1,true)\",[String(id)]);} export async function payrollScopedQuery(company,sql,args){const client=await state().calculate.connect();try{await client.query('BEGIN READ ONLY');await setPayrollCompanyScope(client,company);const result=await client.query(sql,args);await client.query('COMMIT');return result;}catch(error){await client.query('ROLLBACK').catch(()=>undefined);throw error;}finally{client.release();}}";
+ const approver="const state=()=>{if(!globalThis.__payrollIntegrated)throw Error('INTEGRATED_DB_NOT_READY');return globalThis.__payrollIntegrated;}; export const devApprovalDedicatedEnabled=()=>!!state().approve;export const getDevApprovalPool=()=>state().approve;export async function setDevApprovalCompanyScope(c,id){await c.query(\"SELECT set_config('app.payroll_company_id',$1,true)\",[String(id)]);}";
+ const prod="export const payrollProdDedicatedRequired=()=>false;export const payrollReadOnlyReady=()=>false;export const payrollProdSharedReadOnlyEnabled=()=>false;export const payrollDedicatedEnabled=()=>false;export const getPayrollPool=()=>{throw Error('PROD_POOL_FORBIDDEN');};export async function payrollScopedQuery(){throw Error('PROD_POOL_FORBIDDEN');}export async function setPayrollCompanyScope(){throw Error('PROD_POOL_FORBIDDEN');}";
+ const map={db,payroll,approver,prod};
+ return {name:'payroll-integrated-disposable-only',setup(build){
+  build.onResolve({filter:/^@workspace\/db$/},()=>({path:'db',namespace:'payroll-integrated'}));
+  build.onResolve({filter:/^\.\/payroll-db$/},()=>({path:'payroll',namespace:'payroll-integrated'}));
+  build.onResolve({filter:/^\.\/payroll-dev-approval-db$/},()=>({path:'approver',namespace:'payroll-integrated'}));
+  build.onResolve({filter:/^\.\/payroll-prod-db$/},()=>({path:'prod',namespace:'payroll-integrated'}));
+  build.onLoad({filter:/.*/,namespace:'payroll-integrated'},args=>({contents:map[args.path],loader:'js'}));
+ }};
+}
 try {
  for(const [rel,expected] of Object.entries({...manifest.sourceSha256,...manifest.dependencySha256})){
   const bytes=fs.readFileSync(path.join(legacy,rel));
@@ -72,12 +90,12 @@ try {
   b.onLoad({filter:/.*/,namespace:'fixture'},a=>({contents:stubs[a.path],loader:'js',resolveDir:api}));
   b.onLoad({filter:/.*/,namespace:'unavailable'},a=>({contents:`throw Error('UNEXPECTED_UNMIGRATED_DEPENDENCY'); export const unavailable=true;`,loader:'js'}));
  }};}
- const builds=suite==='triggers'?[[baselineLib,baseOut],[fixedLib,fixedOut],[previousLib,previousOut]]:suite==='packaged'?[[baselineLib,baseOut]]:[[baselineLib,baseOut],[fixedLib,fixedOut]];
+ const builds=suite==='triggers'?[[baselineLib,baseOut],[fixedLib,fixedOut],[previousLib,previousOut]]:['packaged','integrated'].includes(suite)?[[baselineLib,baseOut]]:[[baselineLib,baseOut],[fixedLib,fixedOut]];
  for(const [lib,out] of builds){
   await build({stdin:{contents:`export {postEntryWithClient} from ${JSON.stringify(lib+'/accounting.ts')}; export {PayrollJournalService} from ${JSON.stringify(lib+'/payroll/PayrollJournalService.ts')};`,resolveDir:api,loader:'ts'},outfile:out,bundle:true,platform:'node',format:'esm',logLevel:'silent',external:['drizzle-orm','drizzle-orm/*','pg'],nodePaths:[api+'/node_modules',root+'/node_modules'],plugins:[boundaryPlugin()]});
  }
  let artifactHash=null;
- if(suite==='packaged'){
+ if(['packaged','integrated'].includes(suite)){
   const {buildNativePayrollArtifact}=await import('../payroll-native-runtime/build-artifact.mjs');
   const artifact=await buildNativePayrollArtifact(legacy);
   fs.writeFileSync(fixedOut,artifact.bytes,{flag:'wx',mode:0o600});
@@ -108,7 +126,7 @@ try {
   harness=harness.replace(oldTamper,newTamper);
 
  }
- if(suite==='packaged'){
+ if(['packaged','integrated'].includes(suite)){
   const originalImport="const patched=await import('__FIXED__');";
   if(!harness.includes(originalImport)||!artifactHash)throw Error('PACKAGED_FIXTURE_CONTRACT_CHANGED');
   const verifiedImport=`
@@ -126,6 +144,11 @@ console.log('VERIFIED_PACKAGE_LOADER_USED',true,'HTTP_SESSION_TESTED',false);
 `;
   harness=harness.replace(originalImport,verifiedImport);
  }
+ if(suite==='integrated'){
+  const marker=' await reset();\n const plan=prepareReviewedPayrollAccrual(fixture());';
+  const at=harness.indexOf(marker);if(at<0)throw Error('INTEGRATED_FIXTURE_SETUP_CONTRACT_CHANGED');
+  harness=harness.slice(0,at)+fs.readFileSync(root+'/scripts/payroll-calculate/integrated-accounting-postgres-tests.ts','utf8');
+ }
  if(suite==='packaged'){
   const marker=" console.log('APPLICATION_REAL_POSTGRES_CHECKS_PASS'";
   const at=harness.indexOf(marker);if(at<0)throw Error('OTHER_DEDUCTION_CASE_LOCATION_CHANGED');
@@ -133,7 +156,7 @@ console.log('VERIFIED_PACKAGE_LOADER_USED',true,'HTTP_SESSION_TESTED',false);
  }
  harness=harness.replaceAll('__ROOT__',root).replaceAll('__BASE__',baseOut).replaceAll('__FIXED__',fixedOut).replaceAll('__PREVIOUS__',previousOut);
  fs.writeFileSync(entry,helpers+'\n'+harness,{flag:'wx',mode:0o600});
- await build({entryPoints:[entry],outfile:output,bundle:true,platform:'node',format:'esm',logLevel:'silent',nodePaths:[api+'/node_modules',root+'/node_modules'],external:['pg','drizzle-orm','drizzle-orm/*',baseOut,fixedOut,previousOut],banner:{js:`import {createRequire as createNodeRequire} from 'node:module'; const require=createNodeRequire(import.meta.url);`}});
+ await build({entryPoints:[entry],outfile:output,bundle:true,platform:'node',format:'esm',logLevel:'silent',nodePaths:[api+'/node_modules',root+'/node_modules'],external:['pg','express','drizzle-orm','drizzle-orm/*',baseOut,fixedOut,previousOut],plugins:suite==='integrated'?[integratedBoundaryPlugin()]:[],banner:{js:`import {createRequire as createNodeRequire} from 'node:module'; const require=createNodeRequire(import.meta.url);`}});
  await import(pathToFileURL(output).href);
 } finally {
  for(const f of artifactFiles)fs.rmSync(f,{force:true});fs.rmSync(stage,{recursive:true,force:true});
