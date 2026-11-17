@@ -7,6 +7,7 @@ on:
       - test/pr117-vendor-service-session-lock-20261117
       - test/finance-vendor-invoice-parent-lock-contract-20261117
       - test/pr119-gcp-bootstrap-parity-20261117
+      - test/pr120-single-gcp-finance-credentials-20261117
       - develop
     paths:
       - 'artifacts/api-server/src/lib/services/mktVendorInvoiceService.ts'
@@ -17,6 +18,7 @@ on:
       - 'lib/db/src/marketplace-finance-dev.ts'
       - 'artifacts/api-server/src/routes/dev-finance-company-role-routing.test.ts'
       - 'scripts/tests/pr117-*'
+      - 'scripts/tests/pr121-real-finance-rls-predicates-disposable.sql'
       - 'scripts/sql/20261117_pr107_*'
       - 'scripts/sql/20261117_pr108_*'
       - 'scripts/sql/20261117_pr120_live_company_finance_readonly_preflight.sql'
@@ -72,6 +74,20 @@ jobs:
           assert 'f69295cc7f66f8bc4645a6fc02e2f36e' in stripped, 'baseline fingerprint missing'
           assert 'AS preflight_pass' in stripped, 'final pass predicate missing'
           print('PR120_READONLY_LIVE_PREFLIGHT_SOURCE_GUARD_PASS')
+          PY
+      - name: PR121 exact CST-DEV RLS snapshot must remain disposable-only
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          source=Path('scripts/tests/pr121-real-finance-rls-predicates-disposable.sql').read_text()
+          assert source.count('ALTER POLICY pr50_finance_dev_')==18
+          assert 'Original source preflight MD5: f69295cc7f66f8bc4645a6fc02e2f36e' in source
+          assert 'Never run on CST-DEV or PROD' in source
+          assert source.count('BEGIN;')==1 and source.count('COMMIT;')==1
+          assert not re.search(r'(?im)^\s*(?:CREATE ROLE|ALTER ROLE|GRANT|REVOKE|DROP ROLE|CREATE POLICY|DROP POLICY)\b',source)
+          print('PR121_REAL_RLS_OVERLAY_DISPOSABLE_SOURCE_GUARD_PASS')
           PY
       - name: Build original canonical Vendor Invoice and AP/Accounting services for isolated PG
         run: node scripts/tests/pr117-build-vendor-service.cjs
