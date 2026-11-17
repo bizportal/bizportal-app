@@ -4,9 +4,11 @@ on:
   pull_request:
     branches:
       - test/pr108-session-bound-vendor-lock-20261117
+      - test/pr117-vendor-service-session-lock-20261117
       - develop
     paths:
       - 'artifacts/api-server/src/lib/services/mktVendorInvoiceService.ts'
+      - 'artifacts/api-server/src/lib/services/mktVendorInvoiceParentLock.dev.test.ts'
       - 'scripts/tests/pr117-*'
       - 'scripts/sql/20261117_pr107_*'
       - 'scripts/sql/20261117_pr108_*'
@@ -57,6 +59,8 @@ jobs:
         run: |
           pnpm --dir artifacts/api-server exec vitest run \
             src/routes/mktVendorInvoice.dev-compat.test.ts \
+            src/routes/dev-otp-to-finance-http.test.ts \
+            src/lib/services/mktVendorInvoiceParentLock.dev.test.ts \
             src/lib/services/mktMarketplaceCompanyScope.test.ts \
             src/routes/dev-marketplace-finance-writer.test.ts \
             src/lib/services/mktAccountingHandoff.test.ts
