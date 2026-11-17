@@ -78,7 +78,9 @@ export async function postCustomerPortalSalesInvoiceWithExistingOwner(
       for update`, [sourceId,companyId],
   );
   const row=source.rows[0];
-  if (source.rows.length!==1 || row?.invoice_status !== "invoiced" ||
+  if (source.rows.length!==1 || Number(row?.id)!==sourceId ||
+      !row?.invoice_date || !row?.due_date ||
+      row?.invoice_status !== "invoiced" ||
       row?.invoice_number!==invoice.invoice_number ||
       Number(row?.company_id)!==companyId) {
     throw new Error("DEV_SALES_POSTING_SOURCE_MISMATCH");
@@ -119,7 +121,7 @@ export async function postCustomerPortalSalesInvoiceWithExistingOwner(
   const money=gross/100;
   const result=await getPostingEngine().post({
     journalId:Number(a.journal),journalCode:"SAL",
-    date:new Date(invoice.invoice_date),ref:invoice.invoice_number,
+    date:new Date(row.invoice_date),ref:row.invoice_number,
     description:"Invoice "+invoice.invoice_number,
     source:"sales_invoice",sourceId,companyId,
     createdById:input.actorId == null ? null : String(input.actorId),
