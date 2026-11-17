@@ -63,11 +63,11 @@ jobs:
           from pathlib import Path
           import re
           source=Path('scripts/sql/20261117_pr120_live_company_finance_readonly_preflight.sql').read_text()
-          stripped=re.sub(r'--[^\\n]*','',source)
+          stripped=re.sub(r'--[^\n]*','',source)
           assert stripped.count(';')==1, 'preflight must be one SELECT statement'
-          assert re.match(r'(?is)^\\s*WITH\\b',stripped), 'preflight must start with CTE'
-          assert re.search(r'(?is)\\bSELECT\\s+secured_table_count',stripped), 'preflight must return details'
-          forbidden=r'(?im)^\\s*(?:CREATE|ALTER|DROP|GRANT|REVOKE|INSERT|UPDATE|DELETE|TRUNCATE|DO|CALL|COPY|BEGIN|COMMIT|SET)\\b'
+          assert re.match(r'(?is)^\s*WITH\b',stripped), 'preflight must start with CTE'
+          assert re.search(r'(?is)\bSELECT\s+secured_table_count',stripped), 'preflight must return details'
+          forbidden=r'(?im)^\s*(?:CREATE|ALTER|DROP|GRANT|REVOKE|INSERT|UPDATE|DELETE|TRUNCATE|DO|CALL|COPY|BEGIN|COMMIT|SET)\b'
           assert not re.search(forbidden,stripped), 'preflight must not mutate DB or role'
           assert 'f69295cc7f66f8bc4645a6fc02e2f36e' in stripped, 'baseline fingerprint missing'
           assert 'AS preflight_pass' in stripped, 'final pass predicate missing'
