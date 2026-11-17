@@ -89,7 +89,7 @@ describe("canonical existing posting owner injected into Customer Portal's PG cl
  });
  it("rejects missing accounting dates in the locked invoice",async()=>{
    const a=args(1);
-   a.client.query.mockResolvedValueOnce({rows:[{...row(),invoice_date:null}]});
+   a.client.query.mockResolvedValueOnce({rows:[{...row(),invoice_date:""}]});
    await expect(post(a)).rejects.toThrow("DEV_SALES_POSTING_SOURCE_MISMATCH");
    expect(m.post).not.toHaveBeenCalled();
  });
