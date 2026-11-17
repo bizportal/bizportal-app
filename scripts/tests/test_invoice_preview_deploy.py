@@ -38,6 +38,7 @@ class DeployBoundaries(unittest.TestCase):
         self.assertIn("CANONICAL_FINANCE_ENABLED_DEV=false", value)
         self.assertIn("VENDOR_INVOICE_ENABLED_DEV=false", value)
         self.assertIn("VENDOR_PARENT_LOCK_ENABLED_DEV=false", value)
+        self.assertIn("BIZPORTAL_CUSTOMER_AR_PREVIEW_ENABLED_DEV=false", value)
         self.assertIn("BIZPORTAL_FINANCE_NOTIFICATIONS_SUPPRESSED_DEV=true", value)
         self.assertNotIn("SESSION_SECRET", value)
         self.assertNotIn("SIGNED_PASSWORD", value)
@@ -47,8 +48,40 @@ class DeployBoundaries(unittest.TestCase):
     def test_writer_requires_existing_parent_lock_and_notification_suppression(self):
         value = deploy.drop_content("writer")
         self.assertIn("BIZPORTAL_MARKETPLACE_VENDOR_PARENT_LOCK_ENABLED_DEV=true", value)
+        self.assertIn("BIZPORTAL_CUSTOMER_AR_PREVIEW_ENABLED_DEV=true", value)
         self.assertIn("BIZPORTAL_FINANCE_NOTIFICATIONS_SUPPRESSED_DEV=true", value)
         self.assertIn("BIZPORTAL_MARKETPLACE_FINANCE_GCP_SECRET_NAME_DEV=\n", value)
+
+    def test_customer_preview_has_only_an_exact_read_route(self):
+        block = deploy.nginx_block()
+        customer_block = re.search(
+            r"location = /api/sales/customer-invoices/auto-match-preview \{(.*?)\n    \}", block, re.S)
+        self.assertIsNotNone(customer_block)
+        self.assertIn("limit_except GET { deny all; }", customer_block.group(1))
+        self.assertNotIn("/api/sales/documents", block)
+        self.assertNotIn("mark_invoiced", block)
+
+    def test_customer_anonymous_gate_requires_401_and_stage_404(self):
+        for mode, expected in (("writer", 401), ("stage", 404)):
+            def response(url, method="GET"):
+                if url.endswith("/health/ready"):
+                    return 200
+                if url.endswith("/auth/user"):
+                    return 401
+                if url.endswith(("/settle", "/action")):
+                    return 404
+                return expected
+            with patch.object(deploy, "status", side_effect=response) as status:
+                deploy.check_http_gates(mode)
+                status.assert_any_call(deploy.ORIGIN + "/api/sales/customer-invoices/auto-match-preview?company_id=1")
+
+        def unsafe_response(url, method="GET"):
+            if "auto-match-preview" in url or url.endswith("/health/ready"):
+                return 200
+            return 401
+        with patch.object(deploy, "status", side_effect=unsafe_response):
+            with self.assertRaisesRegex(RuntimeError, "ANONYMOUS_CUSTOMER_AR_GATE_FAILED"):
+                deploy.check_http_gates("writer")
 
     def test_nginx_change_after_snapshot_is_refused(self):
         with self.assertRaisesRegex(RuntimeError, "NGINX_BASELINE_CHANGED"):

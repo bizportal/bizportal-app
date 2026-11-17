@@ -17,6 +17,7 @@ import { validateMagicBytes } from "../lib/uploadValidation.js";
 import { ObjectStorageService } from "../lib/objectStorage.js";
 import { validateBody } from "../lib/middleware/validateBody.js";
 import { findPoByVendorToken } from "../lib/services/mktVendorPoTokenService.js";
+import { resolveVendorInvoiceToken } from "../lib/services/mktVendorInvoiceTokenResolver.js";
 import {
   createMarketplaceVendorInvoice,
   getMarketplaceVendorInvoice,
@@ -80,7 +81,7 @@ function failureStatus(code: string): number {
 }
 
 async function resolveVendorPo(token: string, res: any) {
-  const result = await findPoByVendorToken(token);
+  const result = await resolveVendorInvoiceToken(token);
   if (!result.ok) {
     res.status(tokenStatus(result.code)).json({ ok: false, error: "TOKEN_INVALID", code: result.code });
     return null;

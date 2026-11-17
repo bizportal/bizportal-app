@@ -79,7 +79,10 @@ The builder exports that exact commit with `git archive` into a disposable
 directory, installs the unchanged frozen lockfile from the pnpm store, runs the
 existing API and Vite builds, and uses `scripts/prepare-hostinger.mjs` to combine
 the outputs. `pnpm deploy --legacy --prod` supplies self-contained API production
-dependencies. It verifies the Node syntax, native/runtime dependency loading,
+dependencies. pnpm 10.33 leaves a self-package link to its build checkout; the
+builder verifies that exact `@workspace/api-server` link and rebases it to the
+artifact root. Any other escaping dependency link still fails validation.
+It verifies the Node syntax, native/runtime dependency loading,
 and that every symlink stays inside the artifact. Only then does it atomically
 publish `/opt/bizportal-invoice-completion-20261117`; an existing target is always
 refused. No service is started or reconfigured by this command.
@@ -131,6 +134,8 @@ Storage. Writer mode also enables the existing session-bound vendor parent-lock
 path. Both modes set `BIZPORTAL_FINANCE_NOTIFICATIONS_SUPPRESSED_DEV=true`, so
 the reviewed Finance post-commit suppression applies throughout the DEV test.
 It does not enable settlement, bank approvals, GL posting, Gmail, or WA.
+Writer mode also enables the company-scoped read-only Customer AR preview after
+its bank-read RLS migration is verified. Stage mode leaves that feature off.
 
 If the signed business test fails, use the printed rollback state:
 
@@ -169,6 +174,7 @@ session, or an anonymous 401 is not the positive end-to-end proof.
 
 | Path | Methods |
 |---|---|
+| `/api/sales/customer-invoices/auto-match-preview` | GET only, exact location; company scope enforced by application and DB |
 | `/api/mkt/admin/vendor-invoices/:id/match` | POST |
 | `/api/mkt/admin/vendor-invoices/:id/ap-preparation` | POST |
 | `/api/mkt/admin/ap-preparations/:id/finance-review` | POST |
@@ -182,8 +188,11 @@ session, or an anonymous 401 is not the positive end-to-end proof.
 IDs are 1–10 decimal digits without a leading zero. Tokens are exactly 64 hex
 characters, matching the existing token service; token paths disable Nginx
 access logging and retain no-store/no-referrer response headers. The app still
-authenticates and authorizes every operation. This does not add customer AR
-routes; add those only after the customer integration is independently ready.
+authenticates and authorizes every operation. Customer scope is AR preview and
+matching for already issued canonical invoices. No customer issuance, POD, GL,
+payment, or legacy owner route is added. Deployment checks require anonymous
+Customer AR access to return 401 in Writer mode and 404 in stage mode; the legacy
+sales action path remains 404.
 
 ## Offline validation of the deployment tool
 
@@ -192,9 +201,11 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p 'test
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p 'test_invoice_preview_build.py' -v
 ```
 
-Seven checks cover rejected payment/unrecognized paths, preserved authentication,
+Nine checks cover rejected payment/unrecognized paths, preserved authentication,
 stale Nginx baseline refusal, artifact manifest path traversal, concurrent-change
-rollback refusal and restoration after an injected Nginx validation failure.
+rollback refusal, restoration after an injected Nginx validation failure and the
+exact Customer AR route/anonymous denial in each mode.
 These checks never invoke a real service or replace the signed DEV business test.
-Five additional build-tool checks cover secret/environment isolation, portable
-symlinks, complete checksum generation and atomic no-overwrite publication.
+Seven additional build-tool checks cover secret/environment isolation, portable
+symlinks, narrow pnpm self-link rebasing, complete checksum generation and atomic
+no-overwrite publication.

@@ -12,6 +12,8 @@ on:
       - develop
     paths:
       - 'artifacts/api-server/src/lib/services/mktVendorInvoiceService.ts'
+      - 'artifacts/api-server/src/lib/services/mktVendorInvoiceTokenResolver*'
+      - 'artifacts/api-server/src/routes/mktVendorInvoice.ts'
       - 'artifacts/api-server/src/lib/services/mktVendorInvoiceParentLock.dev.test.ts'
       - 'artifacts/api-server/src/lib/gcp-systemd-bootstrap.test.ts'
       - 'artifacts/api-server/src/__tests__/dev-systemd-gcp-bootstrap.test.ts'
@@ -124,6 +126,7 @@ jobs:
             src/lib/gcp-systemd-bootstrap.test.ts \
             src/__tests__/dev-systemd-gcp-bootstrap.test.ts \
             src/lib/services/mktVendorInvoiceParentLock.dev.test.ts \
+            src/lib/services/mktVendorInvoiceTokenResolver.test.ts \
             src/lib/services/marketplaceFinanceNotifications.dev.test.ts \
             src/lib/services/mktMarketplaceCompanyScope.test.ts \
             src/routes/dev-marketplace-finance-writer.test.ts \

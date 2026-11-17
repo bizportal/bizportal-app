@@ -52,6 +52,36 @@ class ArtifactBuildTests(unittest.TestCase):
             self.assertIn("  RELEASE_SYMLINKS.json\n", checksums)
             self.assertIn("  source-commit.txt\n", checksums)
 
+    def test_known_pnpm_self_link_is_rebased_to_deployed_package(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact, checkout = root / "artifact", root / "source"
+            source_package = checkout / "artifacts/api-server"
+            source_package.mkdir(parents=True)
+            link = artifact / "node_modules/.pnpm/node_modules/@workspace/api-server"
+            link.parent.mkdir(parents=True)
+            for package in (artifact / "package.json", source_package / "package.json"):
+                package.write_text(json.dumps({"name": "@workspace/api-server"}))
+            link.symlink_to(os.path.relpath(source_package, link.parent))
+            self.assertTrue(BUILD.rebase_deploy_self_link(artifact, checkout))
+            self.assertEqual(link.resolve(), artifact.resolve())
+            self.assertFalse(Path(os.readlink(link)).is_absolute())
+            BUILD.inventory(artifact)
+
+    def test_unknown_pnpm_self_link_target_is_never_rebased(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact, checkout = root / "artifact", root / "source"
+            unrelated = root / "unrelated"
+            unrelated.mkdir()
+            link = artifact / "node_modules/.pnpm/node_modules/@workspace/api-server"
+            link.parent.mkdir(parents=True)
+            original = os.path.relpath(unrelated, link.parent)
+            link.symlink_to(original)
+            with self.assertRaisesRegex(RuntimeError, "UNEXPECTED_DEPLOY_SELF_LINK_TARGET"):
+                BUILD.rebase_deploy_self_link(artifact, checkout)
+            self.assertEqual(os.readlink(link), original)
+
     def test_publication_never_replaces_existing_empty_target(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

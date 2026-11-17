@@ -80,7 +80,7 @@ def inventory(root: Path) -> tuple[list[Path], dict[str, str]]:
             if path.is_symlink():
                 target = os.readlink(path)
                 require(not Path(target).is_absolute(), "ARTIFACT_ABSOLUTE_SYMLINK")
-                require(path.resolve().is_relative_to(root.resolve()), "ARTIFACT_SYMLINK_ESCAPE")
+                require(path.resolve().is_relative_to(root.resolve()), "ARTIFACT_SYMLINK_ESCAPE: " + relative)
                 require(path.exists(), "ARTIFACT_BROKEN_SYMLINK")
                 links[relative] = target
             elif path.is_file():
@@ -88,6 +88,28 @@ def inventory(root: Path) -> tuple[list[Path], dict[str, str]]:
             else:
                 require(path.is_dir(), "ARTIFACT_SPECIAL_FILE")
     return sorted(files), dict(sorted(links.items()))
+
+
+def rebase_deploy_self_link(artifact: Path, checkout: Path) -> bool:
+    # pnpm 10.33 legacy deploy leaves one workspace self-reference pointing at
+    # the temporary source checkout. The deployed root IS that exact package;
+    # rebase only this known link, never copy an arbitrary external dependency.
+    link = artifact / "node_modules/.pnpm/node_modules/@workspace/api-server"
+    if not link.is_symlink():
+        require(not link.exists(), "UNEXPECTED_DEPLOY_SELF_REFERENCE")
+        return False
+    resolved = link.resolve()
+    if resolved == artifact.resolve():
+        return False
+    require(resolved == (checkout / "artifacts/api-server").resolve(),
+            "UNEXPECTED_DEPLOY_SELF_LINK_TARGET")
+    for package in (artifact / "package.json", checkout / "artifacts/api-server/package.json"):
+        require(json.loads(package.read_text()).get("name") == "@workspace/api-server",
+                "DEPLOY_SELF_PACKAGE_MISMATCH")
+    link.unlink()
+    link.symlink_to(os.path.relpath(artifact, link.parent))
+    require(link.resolve() == artifact.resolve(), "DEPLOY_SELF_LINK_REBASE_FAILED")
+    return True
 
 
 def manifest(root: Path, metadata: dict[str, object]) -> None:
@@ -162,6 +184,7 @@ def build(source: Path, commit: str, *, offline: bool) -> None:
         artifact = workspace / "artifact"
         run(["pnpm", "--filter", "@workspace/api-server", "deploy", "--legacy", "--prod",
              str(artifact)], checkout, env)
+        self_link_rebased = rebase_deploy_self_link(artifact, checkout)
         shutil.copytree(checkout / "dist", artifact / "dist", dirs_exist_ok=True)
         for name in ("dist/index.mjs", "dist/public/index.html", "package.json"):
             require((artifact / name).is_file(), "REQUIRED_ARTIFACT_FILE_MISSING")
@@ -177,6 +200,7 @@ def build(source: Path, commit: str, *, offline: bool) -> None:
             "build_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
             "node": node, "pnpm": pnpm, "platform": "linux-x64",
             "lockfile_sha256": lock_sha, "offline_install": offline,
+            "pnpm_self_link_rebased": self_link_rebased,
             "frontend_flags": {"finance_global_scope": True, "finance_readonly_preview": False},
             "runtime_envfiles_loaded": False,
             "activation_performed": False,
