@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import pg from "pg";
 import { CUSTOMER_AR_SOURCE_EVIDENCE_SQL, CUSTOMER_AR_INVOICES_SQL } from "../../artifacts/api-server/src/lib/reconciliation/customerArSourceSql";
-import { buildCustomerArMatchPreview } from "../../artifacts/api-server/src/lib/reconciliation/customerArMatchPreview";
+import { buildCustomerArMatchPreview, type CustomerArInvoiceEvidence, type IncomingBankMutationEvidence } from "../../artifacts/api-server/src/lib/reconciliation/customerArMatchPreview";
 
 const url = process.env.CUSTOMER_AR_DISPOSABLE_ADMIN_URL ?? "";
 const target = new URL(url);
@@ -69,6 +69,82 @@ async function denied(client: pg.Client, statement: string, params: unknown[] = 
   let code: string | undefined;
   try { await client.query(statement, params); } catch (error) { code = (error as { code?: string }).code; }
   assert.equal(code, "42501");
+}
+
+// Read the private route's literal query without importing its server/pools or
+// evaluating source code. A changed declaration/query/mapping requires review.
+function routeMutationSql() {
+  const route = readFileSync("artifacts/api-server/src/routes/customer-ar-match-preview.ts", "utf8");
+  const declarations = [...route.matchAll(/^const MUTATIONS_SQL = (\[[\s\S]*?^\])\.join\("\\n"\);$/gm)];
+  assert.equal(declarations.length, 1, "one literal route bank query");
+  const clauses: unknown = JSON.parse(declarations[0]![1]!.replace(/,\s*\]$/, "]"));
+  assert.deepEqual(clauses, [
+    "select id, company_id, direction, status, amount,",
+    "description, bank_reference, provider_order_id",
+    "from public.bank_mutations",
+    "where company_id = $1 and upper(direction) = 'IN' and lower(status) = 'unmatched'",
+    "order by created_at desc, id desc limit 300",
+  ], "reviewed route bank query shape");
+  // The adapter below must retain the route's actual null/number/boolean and
+  // snake_case conversions. Compare text only; never execute extracted code.
+  const mapping = /^\s+const invoices: CustomerArInvoiceEvidence\[\] = invoiceRows\.rows\.map\(\(row\) => \(\{[\s\S]*?^\s+const matches = buildCustomerArMatchPreview\(invoices, mutations\);/gm;
+  const routeMappings = [...route.matchAll(mapping)];
+  const testMappings = [...readFileSync("scripts/tests/customer-ar-source-e2e.ts", "utf8").matchAll(mapping)];
+  assert.equal(routeMappings.length, 1); assert.equal(testMappings.length, 1);
+  assert.equal(routeMappings[0]![0].trim().replace(/\s+/g, " "),
+    testMappings[0]![0].trim().replace(/\s+/g, " "), "route row-conversion adapter drift");
+  return (clauses as string[]).join("\n");
+}
+
+async function jointCompanyPreview(client: pg.Client, companyId: 1 | 3, mutationSql: string) {
+  await client.query("BEGIN ISOLATION LEVEL READ COMMITTED READ ONLY");
+  try {
+    const identity = (await client.query("select current_user,session_user,current_setting('transaction_read_only') read_only,current_setting('transaction_isolation') isolation")).rows[0];
+    const expectedRole = companyId === 1 ? "bizportal_finance_cst_login_dev" : "bizportal_finance_diva_login_dev";
+    assert.deepEqual(identity, { current_user: expectedRole, session_user: expectedRole, read_only: "on", isolation: "read committed" });
+    const invoiceRows = await client.query(CUSTOMER_AR_INVOICES_SQL, [companyId]);
+    const mutationRows = await client.query(mutationSql, [companyId]);
+    assert(invoiceRows.rows.every((row) => row.company_id === companyId));
+    assert(mutationRows.rows.every((row) => row.company_id === companyId));
+    const invoices: CustomerArInvoiceEvidence[] = invoiceRows.rows.map((row) => ({
+      id: row.id,
+      companyId: row.company_id,
+      invoiceNumber: row.invoice_number,
+      customerName: row.customer_name,
+      invoiceStatus: row.invoice_status,
+      documentStatus: row.document_status,
+      paymentStatus: row.payment_status,
+      outstandingAmount: row.outstanding_amount == null ? null : Number(row.outstanding_amount),
+      arJournalPosted: row.ar_journal_posted === true,
+    }));
+    const mutations: IncomingBankMutationEvidence[] = mutationRows.rows.map((row) => ({
+      id: row.id,
+      companyId: row.company_id,
+      direction: row.direction,
+      status: row.status,
+      amount: Number(row.amount),
+      description: row.description,
+      bankReference: row.bank_reference,
+      providerOrderId: row.provider_order_id,
+    }));
+    const matches = buildCustomerArMatchPreview(invoices, mutations);
+    const otherCompany = companyId === 1 ? 3 : 1;
+    assert.equal((await client.query(CUSTOMER_AR_INVOICES_SQL, [otherCompany])).rows.length, 0);
+    assert.equal((await client.query(mutationSql, [otherCompany])).rows.length, 0);
+    await client.query("COMMIT");
+    return { invoices, mutations, matches };
+  } catch (error) { await client.query("ROLLBACK"); throw error; }
+}
+
+async function financialState() {
+  return (await admin.query(`select jsonb_build_object(
+    'documents',(select coalesce(jsonb_agg(to_jsonb(d) order by id),'[]') from public.sales_documents d),
+    'headers',(select coalesce(jsonb_agg(to_jsonb(h) order by id),'[]') from public.accounting_entries h),
+    'lines',(select coalesce(jsonb_agg(to_jsonb(l) order by id),'[]') from public.accounting_entry_lines l),
+    'ar',(select coalesce(jsonb_agg(to_jsonb(a) order by id),'[]') from public.ar_subledger a),
+    'bank',(select coalesce(jsonb_agg(to_jsonb(b) order by id),'[]') from public.bank_mutations b),
+    'payments',(select coalesce(jsonb_agg(to_jsonb(p) order by id),'[]') from public.payments p)
+  ) data`)).rows[0].data;
 }
 
 async function main() {
@@ -242,6 +318,61 @@ async function main() {
   await denied(cst, "insert into public.bank_mutations(id,company_id,direction,status,amount) values(999,1,'IN','unmatched',1)");
   await admin.query("drop policy fixture_bank_broad_read on public.bank_mutations");
   check("bank preview exposes only nine columns of own-company unmatched IN; no writes or GUC/broad-policy bypass");
+
+  const mutationSql = routeMutationSql();
+  const scenarios = [
+    { reference: "INV-JOINT-EXACT", status: "candidate_ready_for_review", amounts: [70, 60] },
+    { reference: "INV-JOINT-PARTIAL", status: "partial_payment_review", amounts: [20, 10] },
+    { reference: "INV-JOINT-OVERPAY", status: "overpayment_review", amounts: [90, 80] },
+  ];
+  const tenants = [
+    { client: cst, companyId: 1 as const, invoiceBase: 100, bankBase: 1000, paid: 30 },
+    { client: diva, companyId: 3 as const, invoiceBase: 300, bankBase: 3000, paid: 40 },
+  ];
+  const newBankIds: number[] = [];
+  for (const [tenantIndex, tenant] of tenants.entries()) {
+    for (const [index, scenario] of scenarios.entries()) {
+      const invoiceId = tenant.invoiceBase + index;
+      await issue(admin, invoiceId, tenant.companyId, {
+        invoice_number: scenario.reference, amount_paid: tenant.paid, payment_status: "partial",
+      });
+      const projected = await ar(invoiceId);
+      assert.equal(projected.length, 1); assert.equal(projected[0].gl_entry_id, invoiceId);
+      assert.equal(projected[0].notes, marker); assert.equal(Number(projected[0].outstanding_amount), 100 - tenant.paid);
+      const bankId = tenant.bankBase + index;
+      // Each reference is repeated across companies, with different balances.
+      // Exercise description, bank_reference and provider_order_id separately.
+      await admin.query("insert into public.bank_mutations(id,company_id,direction,status,amount,description,bank_reference,provider_order_id) values($1,$2,'IN','unmatched',$3,$4,$5,$6)",
+        [bankId, tenant.companyId, scenario.amounts[tenantIndex],
+          index === 0 ? `Payment ${scenario.reference}` : null,
+          index === 1 ? scenario.reference : null, index === 2 ? scenario.reference : null]);
+      newBankIds.push(bankId);
+    }
+  }
+  // Snapshot only after issuer/source and bank setup commit. Everything below
+  // this snapshot until the comparison consists of company READ ONLY queries.
+  const beforeJointReads = await financialState();
+  for (const [tenantIndex, tenant] of tenants.entries()) {
+    const first = await jointCompanyPreview(tenant.client, tenant.companyId, mutationSql);
+    assert.equal(first.mutations.length, 4); // Three linked fixtures + the original unreferenced IN row.
+    for (const [index, scenario] of scenarios.entries()) {
+      const invoice = first.invoices.find((item) => item.id === tenant.invoiceBase + index);
+      assert(invoice); assert.equal(invoice.arJournalPosted, true);
+      assert.equal(invoice.outstandingAmount, 100 - tenant.paid);
+      const match = first.matches.find((item) => item.mutationId === tenant.bankBase + index);
+      assert(match); assert.equal(match.invoiceId, invoice.id); assert.equal(match.invoiceNumber, scenario.reference);
+      assert.equal(match.mutationAmount, scenario.amounts[tenantIndex]); assert.equal(match.status, scenario.status);
+    }
+    assert.equal(first.matches.find((item) => item.mutationId === tenant.companyId)?.status, "no_invoice_reference");
+    assert.deepEqual(await jointCompanyPreview(tenant.client, tenant.companyId, mutationSql), first);
+  }
+  assert.deepEqual(await financialState(), beforeJointReads);
+  check("CST and DIVA real read-only invoice plus route bank SQL feed exact/partial/overpayment matcher with same-reference isolation");
+  check("repeated joint previews preserve invoice, GL header/lines, AR, bank and payment rows exactly");
+  // Remove only new bank fixtures so the original full-run bank/payment
+  // invariant remains unchanged. Source/AR fixtures live until container teardown.
+  const removedBankIds = (await admin.query("delete from public.bank_mutations where id=any($1::int[]) returning id", [newBankIds])).rows.map((item) => item.id);
+  assert.deepEqual(removedBankIds.sort((a, b) => a - b), newBankIds.sort((a, b) => a - b));
 
   // Only this isolated fixture grants source writes, to prove INVOKER behavior
   // when a separately approved issuer uses the existing company role. The
