@@ -1,6 +1,10 @@
  // Integration is appended to the existing native package / restricted writer
  // fixture after its real financial schema, RLS, audit and outbox are installed.
  // Every role, session, row and transaction is synthetic and localhost-only.
+ // Reuse the already-PASS least-privilege settlement fixture, including
+ // restricted column grants and 18-table preflight. Never bypass that gate.
+ await admin.query((await import('node:fs')).readFileSync(
+   '__ROOT__/scripts/payroll-atomic-rehearsal/least-privilege-fixture.sql','utf8'));
  await admin.query((await import('node:fs')).readFileSync(
    '__ROOT__/scripts/payroll-calculate/integrated-native-fixture.sql','utf8'));
  const calcUrl=new URL(process.env.PAYROLL_PG_E2E_URL!);
@@ -13,7 +17,8 @@
  const previousEnvKeys=['APP_ENV','NODE_ENV','SESSION_SECRET','BIZPORTAL_SESSION_SECRET',
  'BIZPORTAL_SIGNED_OTP_ENABLED_DEV','BIZPORTAL_SIGNED_PASSWORD_ENABLED_DEV',
  'PAYROLL_DEV_CALCULATE_ENABLED','PAYROLL_DEV_CALCULATE_ALLOWED_ORIGIN',
- 'PAYROLL_DEV_SUPER_ADMIN_APPROVAL_ENABLED','PAYROLL_DEV_ATOMIC_POSTING_ENABLED'] as const;
+ 'PAYROLL_DEV_SUPER_ADMIN_APPROVAL_ENABLED','PAYROLL_DEV_ATOMIC_POSTING_ENABLED',
+ 'PAYROLL_DEV_ATOMIC_ROUTE_MOUNT_ENABLED'] as const;
  const priorEnvs=Object.fromEntries(previousEnvKeys.map(key=>[key,process.env[key]]));
  process.env.APP_ENV='development';process.env.NODE_ENV='test';
  process.env.SESSION_SECRET='payroll-only-fixture-HMAC-secret-2026-not-live';
@@ -24,6 +29,7 @@
  process.env.PAYROLL_DEV_CALCULATE_ALLOWED_ORIGIN='http://127.0.0.1:19002';
  process.env.PAYROLL_DEV_SUPER_ADMIN_APPROVAL_ENABLED='true';
  process.env.PAYROLL_DEV_ATOMIC_POSTING_ENABLED='true';
+ process.env.PAYROLL_DEV_ATOMIC_ROUTE_MOUNT_ENABLED='true';
  const express=(await import('express')).default;
  const {Router}=await import('express');
  const {createServer}=await import('node:http');
@@ -32,11 +38,21 @@
  const access=await import('__ROOT__/artifacts/api-server/src/routes/payroll-access.ts');
  const calcRoute=await import('__ROOT__/artifacts/api-server/src/routes/payroll-calculate-http.ts');
  const approvalRoute=await import('__ROOT__/artifacts/api-server/src/routes/payroll-super-admin-approval.ts');
+ const postingRoute=await import('__ROOT__/artifacts/api-server/src/routes/payroll-accounting-http.ts');
+ // This is the actual production-source server binder and its real restricted
+ // PostgreSQL read-only catalog preflight. No substitution is permitted here.
+ const verifiedPostingGate=await postingRoute.bindDevPayrollAtomicHttpRuntime({
+   pool:writer!,writer:patched.PayrollJournalService,
+   allowedOrigin:'http://127.0.0.1:19002'
+ });
+ assert.equal(verifiedPostingGate,undefined);
+ console.log('INTEGRATED_18_TABLE_PREFLIGHT_BOUND',true,'ACTUAL_HTTP_ROUTER',true);
  const app=express();app.use(express.json());
  app.use((req:any,res:any,next:any)=>{
    req.log={error(){},warn(){}};next();
  });
  app.use('/api',calcRoute.createDevPayrollCalculateRouter());
+ app.use('/api',postingRoute.createPayrollAtomicAccountingRouter());
  const scoped=Router();
  scoped.use(async(req:any,res:any,next:any)=>{
   try{
@@ -97,9 +113,10 @@
    const approved=await result.json();assert.equal(approved.status,'reviewed');assert.equal(approved.oneSuperAdminApproval,true);
    return value.digest as string;
  };
- const post=async(digest:string)=>postReviewedPayrollAccrualTransaction(writer!,patched.PayrollJournalService,{
-   companyId:1,runId:32,postingDate:'2026-11-17',expectedDigest:digest,
-   actor:{id:'synthetic-super-admin',email:'admin@example.test',role:'super_admin'}
+ // Post through the real HTTP route, never call the transaction service
+ // directly from the success/fault/replay test.
+ const post=(digest:string)=>request('/api/payroll/runs/32/post-accounting?companyId=1','POST',{
+   expectedDigest:digest,postingDate:'2026-11-17'
  });
  try{
   const digest=await prepare();
@@ -108,8 +125,32 @@
    balance:'500000.00',reservation:'prepared',status:'reviewed',
    entry_id:null,payments:0,repayments:0});
   pass('one signed HTTP Calculate and approval persist a clean Reviewed run and prepared hold');
-  const result=await post(digest);
+  const postingPath='/api/payroll/runs/32/post-accounting?companyId=1';
+  const postingBody={expectedDigest:digest,postingDate:'2026-11-17'};
+  assert.equal((await request(postingPath,'POST',postingBody,'')).status,401);
+  assert.equal((await request(postingPath,'POST',postingBody,makeCookie('synthetic-owner','owner@example.test'))).status,403);
+  assert.equal((await request(postingPath,'POST',postingBody,makeCookie('synthetic-finance','finance@example.test'))).status,403);
+  assert.deepEqual(await state(),before);
+  pass('posting HTTP denies missing sessions, Owner and Finance without any financial mutation');
+  const wrongOrigin=await fetch(rootUrl+postingPath,{
+    method:'POST',headers:{Origin:'http://foreign.example.test',cookie:signedCookie,'content-type':'application/json'},
+    body:JSON.stringify(postingBody)
+  });
+  assert.equal(wrongOrigin.status,403);
+  assert.equal((await post('0'.repeat(64))).status,409);
+  assert.deepEqual(await state(),before);
+  pass('posting HTTP denies wrong Origin and approval digest before changing the ledger');
+  process.env.PAYROLL_DEV_ATOMIC_POSTING_ENABLED='';
+  assert.equal((await post(digest)).status,404);
+  process.env.PAYROLL_DEV_ATOMIC_POSTING_ENABLED='true';
+  assert.deepEqual(await state(),before);
+  pass('posting runtime gate switched OFF still blocks financial writes');
+  const postedHttp=await post(digest);
+  assert.equal(postedHttp.status,200,'Actual posting endpoint must return HTTP200');
+  const result=await postedHttp.json();
   assert.equal(result.reused,false);
+  assert.equal(result.accountingPosted,true);
+  assert.equal(result.salaryPaid,false);
   const after=await state();
   assert.deepEqual(after,{entries:1,lines:6,audit:1,outbox:1,
    balance:'400000.00',reservation:'confirmed',status:'approved',
@@ -118,7 +159,9 @@
   const balanced=await admin.query('SELECT total_debit::text AS debit,total_credit::text AS credit FROM accounting_entries WHERE id=$1',[result.entryId]);
   assert.equal(balanced.rows[0].debit,balanced.rows[0].credit);
   pass('pinned native accrual atomically posts one balanced journal, audit, outbox and noncash kasbon repayment');
-  const replay=await post(digest);
+  const replayHttp=await post(digest);
+  assert.equal(replayHttp.status,200,'Actual posting replay must be HTTP200');
+  const replay=await replayHttp.json();
   assert.equal(replay.reused,true);
   assert.equal(replay.entryId,result.entryId);
   assert.deepEqual(await state(),after);
@@ -135,7 +178,11 @@
    CREATE TRIGGER ci_integrated_repayment_fault BEFORE INSERT ON cash_advance_repayments
    FOR EACH ROW EXECUTE FUNCTION ci_integrated_repayment_fault()`);
   try{
-   await assert.rejects(post(rollbackDigest),/SYNTHETIC_REPAYMENT_FAILURE/);
+   const failedHttp=await post(rollbackDigest);
+   assert.equal(failedHttp.status,503,'Sensitive DB failures must be HTTP-redacted');
+   const safeError=await failedHttp.json();
+   assert.equal(safeError.code,'PAYROLL_POSTING_UNAVAILABLE');
+   assert.equal(JSON.stringify(safeError).includes('SYNTHETIC_REPAYMENT_FAILURE'),false);
    assert.deepEqual(await state(),{entries:0,lines:0,audit:0,outbox:0,
     balance:'500000.00',reservation:'prepared',status:'reviewed',
     entry_id:null,payments:0,repayments:0});
@@ -143,13 +190,15 @@
   }finally{
    await admin.query('DROP TRIGGER ci_integrated_repayment_fault ON cash_advance_repayments; DROP FUNCTION ci_integrated_repayment_fault()');
   }
-  const recovery=await post(rollbackDigest);
+  const recoveryHttp=await post(rollbackDigest);
+  assert.equal(recoveryHttp.status,200,'Recovered native posting must return HTTP200');
+  const recovery=await recoveryHttp.json();
   assert.equal(recovery.reused,false);
   const recovered=await state();assert.equal(recovered.entries,1);
   assert.equal(recovered.repayments,1);assert.equal(recovered.balance,'400000.00');
   assert.equal(recovered.payments,0);
   pass('original signed-approved run can recover once after a fully rolled-back failure');
-  console.log('PAYROLL_SIGNED_CALCULATE_APPROVAL_NATIVE_LEDGER_POSTGRES_PASS',integratedPass,
+  console.log('PAYROLL_SIGNED_CALCULATE_APPROVAL_NATIVE_HTTP_LEDGER_POSTGRES_PASS',integratedPass,
    'SIGNED_COOKIE_ISSUED_BY_SYNTHETIC_FIXTURE',true,'REAL_EMAIL_OTP_SENT',false,
    'LIVE_CST_DEV_OR_PROD_USED',false,'SALARY_TRANSFER_SENT',false);
  }finally{
