@@ -18,10 +18,11 @@ docker run -d --rm --name "$NAME" --pull missing \
  -e POSTGRES_PASSWORD=disposable-only postgres:16-alpine >/dev/null
 ready=0
 for _ in $(seq 1 80); do
- if docker exec "$NAME" pg_isready -q -U postgres -d invoice_synthetic; then ready=1; break; fi
+ if docker exec "$NAME" pg_isready -q -h 127.0.0.1 -U postgres -d invoice_synthetic && docker exec "$NAME" psql -X -qAt -h 127.0.0.1 -U postgres -d invoice_synthetic -c 'SELECT 1' 2>/dev/null | grep -qx 1; then ready=1; break; fi
  sleep .25
 done
 test "$ready" = 1
+sleep 2 # PostgreSQL official image may briefly restart after initdb.
 docker cp "$SQL" "$NAME":/tmp/generated.sql
 docker exec "$NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic -f /tmp/generated.sql > "$WORK/generated.log"
 docker cp "$ROOT/scripts/tests/customer-invoice-owner-disposable-runtime-parity.sql" "$NAME":/tmp/parity.sql
