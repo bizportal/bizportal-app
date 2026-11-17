@@ -87,6 +87,12 @@ export async function commitVendorInvoicePaymentAtomic<Tx>(
     // Exact replay must still return its original committed result.
     const prior = await adapter.findByKey(tx, input.companyId, input.idempotencyKey);
     if (prior) {
+      // A replay receipt is only valid when both linked writes have durable IDs.
+      // Fail closed rather than acknowledging a partially committed payment.
+      if (!Number.isSafeInteger(prior.journalId) || prior.journalId <= 0
+        || !Number.isSafeInteger(prior.disbursementId) || prior.disbursementId <= 0) {
+        throw new Error("ATOMIC_SETTLEMENT_INCOMPLETE_RECEIPT");
+      }
       if (prior.companyId === input.companyId
         && prior.invoiceId === input.invoiceId
         && prior.grossMinor === input.grossMinor
@@ -98,11 +104,20 @@ export async function commitVendorInvoicePaymentAtomic<Tx>(
     if (invoice.status !== "posted") {
       return { outcome: "rejected", reason: "unavailable" };
     }
+    if (!validMinor(invoice.outstandingMinor)) {
+      throw new Error("ATOMIC_SETTLEMENT_INVALID_AUTHORITY_BALANCE");
+    }
     if (input.grossMinor > invoice.outstandingMinor) {
       return { outcome: "rejected", reason: "overpayment" };
     }
     const journalId = await adapter.postJournal(tx, input);
+    if (!Number.isSafeInteger(journalId) || journalId <= 0) {
+      throw new Error("ATOMIC_SETTLEMENT_INVALID_JOURNAL_ID");
+    }
     const disbursementId = await adapter.createDisbursement(tx, input, journalId);
+    if (!Number.isSafeInteger(disbursementId) || disbursementId <= 0) {
+      throw new Error("ATOMIC_SETTLEMENT_INVALID_DISBURSEMENT_ID");
+    }
     if (!(await adapter.updateInvoiceBalance(tx, input))) {
       // Thrown error forces a rollback; never return a rejected status after writes.
       throw new Error("ATOMIC_SETTLEMENT_BALANCE_CONFLICT");
