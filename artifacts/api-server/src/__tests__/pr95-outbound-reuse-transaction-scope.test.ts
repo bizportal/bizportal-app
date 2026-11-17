@@ -16,9 +16,9 @@ function build(overrides: { mutation?: Record<string, unknown> | null; invoice?:
         : sql.includes("from public.bank_disbursements") ? (overrides.bd ?? [{id:2,entry_id:314}])
         : sql.includes("from public.bank_disbursement_items") ? (overrides.sourceItems ?? [{vendor_invoice_id:7,amount:"100.00"}])
         : sql.includes("from public.accounting_entries") ? (overrides.entry === false ? [] : [{id:314,total_debit:overrides.header??"100.00",total_credit:overrides.header??"100.00"}])
+        : sql.includes("from public.accounting_entry_lines el") ? [{n:"1",credit:overrides.bankCredit??"100.00",debit:"0.00"}]
         : sql.includes("from public.accounting_entry_lines") ? (overrides.lineItems ?? [{debit:"100.00",credit:"0.00"},{debit:"0.00",credit:"100.00"}])
         : sql.includes("from public.company_bank_accounts") ? [{coa_id:overrides.bankCoaId===undefined?1023:overrides.bankCoaId}]
-        : sql.includes("from public.accounting_entry_lines el") ? [{n:"1",credit:overrides.bankCredit??"100.00",debit:"0.00"}]
         : [{n:String((overrides.counts ?? [0,0,0])[n++])}];
       return {rows:row as unknown as T[]};
     },
