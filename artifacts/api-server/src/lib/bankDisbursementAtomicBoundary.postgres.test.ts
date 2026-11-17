@@ -17,6 +17,7 @@ const base: InvoiceSettlementInput = {
 describe.skipIf(!enabled)("PR95 boundary with real disposable PostgreSQL transactions", () => {
   let pool: typeof import("@workspace/db")["pool"];
   let failAfter: "journal" | "disbursement" | null = null;
+  let corruptJournal = false;
 
   function adapter(): AtomicSettlementAdapter<PoolClient> {
     return {
@@ -81,6 +82,12 @@ describe.skipIf(!enabled)("PR95 boundary with real disposable PostgreSQL transac
           ($1,'AP',$2,0),($1,'WHT',0,$3),($1,'BANK',0,$4)`,
           [id,input.grossMinor,input.withholdingMinor,input.grossMinor-input.withholdingMinor],
         );
+        if (corruptJournal) {
+          await tx.query(
+            "UPDATE pr95_real.lines SET credit=credit+1 WHERE journal_id=$1 AND account='BANK'",
+            [id],
+          );
+        }
         if (failAfter === "journal") throw Error("FAIL_AFTER_JOURNAL");
         return id;
       },
@@ -92,6 +99,21 @@ describe.skipIf(!enabled)("PR95 boundary with real disposable PostgreSQL transac
         );
         if (failAfter === "disbursement") throw Error("FAIL_AFTER_DISBURSEMENT");
         return r.rows[0].id as number;
+      },
+      isJournalBalanced: async (tx, companyId, journalId) => {
+        const result = await tx.query(
+          `SELECT COUNT(*)::int AS line_count,
+                  COALESCE(SUM(l.debit),0)::int AS debit_total,
+                  COALESCE(SUM(l.credit),0)::int AS credit_total
+             FROM pr95_real.journals j
+             JOIN pr95_real.lines l ON l.journal_id=j.id
+            WHERE j.id=$1 AND j.company_id=$2
+            GROUP BY j.id`,
+          [journalId, companyId],
+        );
+        const row=result.rows[0];
+        return Boolean(row && row.line_count>=2 &&
+          row.debit_total>0 && row.debit_total===row.credit_total);
       },
       updateInvoiceBalance: async (tx, input) => {
         const r = await tx.query(
@@ -131,6 +153,7 @@ describe.skipIf(!enabled)("PR95 boundary with real disposable PostgreSQL transac
   });
   beforeEach(async () => {
     failAfter=null;
+    corruptJournal=false;
     await pool.query("TRUNCATE pr95_real.disbursements,pr95_real.lines,pr95_real.journals,pr95_real.invoices RESTART IDENTITY");
     await pool.query("INSERT INTO pr95_real.invoices(id,company_id,outstanding_minor,status) VALUES(77,1,10000,'posted'),(78,1,10000,'posted'),(88,2,10000,'posted')");
   });
@@ -175,6 +198,15 @@ describe.skipIf(!enabled)("PR95 boundary with real disposable PostgreSQL transac
       journal_count:0,disbursement_count:0,outstanding:10000,
     });
   });
+  it("rolls back real PostgreSQL journal and disbursement when ledger lines are unbalanced", async () => {
+    corruptJournal=true;
+    await expect(commitVendorInvoicePaymentAtomic(base,adapter()))
+      .rejects.toThrow("ATOMIC_SETTLEMENT_UNBALANCED_JOURNAL");
+    expect(await counters()).toMatchObject({
+      journal_count:0,disbursement_count:0,outstanding:10000,unbalanced:0,
+    });
+  });
+
   it("serializes simultaneous same-key requests in real Postgres", async () => {
     const results=await Promise.all([
       commitVendorInvoicePaymentAtomic(base,adapter()),
