@@ -15,7 +15,7 @@ import {
 /** Reject malformed fractional, rounded or unsafe money; store all comparisons in minor units. */
 function minor(raw: unknown): number {
   const value = String(raw ?? "");
-  if (!/^(?:0|[1-9]\\d*)(?:\\.\\d{1,2})?$/.test(value)) throw new Error("PR95_OUTBOUND_AMOUNT_INVALID");
+  if (!/^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/.test(value)) throw new Error("PR95_OUTBOUND_AMOUNT_INVALID");
   const [whole, fraction = ""] = value.split(".");
   const result = Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
   if (!Number.isSafeInteger(result) || result <= 0) throw new Error("PR95_OUTBOUND_AMOUNT_INVALID");
@@ -111,7 +111,7 @@ export async function lockOutboundSourceJournalReuseScope(
   if (lineResult.rows.length < 2) throw new Error("PR95_OUTBOUND_LEDGER_MISMATCH");
   const cents = (raw: unknown): number => {
     const value = String(raw ?? "");
-    if (!/^(?:0|[1-9]\\d*)(?:\\.\\d{1,2})?$/.test(value)) {
+    if (!/^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/.test(value)) {
       throw new Error("PR95_OUTBOUND_AMOUNT_INVALID");
     }
     const [whole, fraction = ""] = value.split(".");
