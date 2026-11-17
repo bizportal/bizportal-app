@@ -161,10 +161,12 @@ async function main() {
   requireThat(mode === "--check" || mode === "--recover-reviewed", "RECOVERY_MODE");
   requireThat(mode !== "--recover-reviewed" ||
     process.env.BIZPORTAL_VENDOR_ACCEPTANCE_RECOVER_DEV === marker, "RECOVERY_EXPLICIT_MARKER_REQUIRED");
-  await preflight();
+  await cleanupOnlyRecoveryPreflight();
   await recoveryProtectedPoUnchanged();
   await verifyRecoveryGraph();
-  if (mode === "--check") { passed("RECOVERY_3279_READ_ONLY_CHECK_COMPLETE"); return; }
+  if (mode === "--check") { passed("CLEANUP_ONLY_RECOVERY_3279_READ_ONLY_CHECK_COMPLETE", {
+    companyConnectivity: "NOT_TESTED", financeReadiness: "NOT_TESTED",
+  }); return; }
   for (const f of recoveryFixtures) fixtures.push({ ...f, lineIds: [...f.lineIds],
     reference: `${marker}-${f.companyId}`, token: "" }); // No vendor token lookup or HTTP exercise.
   seeded = true;
