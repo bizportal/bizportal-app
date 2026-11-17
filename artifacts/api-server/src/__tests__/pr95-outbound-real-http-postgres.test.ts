@@ -113,7 +113,8 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
         id serial primary key,company_id integer,group_type text,matching_type text,
         total_mutation_amount numeric,total_invoice_amount numeric,
         total_allocated numeric,remaining_amount numeric,confidence integer,
-        algorithm_used text,status text,created_by text
+        algorithm_used text,status text CHECK(status IN ('active','reversed','void')),
+        created_by text
       );
       CREATE TABLE public.payment_allocations(
         id serial primary key,group_id integer,company_id integer,
@@ -273,8 +274,9 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
       coalesce(sum(pa.allocated_amount),0)::numeric as canonical_paid
       from public.payment_allocations pa
       join public.payment_matching_groups pmg on pmg.id=pa.group_id
+      join public.bank_mutations bm on bm.id=pa.mutation_id
       where pa.company_id=1 and pa.invoice_id=7 and pa.is_active=true
-        and pmg.status='final'`);
+        and pmg.status='active' and bm.status='posted'`);
     expect(Number(result.rows[0].canonical_paid)).toBe(100);
     const journal=await auth.query("select count(*)::int as n from public.accounting_entries");
     expect(journal.rows[0].n).toBe(1);
