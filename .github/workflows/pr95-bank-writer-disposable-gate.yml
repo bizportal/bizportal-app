@@ -66,6 +66,34 @@ jobs:
             "SELECT paid,(SELECT count(*) FROM pr95_atomic.journals WHERE invoice_id=3),(SELECT count(*) FROM pr95_atomic.disbursements WHERE invoice_id=3) FROM pr95_atomic.invoices WHERE id=3")
           test "$actual" = '80.00|1|1'
           echo 'PASS: one journal, one disbursement; second concurrent payment rejected'
+      - name: Concurrent exact-key replay must create only one payment
+        shell: bash
+        run: |
+          set -euo pipefail
+          (docker exec -i pr95-finance-disposable psql -v ON_ERROR_STOP=1 -U postgres -d postgres -At <<'SQL_A'
+          BEGIN;
+          SELECT id FROM pr95_atomic.invoices WHERE id=4 FOR UPDATE;
+          SELECT pg_sleep(2);
+          SELECT pr95_atomic.pay(1,4,'SAME-KEY',40,4);
+          COMMIT;
+          SQL_A
+          ) > /tmp/pr95-same-a.log 2>&1 &
+          first=$!
+          sleep 0.3
+          (docker exec -i pr95-finance-disposable psql -v ON_ERROR_STOP=1 -U postgres -d postgres -At <<'SQL_B'
+          SELECT pr95_atomic.pay(1,4,'SAME-KEY',40,4);
+          SQL_B
+          ) > /tmp/pr95-same-b.log 2>&1 &
+          second=$!
+          wait "$first"
+          wait "$second"
+          cat /tmp/pr95-same-a.log /tmp/pr95-same-b.log
+          grep -qx 'CREATED' /tmp/pr95-same-a.log
+          grep -qx 'REPLAY' /tmp/pr95-same-b.log
+          actual=$(docker exec pr95-finance-disposable psql -v ON_ERROR_STOP=1 -U postgres -d postgres -Atc \
+            "SELECT paid,(SELECT count(*) FROM pr95_atomic.journals WHERE invoice_id=4),(SELECT count(*) FROM pr95_atomic.disbursements WHERE invoice_id=4) FROM pr95_atomic.invoices WHERE id=4")
+          test "$actual" = '40.00|1|1'
+          echo 'PASS: identical concurrent key gets one payment; second is replay'
       - name: Destroy disposable database
         if: always()
         run: |
