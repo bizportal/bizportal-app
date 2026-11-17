@@ -18,6 +18,7 @@ import { randomBytes, timingSafeEqual } from "crypto";
 import { db, mktPurchaseOrdersTable } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
 import { logger } from "../logger.js";
+import { vendorFailureLog } from "../vendorCapabilityLogPrivacy.js";
 
 const TOKEN_BYTES = 32; // 32 bytes → 64 hex chars
 const TOKEN_TTL_DAYS = 14;
@@ -100,7 +101,7 @@ export async function findPoByVendorToken(token: string, scopedDb: typeof db = d
 
     return { ok: true, po };
   } catch (err) {
-    logger.warn({ err }, "[mktVendorPoToken] findPoByVendorToken gagal");
+    logger.warn(vendorFailureLog("po_token_lookup", err), "[mktVendorPoToken] token lookup failed");
     return { ok: false, code: "NOT_FOUND" };
   }
 }
@@ -112,6 +113,6 @@ export async function markVendorTokenUsed(poId: number): Promise<void> {
     .set({ vendorTokenUsedAt: new Date() })
     .where(eq(mktPurchaseOrdersTable.id, poId))
     .catch((err: unknown) => {
-      logger.warn({ err, poId }, "[mktVendorPoToken] markVendorTokenUsed gagal (non-fatal)");
+      logger.warn(vendorFailureLog("po_token_mark_used", err), "[mktVendorPoToken] token use marker failed");
     });
 }
