@@ -66,6 +66,18 @@ export async function lockOutboundSourceJournalReuseScope(
     throw new Error("PR95_OUTBOUND_SOURCE_AMBIGUOUS");
   }
   const d = disbursement.rows[0];
+  // The matching item alone is insufficient: a posted disbursement can
+  // contain OTHER invoice items. Lock and inspect ALL its items so a
+  // multi-invoice bank credit is never reused as a single-invoice payment.
+  const sourceItems = await tx.query<{ vendor_invoice_id: number | null }>(
+    `select vendor_invoice_id from public.bank_disbursement_items
+      where disbursement_id=$1 order by id for update`,
+    [d.id],
+  );
+  if (sourceItems.rows.length !== 1
+    || Number(sourceItems.rows[0].vendor_invoice_id) !== ids.invoiceId) {
+    throw new Error("PR95_OUTBOUND_SOURCE_MULTI_INVOICE");
+  }
   const entry = await tx.query<{ id: number }>(
     `select id from public.accounting_entries
       where id=$1 and company_id=$2 and source::text='manual_payment'
