@@ -34,6 +34,7 @@ function makeHarness(
         throw error;
       }
     },
+    lockRequestKey: async () => { calls.push("lock-key"); },
     lockInvoice: async (tx, companyId, invoiceId) => {
       calls.push("lock");
       return options.missingInvoice || companyId !== 1 || invoiceId !== 77
@@ -82,7 +83,7 @@ describe("Unregistered candidate bank payment atomic boundary", () => {
     expect(h.snapshot()).toMatchObject({
       outstanding: 4000, journalCount: 1, disbursementCount: 1,
     });
-    expect(h.calls).toEqual(["begin", "lock", "find-key", "journal", "disbursement", "balance", "commit"]);
+    expect(h.calls).toEqual(["begin", "lock-key", "lock", "find-key", "journal", "disbursement", "balance", "commit"]);
   });
 
   it("returns exact replay without another journal and rejects mutated replay", async () => {
