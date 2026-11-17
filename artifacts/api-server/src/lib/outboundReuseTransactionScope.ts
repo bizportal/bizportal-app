@@ -47,8 +47,8 @@ export async function lockOutboundSourceJournalReuseScope(
     [`pr95:bank-mutation:${ids.companyId}:${ids.mutationId}`]);
   await tx.query("select pg_advisory_xact_lock(hashtextextended($1::text,0))",
     [`pr95:vendor-invoice:${ids.companyId}:${ids.invoiceId}`]);
-  const mutation = await tx.query<{ id: number; company_id: number; direction: string; status: string; journal_entry_id: number | null; amount: string; bank_account_id: string | null }>(
-    `select id,company_id,direction,status,journal_entry_id,amount::text as amount,bank_account_id
+  const mutation = await tx.query<{ id: number; company_id: number; direction: string; status: string; journal_entry_id: number | null; amount: string }>(
+    `select id,company_id,direction,status,journal_entry_id,amount::text as amount
        from public.bank_mutations where id=$1 and company_id=$2 for update`,
     [ids.mutationId, ids.companyId],
   );
@@ -135,37 +135,6 @@ export async function lockOutboundSourceJournalReuseScope(
     || mutationMinor !== headerCreditMinor || mutationMinor !== debitMinor
     || mutationMinor !== creditMinor) {
     throw new Error("PR95_OUTBOUND_LEDGER_MISMATCH");
-  }
-  // Resolve the bank COA using the same canonical bank account owned by
-  // this company. A correct amount alone cannot establish source provenance.
-  const mappedBank = await tx.query<{ coa_id: number | null }>(
-    `select cba.coa_id
-       from public.company_bank_accounts cba
-      where cba.id::text=$1 and cba.company_id=$2
-        and cba.is_active=true and cba.coa_id is not null
-      for update`,
-    [m.bank_account_id ?? "",ids.companyId],
-  );
-  const bankCoaId = Number(mappedBank.rows[0]?.coa_id);
-  if (mappedBank.rows.length !== 1 || !Number.isSafeInteger(bankCoaId)
-    || bankCoaId <= 0) {
-    throw new Error("PR95_OUTBOUND_BANK_COA_UNRESOLVED");
-  }
-  const bankCredit = await tx.query<{ n: string; credit: string; debit: string }>(
-    `select count(*)::text as n,
-            coalesce(sum(el.credit),0)::text as credit,
-            coalesce(sum(el.debit),0)::text as debit
-       from public.accounting_entry_lines el
-       join public.chart_of_accounts coa on coa.id=el.account_id
-      where el.entry_id=$1 and el.account_id=$2
-        and (coa.company_id=$3 or coa.company_id is null)`,
-    [entry.rows[0].id,bankCoaId,ids.companyId],
-  );
-  const bank = bankCredit.rows[0];
-  if (!bank || Number(bank.n) !== 1
-    || cents(bank.credit) !== mutationMinor
-    || cents(bank.debit) !== 0) {
-    throw new Error("PR95_OUTBOUND_BANK_COA_MISMATCH");
   }
   const finality = await readOutboundReuseFinalityCounts(tx, {
     companyId: ids.companyId, mutationId: ids.mutationId,
