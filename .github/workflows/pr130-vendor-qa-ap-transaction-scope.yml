@@ -1,0 +1,44 @@
+name: PR130 Vendor Invoice AP Per-Step Transaction QA
+
+on:
+  pull_request:
+    branches:
+      - test/pr129-finance-ipv4-session-pooler-tls-20261117
+    paths:
+      - 'scripts/qa/dev-vendor-acceptance.ts'
+      - 'scripts/tests/pr130-dev-qa-ap-transaction-scope.cjs'
+      - '.github/workflows/pr130-vendor-qa-ap-transaction-scope.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bounded-company-finance-qa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Exact pinned dependencies without DEV credentials
+        run: pnpm install --frozen-lockfile
+      - name: Check each AP state transition has a separate authenticated transaction
+        run: node scripts/tests/pr130-dev-qa-ap-transaction-scope.cjs
+      - name: Compile original vendor acceptance QA without executing live transactions
+        run: node scripts/qa/build-dev-vendor-acceptance.cjs
+      - name: Canonical API and DB typecheck
+        run: pnpm --dir artifacts/api-server typecheck
+      - name: Full credential-free API regression
+        env:
+          APP_ENV: development
+          NODE_ENV: test
+          TZ: Asia/Jakarta
+        run: pnpm --dir artifacts/api-server exec vitest run --maxWorkers=2
+      - name: No tracked source changes
+        run: git diff --exit-code -- scripts/qa scripts/tests lib/db/src artifacts/api-server/src pnpm-lock.yaml
