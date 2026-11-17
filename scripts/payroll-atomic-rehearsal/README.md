@@ -96,3 +96,11 @@ Draft before promotion, without weakening any guard. Four copied function
 definitions match live read-only metadata hashes; six selected trigger
 registrations are enabled in the isolated fixture. 20 checks PASS; this is
 not a complete clone of every live trigger or a signed HTTP E2E result.
+
+## Reduced privilege fixture
+
+`permissions` runs 21 PostgreSQL access-boundary checks and the 35 existing
+application scenarios using column-scoped UPDATE privileges, explicit sequence
+rights, Payroll-only restrictive policies and lock-only mutation guards. It
+changes no live role or permission. See `PERMISSION-CONTRACT.md` for the limits,
+one explicitly revised tamper-test expectation and the exact local command.

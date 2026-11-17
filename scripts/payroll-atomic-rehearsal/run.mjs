@@ -11,7 +11,7 @@ const here=path.dirname(fileURLToPath(import.meta.url));
 const root=path.resolve(here,'../..'),api=root+'/artifacts/api-server';
 const legacy=process.argv[2];
 const suite=process.argv[3]||'native';
-if(!['native','application','triggers'].includes(suite))throw Error('UNKNOWN_REHEARSAL_SUITE');
+if(!['native','application','triggers','permissions'].includes(suite))throw Error('UNKNOWN_REHEARSAL_SUITE');
 if(!legacy||!path.isAbsolute(legacy))throw Error('EXPLICIT_LEGACY_SOURCE_REQUIRED');
 const u=new URL(process.env.PAYROLL_PG_E2E_URL||'invalid:');
 if(u.protocol!=='postgresql:'||u.hostname!=='127.0.0.1'||u.port!=='65432'||u.pathname!=='/payroll_ci'||u.username!=='postgres.xssrfshdrtdfupgqwfdw')throw Error('REFUSE_NON_DISPOSABLE_POSTGRES');
@@ -82,6 +82,18 @@ try {
   const marker=' await reset();\n const plan=prepareReviewedPayrollAccrual(fixture());';
   const at=harness.indexOf(marker);if(at<0)throw Error('FIXTURE_SETUP_CONTRACT_CHANGED');
   harness=harness.slice(0,at)+fs.readFileSync(here+'/trigger-compatibility-tests.ts','utf8');
+ }
+ if(suite==='permissions'){
+  const marker=' await reset();\n const plan=prepareReviewedPayrollAccrual(fixture());';
+  const at=harness.indexOf(marker);if(at<0)throw Error('FIXTURE_SETUP_CONTRACT_CHANGED');
+  harness=harness.slice(0,at)+fs.readFileSync(here+'/permission-contract-tests.ts','utf8')+'\n'+harness.slice(at);
+  // The intentionally corrupting writer can no longer UPDATE account_id.
+  // Require that exact PostgreSQL ACL denial instead of a later read-back error.
+  const oldTamper="return posted;}}),/JOURNAL_LINES_CHANGED/);await unchanged();ok('APPLICATION rejects wrong journal lines before settling kasbon');";
+  const newTamper="return posted;}}),(e)=>{let x:any=e;for(let n=0;n<5&&x;n++,x=x.cause)if(x.code==='42501')return true;return false;});await unchanged();ok('APPLICATION limited writer is denied account-line mutation before settlement, with full rollback');";
+  if(!harness.includes(oldTamper))throw Error('TAMPER_TEST_CONTRACT_CHANGED');
+  harness=harness.replace(oldTamper,newTamper);
+
  }
  harness=harness.replaceAll('__ROOT__',root).replaceAll('__BASE__',baseOut).replaceAll('__FIXED__',fixedOut).replaceAll('__PREVIOUS__',previousOut);
  fs.writeFileSync(entry,helpers+'\n'+harness,{flag:'wx',mode:0o600});

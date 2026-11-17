@@ -4,7 +4,7 @@ set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 legacy_root=${1:?Supply the absolute path to the SHA-pinned legacy source snapshot}
 suite=${2:-native}
-[[ "$suite" = native || "$suite" = application || "$suite" = triggers ]] || { echo UNKNOWN_SUITE >&2; exit 2; }
+[[ "$suite" = native || "$suite" = application || "$suite" = triggers || "$suite" = permissions ]] || { echo UNKNOWN_SUITE >&2; exit 2; }
 [[ "$legacy_root" = /* ]] || { echo EXPLICIT_ABSOLUTE_SOURCE_REQUIRED >&2; exit 2; }
 command -v docker >/dev/null
 command -v node >/dev/null
