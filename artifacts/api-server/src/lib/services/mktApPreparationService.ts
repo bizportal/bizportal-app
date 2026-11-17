@@ -84,6 +84,7 @@ async function auditApTransition(
 ): Promise<void> {
   await logActivity({
     mktPurchaseOrderId: preparation.mktPurchaseOrderId,
+    marketplaceFinanceCompanyId: preparation.companyId,
     actorType: "admin",
     actorId: actor.actorId ?? null,
     actorName: actor.actorName ?? null,

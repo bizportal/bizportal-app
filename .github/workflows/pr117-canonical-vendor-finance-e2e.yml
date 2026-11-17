@@ -11,6 +11,9 @@ on:
       - develop
     paths:
       - 'artifacts/api-server/src/lib/services/mktVendorInvoiceService.ts'
+      - 'artifacts/api-server/src/lib/services/mktApPreparationService.ts'
+      - 'artifacts/api-server/src/lib/activityLog.ts'
+      - 'artifacts/api-server/src/lib/activityLog.finance-dev.test.ts'
       - 'artifacts/api-server/src/lib/services/mktVendorInvoiceParentLock.dev.test.ts'
       - 'artifacts/api-server/src/lib/gcp-systemd-bootstrap.test.ts'
       - 'artifacts/api-server/src/__tests__/dev-systemd-gcp-bootstrap.test.ts'
@@ -26,6 +29,7 @@ on:
       - 'scripts/tests/pr108-run-session-bound-definer-disposable.sh'
       - 'scripts/tests/pr123-run-company-rls-phase1-disposable.sh'
       - 'scripts/tests/finance-phase2-release-disposable.sh'
+      - 'scripts/tests/finance-activity-audit-disposable.sh'
       - 'artifacts/api-server/src/lib/services/marketplaceFinanceNotifications.dev.test.ts'
       - 'artifacts/api-server/src/lib/services/marketplaceNotificationQueueService.ts'
       - '.github/workflows/pr117-canonical-vendor-finance-e2e.yml'
@@ -114,6 +118,10 @@ jobs:
         env:
           FINANCE_PHASE2_PG_IMAGE: ${{ matrix.postgres }}
         run: bash scripts/tests/finance-phase2-release-disposable.sh
+      - name: Verify both company audit roles, restrictive append-only proof, and rollback
+        env:
+          FINANCE_AUDIT_PG_IMAGE: ${{ matrix.postgres }}
+        run: bash scripts/tests/finance-activity-audit-disposable.sh
       - name: Existing Marketplace API and Accounting regressions
         run: |
           pnpm --dir artifacts/api-server exec vitest run \
@@ -124,6 +132,7 @@ jobs:
             src/__tests__/dev-systemd-gcp-bootstrap.test.ts \
             src/lib/services/mktVendorInvoiceParentLock.dev.test.ts \
             src/lib/services/marketplaceFinanceNotifications.dev.test.ts \
+            src/lib/activityLog.finance-dev.test.ts \
             src/lib/services/mktMarketplaceCompanyScope.test.ts \
             src/routes/dev-marketplace-finance-writer.test.ts \
             src/lib/services/mktAccountingHandoff.test.ts

@@ -1,4 +1,4 @@
-import { db } from "@workspace/db";
+import { db, withMarketplaceFinanceDevTransaction } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { logger } from "./logger.js";
 
@@ -41,11 +41,19 @@ export interface LogActivityOptions {
   mktRfqId?: number | null;
   mktVendorQuoteId?: number | null;
   mktPurchaseOrderId?: number | null;
+  /** Authoritative invoice/AP company, supplied only by canonical Finance services. */
+  marketplaceFinanceCompanyId?: number | null;
 }
+
+const FINANCE_ACTIVITY_ACTIONS = new Set([
+  "invoice_uploaded", "invoice_ready_for_ap", "invoice_submitted",
+  "three_way_match_passed", "three_way_match_failed",
+  "mkt_ap_preparation_created", "mkt_ap_finance_reviewed", "mkt_ap_waiting_payment",
+]);
 
 export async function logActivity(opts: LogActivityOptions): Promise<void> {
   try {
-    await db.execute(sql`
+    const statement = sql`
       INSERT INTO activity_logs (
         rfq_id, order_id, actor_type, actor_id, actor_name,
         action, description, old_value, new_value, ip_address,
@@ -68,7 +76,21 @@ export async function logActivity(opts: LogActivityOptions): Promise<void> {
         ${opts.mktVendorQuoteId ?? null},
         ${opts.mktPurchaseOrderId ?? null}
       )
-    `);
+    `;
+    if (process.env.APP_ENV?.trim().toLowerCase() === "development" &&
+        process.env.BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV === "true" &&
+        opts.marketplaceFinanceCompanyId != null) {
+      if (!FINANCE_ACTIVITY_ACTIONS.has(opts.action) || !opts.mktPurchaseOrderId) {
+        throw new Error("DEV_FINANCE_ACTIVITY_SCOPE_INVALID");
+      }
+      // Post-commit callbacks need a new verified company transaction. The
+      // original business transaction has ended; never reuse it or fall back
+      // to the shared OTP/admin pool if company identity or INSERT is denied.
+      await withMarketplaceFinanceDevTransaction(opts.marketplaceFinanceCompanyId,
+        async scopedDb => { await scopedDb.execute(statement); });
+      return;
+    }
+    await db.execute(statement);
   } catch (err) {
     // Non-fatal: warn but do not throw — activity log failure must never
     // block the business operation that triggered it.
