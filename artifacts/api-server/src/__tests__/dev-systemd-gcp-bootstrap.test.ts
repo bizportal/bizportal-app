@@ -56,7 +56,7 @@ describe("PR #81: opt-in DEV systemd Secret Manager bootstrap", () => {
     await expect(readSecret("synthetic-secret")).rejects.toThrow(
       "DEV_SYSTEMD_GCP_CREDENTIAL_UNAVAILABLE",
     );
-    writeFileSync(testCredentialFile(), "X".repeat(32769));
+    writeFileSync(testCredentialFile(), "X".repeat(16 * 1024 + 1));
     await expect(readSecret("synthetic-secret")).rejects.toThrow(
       "DEV_SYSTEMD_GCP_CREDENTIAL_UNAVAILABLE",
     );
@@ -65,7 +65,7 @@ describe("PR #81: opt-in DEV systemd Secret Manager bootstrap", () => {
     process.env.BIZPORTAL_DEV_SYSTEMD_GCP_BOOTSTRAP_ENABLED = "true";
     writeFileSync(testCredentialFile(), "never-expose-this-synthetic-value");
     await expect(readSecret("synthetic-secret")).rejects.toThrow(
-      "GCP Secret Manager credentials are not valid JSON",
+      "GCP_SECRET_MANAGER_BOOTSTRAP_JSON is not valid JSON",
     );
   });
   it("keeps explicit environment precedence rather than using another key", async () => {
@@ -73,7 +73,7 @@ describe("PR #81: opt-in DEV systemd Secret Manager bootstrap", () => {
     writeFileSync(testCredentialFile(), fakeCredentials());
     process.env.GCP_SECRET_MANAGER_BOOTSTRAP_JSON = "bad-environment-json";
     await expect(readSecret("synthetic-secret")).rejects.toThrow(
-      "GCP Secret Manager credentials are not valid JSON",
+      "GCP_SECRET_MANAGER_BOOTSTRAP_JSON is not valid JSON",
     );
   });
   it("reads one test-only systemd credential and uses mocked Google endpoints", async () => {
