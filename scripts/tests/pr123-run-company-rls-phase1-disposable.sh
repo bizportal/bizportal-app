@@ -52,7 +52,7 @@ PY
 admin < "$TMP/20261117_dev_finance_dormant_roles_phase0.sql" >/dev/null
 echo PR123_PHASE0_NOLOGIN_ROLES_CREATED_PASS
 admin < "$TMP/20261117_dev_finance_company_rls_phase1.sql" >/dev/null
-verified="$(printf '%s\n' "SELECT (SELECT count(*) FROM pg_policies WHERE schemaname='public' AND policyname='pr107_company_role_restrictive_all')::text || ':' || (SELECT count(*) FROM pg_policies WHERE schemaname='public' AND policyname LIKE 'pr50_finance_dev_%' AND roles=ARRAY['bizportal_marketplace_finance_login_dev','bizportal_finance_cst_login_dev','bizportal_finance_diva_login_dev']::name[])::text;" | admin)"
+verified="$(printf '%s\n' "SELECT (SELECT count(*) FROM pg_policies WHERE schemaname='public' AND policyname='pr107_company_role_restrictive_all')::text || ':' || (SELECT count(*) FROM pg_policies WHERE schemaname='public' AND policyname LIKE 'pr50_finance_dev_%' AND cardinality(roles)=3 AND roles @> ARRAY['bizportal_marketplace_finance_login_dev','bizportal_finance_cst_login_dev','bizportal_finance_diva_login_dev']::name[])::text;" | admin)"
 test "$verified" = "11:18"
 echo PR123_ELEVEN_ROLE_RESTRICTIVE_AND_EIGHTEEN_LEGACY_POLICY_TARGETS_PASS
 # Spoof the tenant GUC in each direction; new role identity still isolates.
