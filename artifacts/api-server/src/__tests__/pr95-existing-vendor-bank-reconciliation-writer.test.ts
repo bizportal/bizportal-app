@@ -48,6 +48,8 @@ describe("preserve canonical bank-mutation Vendor Invoice batch writer during PR
     expect(guardBlock).toContain("bd.status = 'posted'");
     expect(guardBlock).toContain("bd.void_entry_id is null");
     expect(guardBlock).toContain("ae.status = 'posted'");
+    expect(guardBlock).toContain("ae.cancelled_at is null");
+    expect(guardBlock).toContain("ae.voided_at is null");
     expect(guardBlock).toContain("for update of bd");
     expect(guardBlock).toContain("[vendorInvoiceIds, companyId]");
     expect(guardBlock).toContain("VENDOR_INVOICE_SOURCE_JOURNAL_REUSE_REQUIRED");
