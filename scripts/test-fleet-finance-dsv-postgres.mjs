@@ -27,6 +27,10 @@ const { build } = dependency("esbuild");
 const express = dependency("express");
 const admin = new Pool({host:socket,database:"fleet_finance_qa",user:"postgres",max:2});
 const apiPool = new Pool({host:socket,database:"fleet_finance_qa",user:"fleet_finance_qa_api",max:8});
+const ledgerSyncWarnings = [];
+apiPool.on("connect",client=>client.on("notice",notice=>{
+  if(notice.message?.includes("[fn_sync_entry_line_to_ledger] INSERT gagal"))ledgerSyncWarnings.push(notice.message);
+}));
 let server, scratch;
 const passed = [];
 const proof = {};
@@ -35,6 +39,40 @@ async function test(name, fn) {
 }
 async function scalar(sql, values=[]) { return (await admin.query(sql, values)).rows[0]; }
 async function rejects(promise, pattern) { await assert.rejects(promise, pattern); }
+async function financialSnapshot() {
+  return scalar("SELECT (SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY id),'[]'::jsonb) FROM public.fleet_cash_payments p) source,(SELECT coalesce(jsonb_agg(to_jsonb(e) ORDER BY id),'[]'::jsonb) FROM public.accounting_entries e) entries,(SELECT coalesce(jsonb_agg(to_jsonb(l) ORDER BY id),'[]'::jsonb) FROM public.accounting_entry_lines l) lines,(SELECT coalesce(jsonb_agg(to_jsonb(l) ORDER BY id),'[]'::jsonb) FROM public.fleet_ledger_entries l) ledger");
+}
+async function deniedLedgerInsert(action) {
+  const before=await financialSnapshot(),warningCount=ledgerSyncWarnings.length;
+  await admin.query("REVOKE INSERT ON public.fleet_ledger_entries FROM fleet_finance_qa_api");
+  try {
+    const grants=(await apiPool.query("SELECT has_table_privilege(current_user,'public.fleet_ledger_entries','SELECT') can_read,has_table_privilege(current_user,'public.fleet_ledger_entries','INSERT') can_insert,has_table_privilege(current_user,'public.fleet_cash_payments','UPDATE') can_lock_source")).rows[0];
+    assert.deepEqual(grants,{can_read:true,can_insert:false,can_lock_source:true});
+    const response=await action();
+    assert.equal(response.status,409);assert.match(String(response.body.error),/derived ledger/i);
+    const warnings=ledgerSyncWarnings.slice(warningCount);
+    assert.equal(warnings.length,2,"The real trigger must attempt and swallow both denied ledger INSERTs");
+    assert.ok(warnings.every(message=>message.includes("permission denied for table fleet_ledger_entries")));
+    assert.deepEqual(await financialSnapshot(),before,"Rejected posting must roll back every candidate header/line and retain original source/journals/ledger");
+    return {status:409,triggerWarnings:2,rolledBack:true,sourceAndOriginalUnchanged:true};
+  } finally {
+    await admin.query("GRANT INSERT ON public.fleet_ledger_entries TO fleet_finance_qa_api");
+  }
+}
+async function hiddenLedgerReplay(sourceType,sourceId,action) {
+  assert.ok(["fleet_cash_payment","reversal"].includes(sourceType));assert.ok(Number.isSafeInteger(sourceId)&&sourceId>0);
+  const before=await financialSnapshot();
+  await admin.query("CREATE POLICY qa_ledger_visibility_failure ON public.fleet_ledger_entries AS RESTRICTIVE FOR SELECT TO fleet_finance_qa_api USING (NOT(source_type='"+sourceType+"' AND source_id="+sourceId+"))");
+  try {
+    assert.equal((await apiPool.query("SELECT count(*)::int n FROM public.fleet_ledger_entries WHERE source_type=$1 AND source_id=$2",[sourceType,sourceId])).rows[0].n,0);
+    assert.equal((await scalar("SELECT count(*)::int n FROM public.fleet_ledger_entries WHERE source_type=$1 AND source_id=$2",[sourceType,sourceId])).n,2);
+    const response=await action();assert.equal(response.status,409);assert.match(String(response.body.error),/derived ledger/i);
+    assert.deepEqual(await financialSnapshot(),before);
+    return {status:409,visibleLedgerRows:0,physicalLedgerRows:2,financialRowsUnchanged:true};
+  } finally {
+    await admin.query("DROP POLICY qa_ledger_visibility_failure ON public.fleet_ledger_entries");
+  }
+}
 try {
   const isolation = await scalar("SELECT current_database() db, inet_server_addr() addr, version() version");
   assert.equal(isolation.db,"fleet_finance_qa"); assert.equal(isolation.addr,null);
@@ -142,6 +180,12 @@ try {
     assert.equal((await http("/cash-payments",scopeBody(primary),event(primary))).status,409);
     await admin.query("UPDATE public.companies SET is_active=true WHERE id=3");
   });
+  await test("denied derived-ledger INSERT rejects new payment and rolls back the entire transaction",async()=>{
+    proof.postLedgerDenied=await deniedLedgerInsert(()=>http("/cash-payments",scopeBody(primary),event(primary)));
+    assert.equal((await scalar("SELECT count(*)::int n FROM public.accounting_entries")).n,0);
+    assert.equal((await scalar("SELECT count(*)::int n FROM public.accounting_entry_lines")).n,0);
+    assert.equal((await scalar("SELECT count(*)::int n FROM public.fleet_ledger_entries")).n,0);
+  });
   let first;
   await test("real committed payment posts balanced entry+lines+derived ledger ONLY company3",async()=>{
     first=await fleet.postFleetCashPayment(primary);
@@ -161,6 +205,10 @@ try {
     const r=await fleet.postFleetCashPayment(primary);assert.equal(r.idempotent,true);assert.equal(r.entryId,first.entryId);
     assert.equal((await scalar("SELECT count(*)::int n FROM public.accounting_entries WHERE source='fleet_cash_payment' AND source_id=$1",[primary.paymentId])).n,1);
     assert.equal((await scalar("SELECT count(*)::int n FROM public.fleet_ledger_entries WHERE source_type='fleet_cash_payment' AND source_id=$1",[primary.paymentId])).n,2);
+  });
+  await test("payment replay rejects derived ledger rows hidden by its access policy",async()=>{
+    proof.paymentLedgerVisibility=await hiddenLedgerReplay("fleet_cash_payment",primary.paymentId,()=>http("/cash-payments",scopeBody(primary),event(primary)));
+    const restored=await fleet.postFleetCashPayment(primary);assert.equal(restored.idempotent,true);assert.equal(restored.entryId,first.entryId);
   });
   await test("historical journal reassigned to another company rejects replay",async()=>{
     await admin.query("UPDATE public.accounting_journals SET company_id=1 WHERE id=20");
@@ -205,6 +253,12 @@ try {
     await rejects(fleet.reverseFleetCashPayment({...primary,originalEntryId:first.entryId+1000}),/asal/);
     await rejects(fleet.reverseFleetCashPayment({...primary,originalEntryId:first.entryId,amount:primary.amount+1}),/Bukti pembayaran/);
   });
+  await test("denied derived-ledger INSERT rejects reversal and preserves original payment/journal",async()=>{
+    proof.reversalLedgerDenied=await deniedLedgerInsert(()=>http("/cash-payments/reverse",{...scopeBody(primary),originalEntryId:first.entryId},"fleet-cash-payment-reversal:1:"+primary.paymentId+":"+first.entryId));
+    assert.equal((await scalar("SELECT count(*)::int n FROM public.accounting_entries WHERE source='reversal' AND source_id=$1",[first.entryId])).n,0);
+    assert.equal((await scalar("SELECT count(*)::int n FROM public.fleet_ledger_entries WHERE source_type='reversal' AND source_id=$1",[first.entryId])).n,0);
+    assert.deepEqual(await scalar("SELECT to_jsonb(e) value FROM public.accounting_entries e WHERE id=$1",[first.entryId]),originalBefore);
+  });
   await test("reversal uses original accounts despite later settings change",async()=>{
     await fleet.updateFleetAccountingSettings({...settings,fleetCashAccountId:49192});
     reversal=await fleet.reverseFleetCashPayment({...primary,originalEntryId:first.entryId});
@@ -213,6 +267,10 @@ try {
     assert.deepEqual(lines,[{account_id:49187,debit:"0.00",credit:"12500.25",company_id:3},{account_id:49191,debit:"12500.25",credit:"0.00",company_id:3}]);
     assert.deepEqual(await scalar("SELECT to_jsonb(e) value FROM public.accounting_entries e WHERE id=$1",[first.entryId]),originalBefore);
     proof.reversal={entryId:reversal.entryId,originalEntryId:first.entryId,originalUnchanged:true,originalAccountsReused:true};
+  });
+  await test("reversal replay rejects derived ledger rows hidden by its access policy",async()=>{
+    proof.reversalLedgerVisibility=await hiddenLedgerReplay("reversal",first.entryId,()=>http("/cash-payments/reverse",{...scopeBody(primary),originalEntryId:first.entryId},"fleet-cash-payment-reversal:1:"+primary.paymentId+":"+first.entryId));
+    const restored=await fleet.reverseFleetCashPayment({...primary,originalEntryId:first.entryId});assert.equal(restored.idempotent,true);assert.equal(restored.entryId,reversal.entryId);
   });
   await test("parallel reversal replays and cancelled source replay stay idempotent",async()=>{
     const out=await Promise.all(Array.from({length:5},()=>fleet.reverseFleetCashPayment({...primary,originalEntryId:first.entryId})));

@@ -156,4 +156,57 @@ describe("Fleet Finance source company 1 to PT Diva Servis company 3", () => {
     expect((await request("/cash-payments", "POST", payment)).status).toBe(409);
     expect(database.query.mock.calls.some((call) => /INSERT INTO public.accounting_entries/.test(call[0]))).toBe(false);
   });
+
+  describe("derived ledger transaction boundary", () => {
+    function mockPaymentLedger(existing: boolean, proof: { expected_count: number; actual_count: number; matches: boolean }) {
+      database.query.mockImplementation(async (sql: string) => {
+        if (sql.includes("WITH expected AS")) return { rows: [proof], rowCount: 1 };
+        if (sql.includes("FROM public.companies")) return { rows: [{ id: 3 }], rowCount: 1 };
+        if (sql.includes("FROM public.fleet_cash_payments")) return { rows: [{
+          id: 44, company_id: 1, amount: "100000.00", driver_name: "DEV QA", payment_date: "2026-11-17",
+          reference_no: "QA44", status: existing ? "posted" : "confirmed", accounting_entry_id: existing ? 200 : null,
+        }], rowCount: 1 };
+        if (sql.includes("FROM public.accounting_entries")) return { rows: existing ? [{
+          id: 200, company_id: 3, status: "posted", entry_status: "POSTED", source_event_id: "fleet-cash-payment:1:44",
+          date: "2026-11-17", ref: "QA44", description: "Pembayaran driver fleet - DEV QA",
+          total_debit: "100000.00", total_credit: "100000.00", journal_id: 20,
+        }] : [], rowCount: existing ? 1 : 0 };
+        if (sql.includes("FROM public.accounting_settings")) return { rows: [{
+          fleet_cash_account_id: 49187, fleet_driver_receivable_account_id: 49191, journal_id: 20,
+        }], rowCount: 1 };
+        if (sql.includes("FROM public.chart_of_accounts")) return { rows: [{ id: 49187 }, { id: 49191 }], rowCount: 2 };
+        if (sql.includes("FROM public.accounting_journals")) return { rows: [{ id: 20 }], rowCount: 1 };
+        if (sql.includes("FROM public.accounting_entry_lines")) return { rows: [
+          { account_id: 49187, company_id: 3, account_company_id: 3, debit: "100000.00", credit: "0.00" },
+          { account_id: 49191, company_id: 3, account_company_id: 3, debit: "0.00", credit: "100000.00" },
+        ].map((line) => ({ ...line, source_id: 44, source_module: "fleet_intelligence", source_table: "fleet_cash_payments" })), rowCount: 2 };
+        if (sql.includes("INSERT INTO public.accounting_entries")) return { rows: [{ id: 200 }], rowCount: 1 };
+        return { rows: [], rowCount: 0 };
+      });
+    }
+
+    it.each([
+      { label: "new payment missing ledger", existing: false, actual_count: 0 },
+      { label: "payment replay missing one ledger row", existing: true, actual_count: 1 },
+      { label: "payment replay with two mismatched ledger rows", existing: true, actual_count: 2 },
+    ])("rolls back $label without acknowledging success", async ({ existing, actual_count }) => {
+      mockPaymentLedger(existing, { expected_count: 2, actual_count, matches: false });
+      const result = await request("/cash-payments", "POST", payment);
+      expect(result.status).toBe(409);
+      expect(result.body).toMatchObject({ error: expect.stringMatching(/derived ledger/i) });
+      expect(database.query).toHaveBeenCalledWith(expect.stringContaining("WITH expected AS"), [200, 3]);
+      expect(database.query).toHaveBeenLastCalledWith("ROLLBACK");
+      expect(database.query.mock.calls.some(([sql]) => sql === "COMMIT")).toBe(false);
+      if (existing) expect(database.query.mock.calls.some(([sql]) => /INSERT|UPDATE/.test(sql) && !sql.includes("FOR UPDATE"))).toBe(false);
+    });
+
+    it.each([false, true])("commits only after complete matching ledger proof (replay=%s)", async (existing) => {
+      mockPaymentLedger(existing, { expected_count: 2, actual_count: 2, matches: true });
+      expect(await request("/cash-payments", "POST", payment)).toMatchObject({
+        status: existing ? 200 : 201, body: { entryId: 200, companyId: 3, sourceCompanyId: 1, idempotent: existing },
+      });
+      expect(database.query).toHaveBeenCalledWith(expect.stringContaining("WITH expected AS"), [200, 3]);
+      expect(database.query).toHaveBeenLastCalledWith("COMMIT");
+    });
+  });
 });

@@ -120,6 +120,35 @@ async function lockSourcePayment(client: any, args: FleetCompanyScope & {
   return { row, event };
 }
 
+async function verifyDerivedLedger(client: any, entryId: number, companyId: number) {
+  // The installed line trigger only warns on ledger INSERT failures. Verify its
+  // complete result inside the transaction before committing or acknowledging a replay.
+  const result = await client.query(
+    `WITH expected AS (
+       SELECT e.company_id,e.date AS ledger_date,e.source::text AS source_type,
+              e.source_id,e.entry_number AS source_ref,l.account_id,l.debit,l.credit
+         FROM public.accounting_entries e
+         JOIN public.accounting_entry_lines l ON l.entry_id=e.id AND l.company_id=e.company_id
+        WHERE e.id=$1 AND e.company_id=$2 AND e.status='posted' AND e.entry_status='POSTED'
+     ), actual AS (
+       SELECT l.company_id,l.ledger_date,l.source_type::text,l.source_id,l.source_ref,
+              l.account_id,l.debit,l.credit
+         FROM public.fleet_ledger_entries l
+         JOIN public.accounting_entries e ON e.entry_number=l.source_ref
+        WHERE e.id=$1 AND e.company_id=$2
+     )
+     SELECT (SELECT count(*)::int FROM expected) AS expected_count,
+            (SELECT count(*)::int FROM actual) AS actual_count,
+            NOT EXISTS(SELECT * FROM expected EXCEPT ALL SELECT * FROM actual)
+            AND NOT EXISTS(SELECT * FROM actual EXCEPT ALL SELECT * FROM expected) AS matches`,
+    [entryId, companyId],
+  );
+  const proof = result.rows[0];
+  if (proof?.expected_count !== 2 || proof.actual_count !== 2 || proof.matches !== true) {
+    throw new FleetFinanceError("Derived ledger Fleet tidak lengkap atau berbeda dari jurnal.");
+  }
+}
+
 async function verifyPostedPayment(client: any, entry: any, args: FleetCompanyScope & {
   paymentId: number; amount: number; paymentDate: string; referenceNo?: string | null; driverName: string;
 }) {
@@ -149,6 +178,7 @@ async function verifyPostedPayment(client: any, entry: any, args: FleetCompanySc
     lines.filter((line: any) => Number(line.debit) > 0).length !== 1) {
     throw new FleetFinanceError("Baris jurnal Fleet tidak valid atau berbeda perusahaan.");
   }
+  await verifyDerivedLedger(client, Number(entry.id), args.companyId);
   return lines;
 }
 
@@ -311,6 +341,7 @@ async function postCashPayment(client: any, args: {
     [entryId],
   );
 
+  await verifyDerivedLedger(client, entryId, args.companyId);
   return { entryId, idempotent: false };
 }
 
@@ -363,6 +394,7 @@ async function reverseCashPayment(client: any, args: {
         })) {
       throw new FleetFinanceError("Reversal Fleet yang sudah ada berbeda dari jurnal asal.");
     }
+    await verifyDerivedLedger(client, Number(reversal.id), args.companyId);
     return { entryId: Number(reversal.id), idempotent: true };
   }
   if (source.row.status !== "posted") throw new FleetFinanceError("Pembayaran Fleet belum posted untuk reversal baru.");
@@ -401,6 +433,7 @@ async function reverseCashPayment(client: any, args: {
     "UPDATE public.accounting_entries SET status='posted',entry_status='POSTED',posted_at=NOW() WHERE id=$1 AND status='draft'",
     [entryId],
   );
+  await verifyDerivedLedger(client, entryId, args.companyId);
   return { entryId, idempotent: false };
 }
 
