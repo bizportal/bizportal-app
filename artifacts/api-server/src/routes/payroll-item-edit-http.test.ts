@@ -7,6 +7,7 @@ const mock = vi.hoisted(() => ({
   actor: { role: "admin", companyId: null as number | null },
   queries: [] as Array<{ sql: string; values?: unknown[] }>,
   exists: true, status: "draft", itemExists: true, released: 0,
+  dedicated: true, invalidCredential: false, sharedConnects: 0, scopes: [] as number[],
 }));
 vi.mock("./dev-auth", () => ({
   isDevelopmentEnvironment: () => true,
@@ -16,6 +17,16 @@ vi.mock("./dev-auth", () => ({
 }));
 vi.mock("@workspace/db", () => ({
   pool: {
+    connect: async () => { mock.sharedConnects++; throw Error("SHARED_DB_POOL_FORBIDDEN"); },
+    query: async () => { mock.sharedConnects++; throw Error("SHARED_DB_POOL_FORBIDDEN"); },
+  },
+}));
+vi.mock("./payroll-db", () => ({
+  payrollDedicatedEnabled: () => {
+    if (mock.invalidCredential) throw Error("private-credential-should-not-leak");
+    return mock.dedicated;
+  },
+  getPayrollPool: () => ({
     connect: async () => ({
       query: async (sql: string, values?: unknown[]) => {
         mock.queries.push({ sql, values });
@@ -35,8 +46,12 @@ vi.mock("@workspace/db", () => ({
       },
       release: () => { mock.released++; },
     }),
-    query: async () => { throw Error("Unexpected pool query"); },
+  }),
+  setPayrollCompanyScope: async (client:{query:(sql:string)=>Promise<unknown>},id:number) => {
+    mock.scopes.push(id);
+    await client.query("SELECT set_config('app.payroll_company_id',$1,true)");
   },
+  payrollScopedQuery: async () => { throw Error("UNEXPECTED_PAYROLL_READ"); },
 }));
 
 describe("DEV payroll salary editing HTTP", () => {
@@ -52,6 +67,7 @@ describe("DEV payroll salary editing HTTP", () => {
   beforeEach(() => {
     mock.actor.role = "admin"; mock.actor.companyId = null;
     mock.queries.length = 0; mock.exists = true; mock.status = "draft"; mock.itemExists = true; mock.released = 0;
+    mock.dedicated = true; mock.invalidCredential = false; mock.sharedConnects = 0; mock.scopes = [];
     delete process.env.PAYROLL_DEV_ITEM_EDIT_ENABLED;
   });
   afterEach(() => { delete process.env.PAYROLL_DEV_ITEM_EDIT_ENABLED; });
@@ -73,6 +89,23 @@ describe("DEV payroll salary editing HTTP", () => {
     expect(mock.queries).toHaveLength(0);
   });
 
+  it("blocks item edits if the dedicated DEV Payroll role is missing", async () => {
+    process.env.PAYROLL_DEV_ITEM_EDIT_ENABLED = "true";
+    mock.dedicated = false;
+    expect((await send({ allowance: 250000 })).status).toBe(503);
+    expect(mock.sharedConnects).toBe(0);
+    expect(mock.queries).toHaveLength(0);
+    expect(mock.scopes).toHaveLength(0);
+  });
+  it("rejects malformed dedicated DEV credentials without leaking values or touching shared DB", async () => {
+    process.env.PAYROLL_DEV_ITEM_EDIT_ENABLED = "true";
+    mock.invalidCredential = true;
+    const response = await send({ allowance: 250000 });
+    expect(response.status).toBe(503);
+    expect((await response.text())).not.toContain("private-credential-should-not-leak");
+    expect(mock.sharedConnects).toBe(0);
+    expect(mock.queries).toHaveLength(0);
+  });
   it("rejects illicit cash advance edits and invalid monetary values", async () => {
     process.env.PAYROLL_DEV_ITEM_EDIT_ENABLED = "true";
     for (const bad of [{ kasbonDeduction: 0 }, { allowance: -1 }, { allowance: 0.001 }, { otherDeductions: "1e9" }, {}]) {
@@ -102,6 +135,8 @@ describe("DEV payroll salary editing HTTP", () => {
     expect(mock.queries.some(q => /(?:^|\n)\s*(?:DELETE|INSERT|UPDATE public.cash_advances|UPDATE public.accounting)/i.test(q.sql))).toBe(false);
     expect(mock.queries.at(-1)?.sql).toBe("COMMIT");
     expect(mock.released).toBe(1);
+    expect(mock.sharedConnects).toBe(0);
+    expect(mock.scopes).toEqual([1]);
   });
 
   it("refuses deductions exceeding gross and rolls back", async () => {
