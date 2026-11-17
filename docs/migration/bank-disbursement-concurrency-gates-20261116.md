@@ -29,3 +29,18 @@ PR #95 migration audit. Historical implementation inspected in `Travelintrips/CS
 The candidate's DEV-only read adapters are flag-OFF by default, and `reviewOnly` results must never authorize writes. Current active DEV route does not have the upstream sole-executor registered. Do not activate the upstream source writer or cut over until a canonical single-writer service and its exact dependency graph are verified against the above gates. Use a disposable database; no direct manipulation of live payment invoices, bank disbursements, or journals.
 
 **No writer code or database mutation is introduced by this audit.**
+
+
+## CRITICAL branch distinction confirmed on 2026-11-17
+
+The historical writer is *not uniformly atomic* across both payment paths:
+
+- **`direct` path** (archived lines ~2058–2155): `db.transaction(async tx => {...})` contains `postEntryWithClient(tx)`, disbursement/item inserts, and company-scoped conditional invoice update. This previously confirmed protection is specific to this path.
+- **`vendor_invoice` path** (archived lines ~1480–1630): calls `postEntry(...)` before `db.execute(INSERT INTO bank_disbursements)`, loops over `db.execute(INSERT INTO bank_disbursement_items)`, then reads and updates `vendorInvoicesTable.amountPaid` via the global `db`. No wrapping `db.transaction` appears in this branch. It updates `amountPaid` after the journal already posted, with no conditional remaining-balance guard in the UPDATE. Async PO recalculation and tax capture are also fire-and-forget.
+- The source uses earlier `grand_total - amount_paid` prechecks and a count-based disbursement number. A concurrent request or later INSERT/UPDATE failure can leave an independently posted journal or duplicate payment accounting. This is a **concrete architectural gap shown by source inspection**, not yet a reproduced E2E incident.
+- The existing frontend sends `paymentType:"vendor_invoice"` and `invoicePayments`; therefore the unsafe branch is the precise branch of concern for Vendor Invoice/AP migration.
+- **DO NOT PORT OR ACTIVATE** the historical `vendor_invoice` branch unchanged. It must be integrated into one approved writer with a single transaction, invoice locking/atomic balance condition, durable idempotency key, company-scoped source ownership, and journal/line/amount-paid convergence.
+- Run failure injection **after journal post but before disbursement header**, and **after header but before invoice update** on disposable PG; both cases must leave zero orphan journals/disbursements. Test concurrent distinct keys paying the same invoice and an identical-key replay. Existing synthetic lock rehearsal does not prove this legacy code passes.
+- Preserve already-PASS direct mode and unrelated modules; keep PR Draft, runtime flag OFF, no Nginx/Hostinger/PROD changes.
+
+This supersedes any broad assertion that the entire historical Bank Disbursement writer is transactionally atomic. The existing `direct` protections remain real and should be preserved.
