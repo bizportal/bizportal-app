@@ -33,6 +33,11 @@ jobs:
           ! grep -Eq 'CREATE ROLE|ALTER ROLE|DROP ROLE|SECURITY DEFINER' scripts/sql/20261117_dev_finance_company_rls_phase1.sql
           ! grep -Eq 'DROP ROLE|SECURITY DEFINER' scripts/sql/20261117_dev_finance_company_rls_phase1_rollback.sql
           echo PR123_ORIGINAL_SECURITY_GUARDS_PRESERVED_PASS
+      - name: Pull approved isolated PostgreSQL image for CI
+        shell: bash
+        env:
+          PR123_POSTGRES_IMAGE: ${{ matrix.postgres }}
+        run: docker pull "$PR123_POSTGRES_IMAGE"
       - name: Test dormant NOLOGIN roles and exact narrow RLS/ACL with full rollback
         env:
           PR123_POSTGRES_IMAGE: ${{ matrix.postgres }}
