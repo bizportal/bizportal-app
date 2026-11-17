@@ -15,6 +15,7 @@ const base: OutboundReuseEvidence = {
   disbursementStatus: "posted",
   disbursementVoidEntryId: null,
   disbursementAmountMinor: 3169439200,
+  disbursementEntryId: 314,
   entryId: 314,
   entryCompanyId: 1,
   entrySource: "manual_payment",
@@ -28,6 +29,7 @@ const base: OutboundReuseEvidence = {
     { accountId: 1023, debitMinor: 0, creditMinor: 3169439200 },
   ],
   bankAccountId: 1023,
+  mutationBankCoaId: 1023,
   payableAccountId: 1010,
   postedSourceEntryCount: 1,
   activeApprovedMutationLinkCount: 0,
@@ -74,7 +76,9 @@ describe("PR95 outgoing bank source-journal reuse: unregistered fail-closed pref
     reject({ entryCreditMinor: 100 }, "ENTRY_TOTAL_MISMATCH");
   });
   it("rejects balanced-but-wrong COA, line/header mismatch and invalid lines", () => {
-    reject({ bankAccountId: 5555 }, "COA_OR_LEDGER_MISMATCH");
+    reject({ bankAccountId: 5555 }, "SOURCE_OR_BANK_IDENTITY_MISMATCH");
+    reject({ disbursementEntryId: 315 }, "SOURCE_OR_BANK_IDENTITY_MISMATCH");
+    reject({ mutationBankCoaId: 5555 }, "SOURCE_OR_BANK_IDENTITY_MISMATCH");
     reject({ payableAccountId: 5555 }, "COA_OR_LEDGER_MISMATCH");
     reject({ lines: [{ accountId: 1010, debitMinor: 100, creditMinor: 0 },
       { accountId: 1023, debitMinor: 0, creditMinor: 100 }] }, "COA_OR_LEDGER_MISMATCH");
