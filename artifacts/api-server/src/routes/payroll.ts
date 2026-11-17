@@ -5,6 +5,7 @@ import { authorizePayrollCompany } from "./payroll-access";
 import { registerPayrollSetupReadinessRoutes } from "./payroll-setup-readiness";
 import { registerPayrollProdConnectionPreflightRoutes } from "./payroll-prod-connection-preflight";
 import { registerPayrollSuperAdminApprovalRoutes } from "./payroll-super-admin-approval";
+import { createPayrollAtomicAccountingRouter } from "./payroll-accounting-http";
 import { readPayrollSuperAdminApprovalReceipt } from "./payroll-super-admin-approval-receipt";
 import { getDevSession, getProductionSession, getProductionUser, isDevelopmentEnvironment, type DevAuthUser } from "./dev-auth";
 
@@ -64,6 +65,9 @@ function serializeRun(row: Record<string, unknown>) {
   };
 }
 
+// Exact POST path has its own signed-session + Origin checks; no DEV cookie fallback.
+// It stays absent unless both DEV gates are explicit and cannot write before trusted runtime binding.
+router.use(createPayrollAtomicAccountingRouter());
 router.use("/payroll", authorize);
 // Stage-one PROD readiness: aggregate-only, default OFF; no payroll writers.
 registerPayrollSetupReadinessRoutes(router);

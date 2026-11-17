@@ -27,7 +27,8 @@ retry only after rollback. Network/ambiguous-commit failures are not auto-retrie
 
 ## Binding / security boundary — NOT deployed or exposed
 
-No route imports or mounts this module. It stays unavailable unless BOTH
+The separately guarded HTTP adapter now imports this module, but no live binding
+is configured. It stays unavailable unless BOTH
 `APP_ENV=development` and `PAYROLL_DEV_ATOMIC_POSTING_ENABLED=true` are explicit.
 It verifies the actual session and effective PostgreSQL user are the separate
 `bizportal_payroll_settlement_dev`, neither superuser nor BYPASSRLS, and uses
@@ -72,8 +73,8 @@ activation tests additionally verify default OFF and production denial.
 
 ## Before an active DEV release
 
-The handler is not yet mounted, and the native writer is not yet integrated
-into the selected runtime. The actual restricted role/pool, full RLS/trigger
+The HTTP handler is registered only behind explicit default-OFF DEV flags, and
+the restricted pool/native writer binding is not integrated into the selected runtime. The actual restricted role/pool, full RLS/trigger
 compatibility, signed-session route and post-commit outbox consumers still need
 assembly and E2E verification. The dedicated role remains NOLOGIN in CST-DEV.
 Fiscal posting must have exactly one configured company/month period; missing
@@ -87,3 +88,6 @@ rejected before the writer. Their schedule linkage is NOT implemented by this
 automatic-reservation adapter and must be reconciled before those loans qualify. The verified HR data and
 live roster must be prepared without treating synthetic fixtures as real pay.
 Do not enable a writer or deploy PROD based only on these passing tests.
+
+See `SIGNED-HTTP-BOUNDARY.md` for source-level HTTP guards and the explicit
+limits of the separately tested HTTP and PostgreSQL layers.

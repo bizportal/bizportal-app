@@ -5,7 +5,8 @@ import { buildPayrollPreview, type PayrollPreviewItem } from "./payroll-preview"
 import { centsToMoney, moneyToCents, payrollMonth } from "./payroll-kasbon-automatic";
 import { payrollSuperAdminApprovalDigest, readPayrollSuperAdminApprovalReceipt } from "./payroll-super-admin-approval-receipt";
 
-/** Source-only DEV application service. NOT mounted in any HTTP route.
+/** DEV application service. HTTP adapter exists behind default-OFF gates;
+ * it cannot post until trusted server bootstrap supplies the restricted binding.
  * `actor` must come from the existing signed-session verifier, never request JSON.
  * The caller must supply the dedicated settlement pool and the VERIFIED patched
  * native PayrollJournalService, not the legacy global-posting version.
