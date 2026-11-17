@@ -6,6 +6,7 @@ on:
       - test/pr134-existing-posting-source-review-20261117
     paths:
       - 'artifacts/api-server/src/lib/posting-engine/customer-portal-sales-invoice-owner-dev.ts'
+      - 'artifacts/api-server/src/lib/logger.ts'
       - 'artifacts/api-server/src/lib/posting-engine/customer-portal-sales-invoice-owner-dev.test.ts'
       - 'docs/dev-customer-invoice-original-posting-owner-transaction-bridge.md'
       - '.github/workflows/pr136-customer-invoice-existing-owner-adapter.yml'
@@ -52,7 +53,8 @@ jobs:
       - name: Build and import deterministic isolated owner package without deployment
         shell: bash
         env:
-          NODE_ENV: production
+          NODE_ENV: development
+          CST_ACCOUNTING_OWNER_JSON_LOG_DEV: 'true'
         run: |
           set -euo pipefail
           tmpdir="$(mktemp -d)"
