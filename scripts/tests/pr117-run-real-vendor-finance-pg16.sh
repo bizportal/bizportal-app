@@ -24,6 +24,10 @@ if docker network ls --format '{{.Name}}' | grep -qx "$NETWORK"; then
   echo "PR117_REFUSE_REUSE_EXISTING_NETWORK"; exit 4
 fi
 test -s "$BUNDLE"
+ROOT_DEPS="$(realpath "$ROOT/node_modules")"
+API_DEPS="$(realpath "$ROOT/artifacts/api-server/node_modules")"
+test -d "$ROOT_DEPS"
+test -d "$API_DEPS"
 cleanup() {
   docker rm -f "$NODE" "$PG" >/dev/null 2>&1 || true
   docker network rm "$NETWORK" >/dev/null 2>&1 || true
@@ -49,13 +53,13 @@ done
 if [ "$ready" != 1 ]; then
   echo PR117_PG16_START_FAILED; exit 5
 fi
-echo PR117_INTERNAL_DISPOSABLE_PG16_READY
+echo PR117_INTERNAL_DISPOSABLE_POSTGRES_READY
 docker run --rm --pull never --network "$NETWORK" --name "$NODE" \
   --memory 800m --cpus 2 --read-only --tmpfs /tmp:rw,nosuid,size=48m \
   --security-opt no-new-privileges --cap-drop ALL --user 1000:1000 \
   --mount "type=bind,source=$ROOT,target=/src,readonly" \
-  --mount "type=bind,source=/opt/bizportal-pr108-finance-definer-session-review-20261117/node_modules,target=/src/node_modules,readonly" \
-  --mount "type=bind,source=/opt/bizportal-pr108-finance-definer-session-review-20261117/artifacts/api-server/node_modules,target=/src/artifacts/api-server/node_modules,readonly" \
+  --mount "type=bind,source=$ROOT_DEPS,target=/src/node_modules,readonly" \
+  --mount "type=bind,source=$API_DEPS,target=/src/artifacts/api-server/node_modules,readonly" \
   -w /src \
   -e PR117_DISPOSABLE_INTEGRATION=true \
   -e APP_ENV=development \
