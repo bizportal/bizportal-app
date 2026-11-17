@@ -86,3 +86,13 @@ microsecond approval timestamps, and 17-person coverage. Run with the optional
 `application` argument to the same launcher. See `APPLICATION-SERVICE.md` for
 its exact activation, schema, authentication and outstanding runtime limits.
 Neither suite enables an HTTP endpoint or changes an active service.
+
+## Selected actual CST-DEV guard compatibility (17 Nov follow-up)
+
+See `SELECTED-DEV-GUARDS.md` and the `triggers` suite. The earlier atomic
+patch's checksum-after-posting UPDATE was reproduced as incompatible with
+the live DEV immutability guard. The staged patch now finalizes metadata in
+Draft before promotion, without weakening any guard. Four copied function
+definitions match live read-only metadata hashes; six selected trigger
+registrations are enabled in the isolated fixture. 20 checks PASS; this is
+not a complete clone of every live trigger or a signed HTTP E2E result.

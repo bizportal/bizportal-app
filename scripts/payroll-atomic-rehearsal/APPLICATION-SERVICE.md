@@ -91,3 +91,13 @@ Do not enable a writer or deploy PROD based only on these passing tests.
 
 See `SIGNED-HTTP-BOUNDARY.md` for source-level HTTP guards and the explicit
 limits of the separately tested HTTP and PostgreSQL layers.
+
+## Selected actual CST-DEV guard compatibility (17 Nov follow-up)
+
+See `SELECTED-DEV-GUARDS.md` and the `triggers` suite. The earlier atomic
+patch's checksum-after-posting UPDATE was reproduced as incompatible with
+the live DEV immutability guard. The staged patch now finalizes metadata in
+Draft before promotion, without weakening any guard. Four copied function
+definitions match live read-only metadata hashes; six selected trigger
+registrations are enabled in the isolated fixture. 20 checks PASS; this is
+not a complete clone of every live trigger or a signed HTTP E2E result.

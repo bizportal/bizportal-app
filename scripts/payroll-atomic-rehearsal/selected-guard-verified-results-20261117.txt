@@ -1,0 +1,22 @@
+POSTGRES 16.15 FIXTURE_ONLY true
+PASS four selected guard definitions exactly match read-only CST-DEV metadata
+PASS previous staged transaction patch fails on posted-checksum update and fully rolls back under real DEV immutability guard
+PASS revised native transaction finalizes checksum in draft and commits one accrual plus repayment with all six guards enabled
+PASS replay succeeds without touching the immutable posted journal or repeating the repayment
+PASS DEV guard still rejects posted checksum mutation after successful posting
+PASS DEV guard still rejects posted journal total mutation after successful posting
+PASS DEV guard still rejects posted journal status mutation after successful posting
+PASS DEV guard still rejects posted line update mutation after successful posting
+PASS DEV guard still rejects posted line delete mutation after successful posting
+PASS DEV guard still rejects posted line insertion mutation after successful posting
+PASS actual Payroll item/review guards reject changing reviewed salaries or rewinding approval
+PASS checksum failure before promotion rolls back journal lines, audit, outbox, loan and repayment
+PASS silently suppressed draft checksum update is detected before posting and completely rolled back
+PASS posting transition observes already-complete checksum; failed promotion leaves no financial residue
+PASS financial_outbox_events injected failure still rolls back atomically with actual DEV guards enabled
+PASS cash_advance_repayments injected failure still rolls back atomically with actual DEV guards enabled
+PASS payroll_runs injected failure still rolls back atomically with actual DEV guards enabled
+PASS concurrent calls preserve one journal and repayment under immutable-journal guards
+PASS foreign company remains denied with selected real DEV guards
+PASS all six copied DEV triggers remain enabled at end; none were relaxed
+SELECTED_DEV_TRIGGER_CHECKS_PASS 20 LIVE_DB_MUTATIONS false FULL_LIVE_SCHEMA_CLONED false

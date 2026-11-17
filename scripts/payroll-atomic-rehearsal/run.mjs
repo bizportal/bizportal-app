@@ -11,7 +11,7 @@ const here=path.dirname(fileURLToPath(import.meta.url));
 const root=path.resolve(here,'../..'),api=root+'/artifacts/api-server';
 const legacy=process.argv[2];
 const suite=process.argv[3]||'native';
-if(!['native','application'].includes(suite))throw Error('UNKNOWN_REHEARSAL_SUITE');
+if(!['native','application','triggers'].includes(suite))throw Error('UNKNOWN_REHEARSAL_SUITE');
 if(!legacy||!path.isAbsolute(legacy))throw Error('EXPLICIT_LEGACY_SOURCE_REQUIRED');
 const u=new URL(process.env.PAYROLL_PG_E2E_URL||'invalid:');
 if(u.protocol!=='postgresql:'||u.hostname!=='127.0.0.1'||u.port!=='65432'||u.pathname!=='/payroll_ci'||u.username!=='postgres.xssrfshdrtdfupgqwfdw')throw Error('REFUSE_NON_DISPOSABLE_POSTGRES');
@@ -24,18 +24,28 @@ const output=api+`/.payroll-atomic-pg-${process.pid}.tmp.mjs`;
 const baseOut=api+`/.payroll-native-base-${process.pid}.tmp.mjs`;
 const fixedOut=api+`/.payroll-native-fixed-${process.pid}.tmp.mjs`;
 const sourceLib='artifacts/api-server/src/lib';
-const artifactFiles=[entry,output,baseOut,fixedOut];
+const previousOut=api+`/.payroll-native-previous-${process.pid}.tmp.mjs`;
+const artifactFiles=[entry,output,baseOut,fixedOut,previousOut];
 if(artifactFiles.some(p=>fs.existsSync(p)))throw Error('SCRATCH_ALREADY_EXISTS');
 const baselineLib=path.join(stage,'baseline',sourceLib),fixedLib=path.join(stage,'patched',sourceLib);
+const previousLib=path.join(stage,'previous',sourceLib);
+const variants=suite==='triggers'?['baseline','patched','previous']:['baseline','patched'];
 try {
  for(const [rel,expected] of Object.entries({...manifest.sourceSha256,...manifest.dependencySha256})){
   const bytes=fs.readFileSync(path.join(legacy,rel));
   if(crypto.createHash('sha256').update(bytes).digest('hex')!==expected)throw Error('SOURCE_HASH_MISMATCH:'+rel);
  }
- for(const rel of [...manifest.sourceFiles,...manifest.unchangedDependencies])for(const variant of ['baseline','patched']){
+ for(const rel of [...manifest.sourceFiles,...manifest.unchangedDependencies])for(const variant of variants){
   const dest=path.join(stage,variant,rel);fs.mkdirSync(path.dirname(dest),{recursive:true});fs.copyFileSync(path.join(legacy,rel),dest);
  }
  execFileSync('patch',['--batch','--fuzz=0','-p1','-i',here+'/legacy-transaction-bound.patch'],{cwd:path.join(stage,'patched'),stdio:'pipe'});
+ if(suite==='triggers'){
+  const contract=JSON.parse(fs.readFileSync(here+'/dev-selected-guards-provenance.json','utf8'));
+  const priorPatch=execFileSync('git',['show',contract.previousPatchCommit+':scripts/payroll-atomic-rehearsal/legacy-transaction-bound.patch'],{cwd:root});
+  if(crypto.createHash('sha256').update(priorPatch).digest('hex')!==contract.previousPatchSha256)throw Error('PREVIOUS_PATCH_HASH_MISMATCH');
+  const file=path.join(stage,'previous.patch');fs.writeFileSync(file,priorPatch);
+  execFileSync('patch',['--batch','--fuzz=0','-p1','-i',file],{cwd:path.join(stage,'previous'),stdio:'pipe'});
+ }
  const schema=root+'/lib/db/src/schema/accounting.ts';
  const stubs={
   '@workspace/db':`export * from ${JSON.stringify(schema)}; export const db=globalThis.__nativePayrollDb;`,
@@ -62,14 +72,20 @@ try {
   b.onLoad({filter:/.*/,namespace:'fixture'},a=>({contents:stubs[a.path],loader:'js',resolveDir:api}));
   b.onLoad({filter:/.*/,namespace:'unavailable'},a=>({contents:`throw Error('UNEXPECTED_UNMIGRATED_DEPENDENCY'); export const unavailable=true;`,loader:'js'}));
  }};}
- for(const [lib,out] of [[baselineLib,baseOut],[fixedLib,fixedOut]]){
+ const builds=suite==='triggers'?[[baselineLib,baseOut],[fixedLib,fixedOut],[previousLib,previousOut]]:[[baselineLib,baseOut],[fixedLib,fixedOut]];
+ for(const [lib,out] of builds){
   await build({stdin:{contents:`export {postEntryWithClient} from ${JSON.stringify(lib+'/accounting.ts')}; export {PayrollJournalService} from ${JSON.stringify(lib+'/payroll/PayrollJournalService.ts')};`,resolveDir:api,loader:'ts'},outfile:out,bundle:true,platform:'node',format:'esm',logLevel:'silent',external:['drizzle-orm','drizzle-orm/*','pg'],nodePaths:[api+'/node_modules',root+'/node_modules'],plugins:[boundaryPlugin()]});
  }
  let helpers=fs.readFileSync(routes+'/payroll-accounting-handoff.test.ts','utf8').split('\ndescribe(')[0].replace(/^import \{ describe, expect, it \} from "vitest";\n/,'');
- const harness=fs.readFileSync(here+(suite==='application'?'/application-postgres-tests.ts':'/native-postgres-tests.ts'),'utf8')
-  .replaceAll('__ROOT__',root).replaceAll('__BASE__',baseOut).replaceAll('__FIXED__',fixedOut);
+ let harness=fs.readFileSync(here+(suite==='native'?'/native-postgres-tests.ts':'/application-postgres-tests.ts'),'utf8');
+ if(suite==='triggers'){
+  const marker=' await reset();\n const plan=prepareReviewedPayrollAccrual(fixture());';
+  const at=harness.indexOf(marker);if(at<0)throw Error('FIXTURE_SETUP_CONTRACT_CHANGED');
+  harness=harness.slice(0,at)+fs.readFileSync(here+'/trigger-compatibility-tests.ts','utf8');
+ }
+ harness=harness.replaceAll('__ROOT__',root).replaceAll('__BASE__',baseOut).replaceAll('__FIXED__',fixedOut).replaceAll('__PREVIOUS__',previousOut);
  fs.writeFileSync(entry,helpers+'\n'+harness,{flag:'wx',mode:0o600});
- await build({entryPoints:[entry],outfile:output,bundle:true,platform:'node',format:'esm',logLevel:'silent',nodePaths:[api+'/node_modules',root+'/node_modules'],external:['pg','drizzle-orm','drizzle-orm/*',baseOut,fixedOut],banner:{js:`import {createRequire as createNodeRequire} from 'node:module'; const require=createNodeRequire(import.meta.url);`}});
+ await build({entryPoints:[entry],outfile:output,bundle:true,platform:'node',format:'esm',logLevel:'silent',nodePaths:[api+'/node_modules',root+'/node_modules'],external:['pg','drizzle-orm','drizzle-orm/*',baseOut,fixedOut,previousOut],banner:{js:`import {createRequire as createNodeRequire} from 'node:module'; const require=createNodeRequire(import.meta.url);`}});
  await import(pathToFileURL(output).href);
 } finally {
  for(const f of artifactFiles)fs.rmSync(f,{force:true});fs.rmSync(stage,{recursive:true,force:true});

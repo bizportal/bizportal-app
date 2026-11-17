@@ -1,0 +1,12 @@
+{
+  "source": "CST-DEV read-only pg_get_functiondef / pg_get_triggerdef, 2026-11-17",
+  "scope": "Four selected guards, NOT full live schema, permissions, or trigger set",
+  "liveFunctionMd5": {
+    "fn_block_posted_entry_update": "8dbd06a8e1699ce1670eeef985661017",
+    "fn_block_posted_lines_mutation": "af0c27e9cac19aedd04db18ea28c4eed",
+    "payroll_dev_block_non_draft_item_changes": "9223e1e122442f24e0d4243877ab6d9f",
+    "payroll_dev_hr_review_status_guard": "0d2b087466db9140cc941aa9a1e8f03a"
+  },
+  "previousPatchCommit": "743e2345eba2c577e4152aeee397758579352593",
+  "previousPatchSha256": "7a85b17205c7a9552f05cb8aac888a934a82631cde17cb553c6297536fe5bc85"
+}

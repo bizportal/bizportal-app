@@ -12,7 +12,29 @@
 +      // Migrations cannot self-heal through an unrelated connection while
 +      // a caller transaction is already aborted.
 +      if (client !== db && pgCode === "22P02") throw insertErr;
-@@ -723,14 +731,62 @@
+@@ -712,0 +721,21 @@
++  if (client !== db) {
++    // Real DEV immutable-journal guards reject ALL updates after posting.
++    // Finish caller-transaction metadata while the newly created entry is
++    // still draft; never relax guards or use correction/bypass settings.
++    const previousEntryId = source === "reversal" && typeof sourceId === "number" ? sourceId : null;
++    const checksumHash = createHash("sha256").update(JSON.stringify({
++      entryNumber: entry.entryNumber, source, sourceId, totalDebit, totalCredit,
++      companyId: requireAccountingCompanyId(input.companyId), date: dateStr,
++    })).digest("hex");
++    const metadata = await client.execute(sql`
++      UPDATE accounting_entries
++      SET checksum_hash = ${checksumHash}, previous_entry_id = ${previousEntryId}
++      WHERE id = ${entry.id} AND company_id = ${requireAccountingCompanyId(input.companyId)}
++        AND status = 'draft' AND checksum_hash IS NULL
++      RETURNING id
++    `);
++    const metadataRows = (metadata as unknown as { rows?: unknown[] }).rows
++      ?? (Array.isArray(metadata) ? metadata : []);
++    if (metadataRows.length !== 1) throw new Error("JOURNAL_DRAFT_METADATA_NOT_FINALIZED");
++  }
++
+@@ -723,14 +752,52 @@
 -  // Emit POST ledger event without awaiting it. It intentionally uses global
 -  // db rather than the caller's transaction client so an audit-event failure
 -  // cannot poison the posting transaction. This is important when a governed
@@ -31,11 +53,6 @@
 +    // Caller-owned transaction: journal, audit, checksum and durable outbox
 +    // share ONE connection. Do not publish external effects before COMMIT.
 +    const period = input.date.toISOString().slice(0, 7);
-+    const previousEntryId = source === "reversal" && typeof sourceId === "number" ? sourceId : null;
-+    const checksumHash = createHash("sha256").update(JSON.stringify({
-+      entryNumber: entry.entryNumber, source, sourceId, totalDebit, totalCredit,
-+      companyId: requireAccountingCompanyId(input.companyId), date: dateStr,
-+    })).digest("hex");
 +    await postLedgerEvent({
 +      companyId: requireAccountingCompanyId(input.companyId),
 +      eventType: source === "reversal" ? "REVERSE" : "POST",
@@ -43,11 +60,6 @@
 +      payload: { entryNumber: entry.entryNumber, source, sourceId, totalDebit, totalCredit },
 +      client,
 +    });
-+    await client.execute(sql`
-+      UPDATE accounting_entries
-+      SET checksum_hash = ${checksumHash}, previous_entry_id = ${previousEntryId}
-+      WHERE id = ${entry.id} AND company_id = ${requireAccountingCompanyId(input.companyId)}
-+    `);
 +    // Reuses the existing outbox schema/payload. It must be provisioned before
 +    // activation: absent or failing outbox rolls back, never auto-creates DDL.
 +    const payload = {
@@ -89,7 +101,7 @@
 +    const previousEntryId = (source === "reversal" && typeof sourceId === "number") ? sourceId : null;
 +    const checksumPayload = JSON.stringify({
 +      entryNumber: entry.entryNumber,
-@@ -739,42 +795,30 @@
+@@ -739,42 +806,30 @@
 -      totalDebit:  Number(entry!.totalDebit),
 -      totalCredit: Number(entry!.totalCredit),
 -    },
