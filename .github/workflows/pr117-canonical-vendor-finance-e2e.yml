@@ -8,6 +8,7 @@ on:
       - test/finance-vendor-invoice-parent-lock-contract-20261117
       - test/pr119-gcp-bootstrap-parity-20261117
       - test/pr120-single-gcp-finance-credentials-20261117
+      - test/pr123-dev-finance-rls-phase1-20261117
       - develop
     paths:
       - 'artifacts/api-server/src/lib/services/mktVendorInvoiceService.ts'
