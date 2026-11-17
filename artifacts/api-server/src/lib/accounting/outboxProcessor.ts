@@ -235,3 +235,128 @@ export function startOutboxProcessor(): void {
     "[outbox] Outbox processor started",
   );
 }
+
+
+// Strict DEV-only extension of the EXISTING outbox worker. Nothing starts
+// automatically: the original worker and all historical events are unchanged.
+// The row claim, financial event and done status have ONE transaction boundary;
+// a crash before COMMIT leaves the event pending, and a retry after COMMIT sees
+// it done. Never emit via financialEventBus here: it writes a second DB event.
+export type CustomerPortalOutboxDevResult =
+  | { status: "disabled" | "empty" }
+  | { status: "processed" | "quarantined"; outboxId: number; reason?: string };
+
+export async function processCustomerPortalSalesInvoiceOutboxDevOnce():
+  Promise<CustomerPortalOutboxDevResult> {
+  if (process.env.APP_ENV?.trim().toLowerCase() !== "development" ||
+      process.env.CUSTOMER_PORTAL_ATOMIC_ACCOUNTING_POST_DEV !== "true" ||
+      process.env.CUSTOMER_PORTAL_REQUIRE_POSTED_AR_EVIDENCE_DEV !== "true" ||
+      process.env.CUSTOMER_PORTAL_OUTBOX_SAFE_CONSUME_DEV !== "true") {
+    return { status: "disabled" };
+  }
+
+  return db.transaction(async (tx): Promise<CustomerPortalOutboxDevResult> => {
+    // New Customer Portal events only. Historical orphan/stuck/duplicate rows
+    // never match this stable prefix, and are not reset or sent again.
+    const claimed = await tx.execute(sql`
+      SELECT id, payload, entry_id, company_id
+      FROM public.financial_outbox_events
+      WHERE status = 'pending' AND event_type = 'JOURNAL_CREATED'
+        AND payload->>'sourceType' = 'sales_invoice'
+        AND payload->>'dedupeKey' LIKE 'sales_invoice:%'
+        AND attempt < 5
+      ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED
+    `);
+    if (!claimed.rows.length) return { status: "empty" };
+    const row = claimed.rows[0] as Record<string, unknown>;
+    const id = Number(row.id);
+    if (!Number.isSafeInteger(id) || id <= 0) throw Error("DEV_OUTBOX_ID_INVALID");
+    const payload = row.payload as Record<string, unknown> | null;
+    const entry = Number(row.entry_id);
+    const company = Number(row.company_id);
+    const sourceId = Number(payload?.sourceId);
+    const amount = Number(payload?.amount);
+    const actor = typeof payload?.actor === "string" ? payload.actor : "";
+    const key = ["sales_invoice", company, sourceId, entry].join(":");
+
+    const quarantine = async (reason: string): Promise<CustomerPortalOutboxDevResult> => {
+      const changed = await tx.execute(sql`
+        UPDATE public.financial_outbox_events
+        SET status='failed', attempt=attempt+1, last_error=${reason}
+        WHERE id=${id} AND status='pending' RETURNING id
+      `);
+      if (changed.rows.length !== 1) throw Error("DEV_OUTBOX_QUARANTINE_FAILED");
+      return { status: "quarantined", outboxId: id, reason };
+    };
+    if (![1, 3].includes(company) || !Number.isSafeInteger(entry) || entry <= 0 ||
+        !Number.isSafeInteger(sourceId) || sourceId <= 0 ||
+        !Number.isFinite(amount) || amount <= 0 || !actor ||
+        payload?.eventType !== "JOURNAL_CREATED" ||
+        payload?.sourceType !== "sales_invoice" ||
+        Number(payload?.entryId) !== entry ||
+        Number(payload?.companyId) !== company ||
+        payload?.dedupeKey !== key) {
+      return quarantine("DEV_OUTBOX_SOURCE_IDENTITY_INVALID");
+    }
+    // Posted/owned/balanced journal, issued zero-tax Invoice, AR proof, and
+    // canonical Super Admin audit must all agree on THIS exact source.
+    const proof = await tx.execute(sql`
+      SELECT e.id
+      FROM public.accounting_entries e
+      JOIN public.sales_documents s
+        ON s.id=e.source_id AND s.company_id=e.company_id
+      JOIN public.bizportal_customer_ar_source_evidence_dev ar
+        ON ar.invoice_id=s.id AND ar.company_id=s.company_id
+      JOIN public.audit_accounting_events a
+        ON a.journal_id=e.id AND a.company_id=e.company_id
+       AND a.action='SALES_INVOICE_ISSUED'
+       AND a.correlation_id=${key} AND a.user_id=${actor}
+      WHERE e.id=${entry} AND e.company_id=${company}
+        AND e.source::text='sales_invoice' AND e.status::text='posted'
+        AND e.is_voided=false AND e.is_reversed=false
+        AND s.invoice_status::text='invoiced'
+        AND s.id=${sourceId} AND s.tax_amount=0
+        AND e.ref=s.invoice_number
+        AND e.total_debit=${amount} AND e.total_credit=${amount}
+        AND s.grand_total=${amount}
+      LIMIT 2
+    `);
+    if (proof.rows.length !== 1) return quarantine("DEV_OUTBOX_LEDGER_AR_AUDIT_MISSING");
+
+    const siblings = await tx.execute(sql`
+      SELECT id FROM public.financial_outbox_events
+      WHERE entry_id=${entry} AND company_id=${company}
+        AND event_type='JOURNAL_CREATED' LIMIT 2
+    `);
+    if (siblings.rows.length !== 1 ||
+        Number((siblings.rows[0] as Record<string, unknown>).id) !== id) {
+      return quarantine("DEV_OUTBOX_DUPLICATE_JOURNAL_EVENT");
+    }
+    const existing = await tx.execute(sql`
+      SELECT id FROM public.financial_events
+      WHERE company_id=${company} AND entry_id=${entry}
+        AND source_type='sales_invoice' AND source_id=${String(sourceId)}
+        AND event_type='JOURNAL_CREATED' LIMIT 1
+    `);
+    // There is no unique financial_events source constraint in the old schema.
+    // Never silently accept/duplicate an event written by another producer.
+    if (existing.rows.length) return quarantine("DEV_OUTBOX_PREEXISTING_FINANCIAL_EVENT");
+
+    const stored = await tx.execute(sql`
+      INSERT INTO public.financial_events
+        (event_type,company_id,source_type,source_id,entry_id,amount,actor,ref,meta)
+      VALUES ('JOURNAL_CREATED',${company},'sales_invoice',${String(sourceId)},
+              ${entry},${amount},${actor},${String(payload?.ref ?? "")},
+              ${JSON.stringify({ outboxEventId: id, dedupeKey: key, consumer: "customer_portal_dev" })}::jsonb)
+      RETURNING id
+    `);
+    if (stored.rows.length !== 1) throw Error("DEV_OUTBOX_EVENT_NOT_ATOMIC");
+    const done = await tx.execute(sql`
+      UPDATE public.financial_outbox_events
+      SET status='done',processed_at=NOW(),attempt=attempt+1,last_error=NULL
+      WHERE id=${id} AND status='pending' RETURNING id
+    `);
+    if (done.rows.length !== 1) throw Error("DEV_OUTBOX_STATUS_NOT_ATOMIC");
+    return { status: "processed", outboxId: id };
+  });
+}
