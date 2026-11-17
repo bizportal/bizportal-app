@@ -144,6 +144,16 @@ try {
   await verifyPosted(1,179,{gross:111,tax:11});
   await verifyPosted(3,183,{gross:111,tax:11});
   console.log("ATOMIC_PPN_AND_REPLAY_PASS");
+  await assertReceipt(1,189,{rollback:true});
+  assert.equal(await counts(189),0);
+  for(const table of ["ar_subledger","transaction_taxes"]){
+    const column = table === "ar_subledger" ? "invoice_id" : "transaction_id";
+    const q = await pool.query("SELECT COUNT(*)::int AS n FROM "+table+" WHERE "+column+"=$1",[189]);
+    assert.equal(Number(q.rows[0].n),0,table+" rollback");
+  }
+  const related = await pool.query("SELECT COUNT(*)::int AS n FROM ledger_events WHERE payload->>'sourceId'='189'");
+  assert.equal(Number(related.rows[0].n),0);
+  console.log("ATOMIC_PPN_ROLLBACK_GL_AR_TAX_OUTBOX_PASS");
   await assertReceipt(1, 177, { expectedFailure: /TAX_OR_ADJUSTMENT_UNSUPPORTED/ });
   await assertReceipt(1, 185, { expectedFailure: /TAX_CONFIGURATION_OR_AMOUNT_MISMATCH/ });
   await assertReceipt(3, 187, { expectedFailure: /TAX_CONFIGURATION_MISSING/ });
