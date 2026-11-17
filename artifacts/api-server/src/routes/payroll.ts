@@ -8,6 +8,7 @@ import { registerPayrollSuperAdminApprovalRoutes } from "./payroll-super-admin-a
 import { createPayrollAtomicAccountingRouter } from "./payroll-accounting-http";
 import { createPayrollFinancialPeriodRouter } from "./payroll-financial-period-http";
 import { readPayrollSuperAdminApprovalReceipt } from "./payroll-super-admin-approval-receipt";
+import { buildPayrollPreview, type PayrollPreviewItem } from "./payroll-preview";
 import { getDevSession, getProductionSession, getProductionUser, isDevelopmentEnvironment, type DevAuthUser } from "./dev-auth";
 
 /**
@@ -457,6 +458,70 @@ router.patch("/payroll/runs/:id/items/:itemId", async (req: PayrollRequest, res)
   } catch (error) {
     req.log.error({ error, companyId, runId, itemId }, "Payroll item edit failed");
     res.status(503).json({ message: "Item payroll tidak dapat diubah." });
+  }
+});
+
+/** DEV-only pure salary arithmetic preview. Not Calculate/Review/Approval.
+ * Reuses the persisted item arithmetic with integer cents. No deductions are
+ * invented; no advance, reservation, journal or salary table is modified.
+ */
+router.get("/payroll/runs/:id/calculation-preview", async (req: PayrollRequest, res): Promise<void> => {
+  res.setHeader("Cache-Control", "no-store");
+  if (!isDevelopmentEnvironment() || process.env.PAYROLL_DEV_CALC_PREVIEW_ENABLED !== "true") {
+    res.status(404).json({ message: "Pratinjau perhitungan Payroll tidak tersedia." });
+    return;
+  }
+  if (!["owner", "super_admin"].includes(req.payrollActor?.role.toLowerCase() ?? "")) {
+    res.status(403).json({ message: "Pratinjau komponen gaji memerlukan Super Admin." });
+    return;
+  }
+  if (!payrollDedicatedEnabled()) {
+    res.status(503).json({ message: "Koneksi Payroll baca-saja khusus belum tersedia." });
+    return;
+  }
+  const runId = positiveId(req.params.id);
+  if (!runId) { res.status(400).json({ message: "ID Payroll tidak valid." }); return; }
+  const companyId = req.payrollCompanyId!;
+  try {
+    const run = await payrollScopedQuery(companyId,
+      "SELECT id,status FROM public.payroll_runs WHERE company_id=$1 AND id=$2 LIMIT 1",
+      [companyId, runId]);
+    if (run.rowCount !== 1) {
+      res.status(404).json({ message: "Payroll tidak ditemukan di perusahaan ini." });
+      return;
+    }
+    if (!["draft", "calculated", "reviewed"].includes(String(run.rows[0].status))) {
+      res.status(409).json({ message: "Periode tidak dapat dipratinjau untuk penghitungan." });
+      return;
+    }
+    const result = await payrollScopedQuery(companyId, `
+      SELECT pi.id,pi.employee_id AS "employeeId",pi.base_salary::text AS "baseSalary",
+        pi.allowance::text AS allowance,pi.gross_salary::text AS "grossSalary",
+        pi.bpjs_jht_employee::text AS "bpjsJhtEmployee",
+        pi.bpjs_kes_employee::text AS "bpjsKesEmployee",pi.pph21::text AS pph21,
+        pi.other_deductions::text AS "otherDeductions",
+        pi.kasbon_deduction::text AS "kasbonDeduction",
+        pi.total_deductions::text AS "totalDeductions",pi.net_salary::text AS "netSalary"
+      FROM public.payroll_items pi
+      JOIN public.employees e ON e.id=pi.employee_id AND e.company_id=$1
+      WHERE pi.run_id=$2 ORDER BY pi.id LIMIT 1000`, [companyId, runId]);
+    const items: PayrollPreviewItem[] = result.rows.map(row => ({
+      id:Number(row.id),employeeId:Number(row.employeeId),
+      baseSalary:String(row.baseSalary),allowance:String(row.allowance),
+      grossSalary:String(row.grossSalary),bpjsJhtEmployee:String(row.bpjsJhtEmployee),
+      bpjsKesEmployee:String(row.bpjsKesEmployee),pph21:String(row.pph21),
+      otherDeductions:String(row.otherDeductions),kasbonDeduction:String(row.kasbonDeduction),
+      totalDeductions:String(row.totalDeductions),netSalary:String(row.netSalary),
+    }));
+    if (!items.length || items.length===1000) {
+      res.status(409).json({ message: "Roster Payroll belum lengkap atau terlalu besar." });
+      return;
+    }
+    const preview = buildPayrollPreview(items);
+    res.status(200).json({ companyId, runId, status:run.rows[0].status,
+      ...preview, readOnly:true, canCalculate:false, canApprove:false, canPostJournal:false, canPay:false });
+  } catch {
+    res.status(503).json({ message: "Pratinjau Payroll tidak tersedia. Data tidak diubah." });
   }
 });
 
