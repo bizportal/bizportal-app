@@ -37,9 +37,16 @@ export async function finalizeOutboundSourceReuseCandidate(
     [input.invoiceId,input.companyId],
   );
   const original=inv.rows[0];
-  const gross=Number(original?.grand_total);
-  if(!original || original.status!=="posted" || !Number.isSafeInteger(gross*100)
-    || gross*100!==locked.verifiedAmountMinor) {
+  // PostgreSQL NUMERIC is a decimal string. Compare exact minor units
+  // without binary-float multiplication or rounding a partial cent.
+  const rawGross=String(original?.grand_total??"");
+  const validGross=/^(?:0|[1-9]\\d*)(?:\\.\\d{1,2})?$/.test(rawGross);
+  const [whole="",fraction=""] = rawGross.split(".");
+  const grossMinor=validGross
+    ? Number(whole)*100+Number(fraction.padEnd(2,"0"))
+    : NaN;
+  if(!original || original.status!=="posted" || !Number.isSafeInteger(grossMinor)
+    || grossMinor!==locked.verifiedAmountMinor) {
     throw Error("PR95_SOURCE_REUSE_PARTIAL_OR_TAX_UNSUPPORTED");
   }
 
