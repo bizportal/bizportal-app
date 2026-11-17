@@ -94,7 +94,7 @@ await build({
   logLevel: 'warning',
 });
 const expected = {
-  'portalInvoiceAdapter.mjs': '7f6568dd838b18698078ed87d4a2c64bc8014ff73f278df405d62fa35628d367',
+  'portalInvoiceAdapter.mjs': '2299c63f802e964dd031f1b5f40005fe9ec6d14eff71761f56b0b4f43bbfeff3',
   'pino-file.mjs': 'bbc4281497fe72cf43c497927570f930aaed27f73481e652ccfef6a5d1e102f2',
   'pino-pretty.mjs': 'db4343e9a60574d43281e8e6731ec71a1317c53737c5cfc11049cd565ceae8ea',
   'pino-worker.mjs': 'b1905ab6d4843945437af840160a682b9d86c3bee9ae7cb96f21032a98652297',
