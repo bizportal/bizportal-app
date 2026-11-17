@@ -14,7 +14,7 @@ type State = {
 };
 
 function makeHarness(
-  options: { failAt?: "journal" | "disbursement" | "balance"; missingInvoice?: boolean } = {},
+  options: { failAt?: "journal" | "disbursement" | "balance" | "unbalanced"; missingInvoice?: boolean } = {},
 ) {
   let current: State = {
     outstanding: 10000, journalCount: 0, disbursementCount: 0, payments: [],
@@ -59,6 +59,10 @@ function makeHarness(
       });
       return tx.disbursementCount;
     },
+    isJournalBalanced: async () => {
+      calls.push("journal-balance");
+      return options.failAt !== "unbalanced";
+    },
     updateInvoiceBalance: async (tx, input) => {
       calls.push("balance");
       if (options.failAt === "balance") return false;
@@ -83,7 +87,7 @@ describe("Unregistered candidate bank payment atomic boundary", () => {
     expect(h.snapshot()).toMatchObject({
       outstanding: 4000, journalCount: 1, disbursementCount: 1,
     });
-    expect(h.calls).toEqual(["begin", "lock-key", "lock", "find-key", "journal", "disbursement", "balance", "commit"]);
+    expect(h.calls).toEqual(["begin", "lock-key", "lock", "find-key", "journal", "disbursement", "journal-balance", "balance", "commit"]);
   });
 
   it("returns exact replay without another journal and rejects mutated replay", async () => {
@@ -121,7 +125,7 @@ describe("Unregistered candidate bank payment atomic boundary", () => {
     expect(h.snapshot()).toMatchObject({ journalCount: 0, disbursementCount: 0 });
   });
 
-  it.each(["journal", "disbursement", "balance"] as const)(
+  it.each(["journal", "disbursement", "balance", "unbalanced"] as const)(
     "rolls back after %s failure instead of leaving a journal orphan",
     async (failAt) => {
       const h = makeHarness({ failAt });
@@ -132,6 +136,16 @@ describe("Unregistered candidate bank payment atomic boundary", () => {
       });
     },
   );
+
+  it("blocks invoice balance update if journal lines are not balanced", async () => {
+    const h = makeHarness({ failAt: "unbalanced" });
+    await expect(commitVendorInvoicePaymentAtomic(input, h.adapter))
+      .rejects.toThrow("ATOMIC_SETTLEMENT_UNBALANCED_JOURNAL");
+    expect(h.calls).not.toContain("balance");
+    expect(h.snapshot()).toEqual({
+      outstanding: 10000, journalCount: 0, disbursementCount: 0, payments: [],
+    });
+  });
 
   it("fails closed on a persisted idempotency receipt missing linked journal/disbursement", async () => {
     const h = makeHarness();
