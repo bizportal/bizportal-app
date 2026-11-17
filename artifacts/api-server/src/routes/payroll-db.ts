@@ -52,7 +52,7 @@ function dedicatedPayrollUrl(): string | null {
   const host = url.hostname.toLowerCase();
   const direct = host === "db." + PAYROLL_DEV_REF + ".supabase.co" &&
     username === PAYROLL_DEV_LOGIN && (url.port || "5432") === "5432";
-  const pooler = /^aws-[0-9]+-[a-z0-9-]+\\.pooler\\.supabase\\.com$/.test(host) &&
+  const pooler = /^aws-[0-9]+-[a-z0-9-]+\.pooler\.supabase\.com$/.test(host) &&
     username === PAYROLL_DEV_LOGIN + "." + PAYROLL_DEV_REF &&
     ["5432", "6543"].includes(url.port || "5432");
 
