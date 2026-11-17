@@ -20,6 +20,7 @@ const run=async()=> (await import("./payroll-accounting-bootstrap")).prepareDevP
 beforeEach(()=>{
  vi.resetModules();state.signed=true;state.url=direct;state.events.length=0;state.failArtifact=false;state.failSecret=false;state.failBind=false;
  state.wait=null;state.reads=0;state.pools=0;state.ends=0;state.binds=0;state.artifactLoads=0;
+ vi.stubEnv("PAYROLL_DEV_LEGACY_INSTALLMENT_LINK_ENABLED","false");
  vi.stubEnv("APP_ENV","development");vi.stubEnv("PAYROLL_DEV_ATOMIC_ROUTE_MOUNT_ENABLED","true");vi.stubEnv("PAYROLL_DEV_ATOMIC_POSTING_ENABLED","true");
  vi.stubEnv("PAYROLL_SETTLEMENT_GCP_SECRET_NAME_DEV","bizportal-payroll-settlement-dev");
  vi.stubEnv("PAYROLL_SETTLEMENT_DATABASE_URL_DEV","");vi.stubEnv("PAYROLL_DEV_ATOMIC_NATIVE_ARTIFACT_PATH","/release/native-accrual.mjs");
@@ -101,4 +102,9 @@ describe("DEV native Payroll startup assembly (external boundaries simulated)",(
   expect(await run()).toBe(true);vi.stubEnv("PAYROLL_DEV_ATOMIC_NATIVE_SHA256","b".repeat(64));
   await expect(run()).rejects.toThrow("BOOTSTRAP_UNAVAILABLE");expect(state.binds).toBe(1);
  });
+ it("requires restart before switching the optional installment permission profile",async()=>{
+  expect(await run()).toBe(true);vi.stubEnv("PAYROLL_DEV_LEGACY_INSTALLMENT_LINK_ENABLED","true");
+  await expect(run()).rejects.toThrow("BOOTSTRAP_UNAVAILABLE");expect(state.binds).toBe(1);
+ });
+
 });

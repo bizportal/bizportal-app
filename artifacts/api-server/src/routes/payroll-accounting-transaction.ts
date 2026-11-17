@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from "pg";
+import { lockLegacyInstallments, confirmLegacyInstallment, type InstallmentContext } from "./payroll-legacy-installments";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { prepareReviewedPayrollAccrual, type PayrollHandoffInput, type PayrollHandoffAccount } from "./payroll-accounting-handoff";
 import { buildPayrollPreview, type PayrollPreviewItem } from "./payroll-preview";
@@ -121,6 +122,7 @@ async function verifyPersistedJournal(client: PoolClient, companyId: number, run
     FROM public.fleet_ledger_entries
     WHERE company_id=$1 AND source_type='payroll' AND source_id=$2 ORDER BY id FOR SHARE`, [companyId, runId]);
   assertPayrollLedgerMirror({ companyId, runId, entryNumber: j.entry_number, date: j.date }, lines.rows, ledger.rows);
+  return j.date;
 }
 async function execute(client: PoolClient, writer: TransactionBoundPayrollWriter, request: PayrollAtomicRequest) {
   const { companyId, runId } = request;
@@ -180,9 +182,10 @@ async function execute(client: PoolClient, writer: TransactionBoundPayrollWriter
       fail("OTHER_DEDUCTION_MAPPING_REQUIRED");
     mapping.otherDeductionPayableAccountId = m.accountId;
   }
+  const legacyEnabled=process.env.PAYROLL_DEV_LEGACY_INSTALLMENT_LINK_ENABLED === "true";
   const legacyAllocations = await client.query(`SELECT a.id FROM public.payroll_cash_advance_allocations a
     JOIN public.payroll_items i ON i.id=a.payroll_item_id WHERE i.run_id=$1 LIMIT 1`, [runId]);
-  if (legacyAllocations.rows.length) fail("LEGACY_ALLOCATIONS_REQUIRE_RECONCILIATION");
+  if (legacyAllocations.rows.length && !legacyEnabled) fail("LEGACY_ALLOCATIONS_REQUIRE_RECONCILIATION");
   const holdResult = await client.query<Hold>(`SELECT id::text,company_id AS "companyId",run_id AS "runId",
     employee_id AS "employeeId",payroll_item_id AS "payrollItemId",advance_id AS "advanceId",
     period::text,amount::text,balance_at_preparation::text AS "heldBalance",state,
@@ -196,7 +199,7 @@ async function execute(client: PoolClient, writer: TransactionBoundPayrollWriter
     approved_at,approved_by,disbursed_at,disbursed_by,accounting_entry_id,posting_status,voided_at
     FROM public.cash_advances WHERE company_id=$1 AND id=ANY($2::integer[]) ORDER BY id FOR UPDATE`, [companyId, advanceIds]);
   if (advanceRows.rows.length !== advanceIds.length) fail("ADVANCE_MISSING_OR_FOREIGN");
-  if (!replay && advanceIds.length) {
+  if (!replay && advanceIds.length && !legacyEnabled) {
     const legacySchedules = await client.query(`SELECT id FROM public.cash_advance_installment_schedules
       WHERE advance_id=ANY($1::integer[]) AND status IN ('pending','overdue') LIMIT 1`, [advanceIds]);
     if (legacySchedules.rows.length) fail("LEGACY_INSTALLMENT_SCHEDULE_REQUIRES_RECONCILIATION");
@@ -223,21 +226,31 @@ async function execute(client: PoolClient, writer: TransactionBoundPayrollWriter
   }
   if (items.some(i => moneyToCents(i.kasbonDeduction) !== (deductionByItem.get(i.id) ?? 0n)))
     fail("RESERVATION_ITEM_TOTALS_CHANGED");
-  const replayLedger = async (entryId: number) => {
-    const repayments = await client.query<{ advance_id: number; amount: string; idempotency_key: string;
-      entry_id: number; payment_method: string; posted_at: Date | null }>(`SELECT advance_id,amount::text,idempotency_key,
+  const installmentContext: InstallmentContext = {companyId,runId,year:run.year,month:run.month,
+    postingDate:request.postingDate,approvedAt:run.approved_at!,itemIds:items.map(i=>i.id),replay};
+  const installmentLinks=legacyEnabled ? await lockLegacyInstallments(client,installmentContext,holds) : new Map();
+  const replayLedger = async (entryId: number, journalDate: string) => {
+    const repayments = await client.query<{ id:number; date:string; advance_id: number; amount: string; idempotency_key: string;
+      entry_id: number; payment_method: string; posted_at: Date | null }>(`SELECT id,date::text,advance_id,amount::text,idempotency_key,
       entry_id,payment_method,posted_at FROM public.cash_advance_repayments WHERE entry_id=$1 FOR SHARE`, [entryId]);
     if (repayments.rows.length !== holds.length) fail("REPAYMENT_LEDGER_COUNT_CHANGED");
     for (const h of holds) {
       const ledger = repayments.rows.filter(r => r.idempotency_key === repaymentKey(companyId, runId, h));
       if (h.state !== "confirmed" || !h.confirmedAt || ledger.length !== 1 || ledger[0]!.advance_id !== h.advanceId ||
           ledger[0]!.entry_id !== entryId || ledger[0]!.payment_method !== "payroll" || !ledger[0]!.posted_at ||
+          ledger[0]!.date !== journalDate ||
           moneyToCents(ledger[0]!.amount) !== moneyToCents(h.amount as string)) fail("REPAYMENT_LEDGER_NOT_VERIFIED");
+      const schedule=installmentLinks.get(h.id);
+      if(schedule && (schedule.repaymentId!==ledger[0]!.id || schedule.entryId!==entryId ||
+          schedule.paidDate!==ledger[0]!.date || schedule.itemId!==Number(h.payrollItemId)))
+        fail("LEGACY_INSTALLMENT_REPAYMENT_CHANGED");
     }
   };
   if (replay) {
-    await verifyPersistedJournal(client, companyId, runId, run.accounting_entry_id!, items, mapping, holds);
-    await replayLedger(run.accounting_entry_id!);
+    // Persisted journal date is the anchor on replay, not today's request date.
+    // Matching schedule and repayment dates alone do not prove journal linkage.
+    const journalDate = await verifyPersistedJournal(client, companyId, runId, run.accounting_entry_id!, items, mapping, holds);
+    await replayLedger(run.accounting_entry_id!, journalDate);
     return { entryId: run.accounting_entry_id!, reused: true, salaryPaid: false as const };
   }
   const orphan = await client.query(`SELECT id FROM public.accounting_entries WHERE company_id=$1 AND source='payroll'
@@ -270,7 +283,8 @@ async function execute(client: PoolClient, writer: TransactionBoundPayrollWriter
   // This is the existing, transaction-aware native writer; no financial line
   // INSERT or replacement journal engine exists in this application module.
   const posted = await writer.postAccrualJournal(plan.mapping, plan.params, drizzle(client));
-  await verifyPersistedJournal(client, companyId, runId, posted.entryId, items, mapping, holds);
+  const journalDate = await verifyPersistedJournal(client, companyId, runId, posted.entryId, items, mapping, holds);
+  if (journalDate !== request.postingDate) fail("JOURNAL_DATE_MISMATCH");
   for (const h of holds) {
     const amount = h.amount as string;
     // One noncash Payroll settlement. Preserve historical CASH repayments.
@@ -299,6 +313,8 @@ async function execute(client: PoolClient, writer: TransactionBoundPayrollWriter
       [h.advanceId, amount, request.postingDate, `Potongan Payroll ${period.slice(0, 7)}`, posted.entryId,
         repaymentKey(companyId, runId, h), request.actor.id, `PAYROLL-${runId}`]);
     if (ledger.rowCount !== 1) fail("REPAYMENT_NOT_RECORDED");
+    const schedule=installmentLinks.get(h.id);
+    if(schedule) await confirmLegacyInstallment(client,installmentContext,h,schedule,Number(ledger.rows[0]?.id),posted.entryId);
     const confirm = await client.query(`UPDATE public.payroll_kasbon_auto_reservations SET state='confirmed',confirmed_at=now()
       WHERE id=$1 AND company_id=$2 AND run_id=$3 AND state='prepared' AND cancelled_at IS NULL RETURNING id`,
       [h.id, companyId, runId]);

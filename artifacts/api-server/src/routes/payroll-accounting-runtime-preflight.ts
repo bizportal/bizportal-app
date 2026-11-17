@@ -107,7 +107,15 @@ export async function verifyPayrollSettlementRuntime(pool: Pick<Pool, "connect">
         identity.isolation !== "repeatable read" ||
         [identity.rolsuper,identity.rolbypassrls,identity.rolcreaterole,identity.rolcreatedb,
          identity.rolreplication,identity.schema_create,identity.alternate_role,identity.payout_write].some(v => v !== false)) fail();
-    const checks = await client.query<Check>(PAYROLL_SETTLEMENT_CATALOG_SQL, [JSON.stringify(PAYROLL_SETTLEMENT_TABLES)]);
+    const checks = await client.query<Check>(PAYROLL_SETTLEMENT_CATALOG_SQL, [JSON.stringify(PAYROLL_SETTLEMENT_TABLES.map(t => {
+      if(process.env.PAYROLL_DEV_LEGACY_INSTALLMENT_LINK_ENABLED !== "true") return t;
+      if(t.table === "payroll_cash_advance_allocations") return {...t,update:["id"],
+        denyUpdate:["payroll_item_id","cash_advance_id","installment_schedule_id","amount","created_at"]};
+      if(t.table === "cash_advance_installment_schedules") return {...t,
+        update:["status","repayment_id","paid_date","paid_amount","accounting_entry_id","payroll_item_id","updated_at"],
+        denyUpdate:["id","company_id","advance_id","installment_number","due_date","amount","notes","created_at"]};
+      return t;
+    }))]);
     const expected = new Set<string>(PAYROLL_SETTLEMENT_TABLES.map(t => t.table));
     if (checks.rows.length !== expected.size || new Set(checks.rows.map(r => r.name)).size !== expected.size) fail();
     for (const r of checks.rows) {

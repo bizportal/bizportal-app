@@ -31,7 +31,7 @@ function configuration() {
   try { parsed = new URL(origin); } catch { rejected(); }
   if (parsed.protocol !== "https:" || parsed.origin !== origin || parsed.username || parsed.password ||
       parsed.pathname !== "/" || parsed.search || parsed.hash) rejected();
-  return { secretName, artifactPath, digest, origin };
+  return { secretName, artifactPath, digest, origin, legacyInstallments: process.env.PAYROLL_DEV_LEGACY_INSTALLMENT_LINK_ENABLED === "true" };
 }
 function settlementUrl(raw: string): string {
   let u: URL, login: string;

@@ -43,7 +43,7 @@ async function createFixtureTable(table:any){
  await admin.query('CREATE TABLE '+quote(t.name)+'('+fields.join(',')+')');
 }
 async function reset(){
- await admin.query('TRUNCATE fleet_ledger_entries,accounting_entry_lines,accounting_entries,ledger_events,financial_outbox_events,payroll_runs,payroll_items,cash_advances,payroll_kasbon_auto_reservations,journal_sequences,salary_payments,cash_advance_repayments RESTART IDENTITY');
+ await admin.query('TRUNCATE cash_advance_installment_schedules,payroll_cash_advance_allocations,fleet_ledger_entries,accounting_entry_lines,accounting_entries,ledger_events,financial_outbox_events,payroll_runs,payroll_items,cash_advances,payroll_kasbon_auto_reservations,journal_sequences,salary_payments,cash_advance_repayments RESTART IDENTITY');
  const f=fixture();
  await admin.query("INSERT INTO payroll_runs(id,company_id,year,month,status,posting_status,approved_at,notes) VALUES(32,1,2026,11,'draft','pending',$1,$2),(33,2,2026,11,'reviewed','pending',$1,'other company')",[f.run.approvedAt,f.run.notes]);
  const i=f.items[0]!;
@@ -110,8 +110,11 @@ try{
  repayment_journal_id integer,repaid_at timestamptz,updated_at timestamptz);
  CREATE TABLE cash_advance_repayments(id serial PRIMARY KEY,advance_id integer,amount numeric(16,2),payment_method text,
  date date,notes text,entry_id integer,idempotency_key text UNIQUE,posted_at timestamptz,created_by text,payment_reference text);
- CREATE TABLE cash_advance_installment_schedules(id serial PRIMARY KEY,advance_id integer,status text);
- CREATE TABLE payroll_cash_advance_allocations(id serial PRIMARY KEY,payroll_item_id integer,cash_advance_id integer,amount numeric(16,2));
+ CREATE TABLE cash_advance_installment_schedules(id serial PRIMARY KEY,advance_id integer,status text,
+ company_id integer,installment_number integer,due_date date,amount numeric(16,2),repayment_id integer REFERENCES cash_advance_repayments(id),
+ paid_date date,paid_amount numeric(16,2),accounting_entry_id integer,payroll_item_id integer,notes text,
+ created_at timestamp NOT NULL DEFAULT now(),updated_at timestamp NOT NULL DEFAULT now());
+ CREATE TABLE payroll_cash_advance_allocations(id serial PRIMARY KEY,payroll_item_id integer,cash_advance_id integer,amount numeric(16,2),installment_schedule_id integer,created_at timestamp NOT NULL DEFAULT now());
  CREATE TABLE payroll_kasbon_auto_reservations(id integer PRIMARY KEY,company_id integer,run_id integer,advance_id integer,payroll_item_id integer,employee_id integer,amount numeric(16,2),balance_at_preparation numeric(16,2),state text,period date,confirmed_at timestamptz,cancelled_at timestamptz,UNIQUE(company_id,run_id,advance_id));
  CREATE TABLE fleet_ledger_entries(id bigserial PRIMARY KEY,company_id integer NOT NULL,
  ledger_date date NOT NULL,period text NOT NULL,source_type text NOT NULL,source_id integer,source_ref text,
@@ -247,5 +250,14 @@ try{
  await admin.query('UPDATE payroll_runs SET notes=$1 WHERE id=32',[many.run.notes]);const roster=await executeAtomic(1,patched.PayrollJournalService,many);
  const rosterJournal=(await admin.query('SELECT total_debit::text,total_credit::text FROM accounting_entries WHERE id=$1',[roster.entryId])).rows[0];
  assert.deepEqual(rosterJournal,{total_debit:'88400000.00',total_credit:'88400000.00'});assert.equal((await state()).repayments,0);assert.equal((await state()).payments,0);ok('APPLICATION full 17-person roster posts one balanced accrual using database-loaded values');
+ // Repayment date belongs to the persisted accrual, even without legacy schedules.
+ // Clear only the extra synthetic roster from the preceding 17-person case.
+ await reset();await admin.query('DELETE FROM employees WHERE company_id=1 AND id<>101');
+ await executeAtomic();await admin.query("UPDATE cash_advance_repayments SET date='2026-11-16'");
+ const dateDriftState=await state();await assert.rejects(executeAtomic(),/REPAYMENT_LEDGER_NOT_VERIFIED/);
+ assert.deepEqual(await state(),dateDriftState);ok('APPLICATION replay refuses repayment date different from persisted accrual date');
+ await reset();await assert.rejects(executeAtomic(1,{transactionalAccrualVersion:'payroll-accrual-atomic-v1',
+  postAccrualJournal:async(mapping:any,params:any,tx:any)=>patched.PayrollJournalService.postAccrualJournal(mapping,{...params,date:'2026-11-16'},tx)}),/JOURNAL_DATE_MISMATCH/);
+ await unchanged();ok('APPLICATION unexpected first-post journal date rolls back before any kasbon settlement');
  console.log('APPLICATION_REAL_POSTGRES_CHECKS_PASS',passed,'LIVE_CST_DEV_OR_PROD_USED',false,'BANK_TRANSFER_SENT',false);
 }finally{if(writer)await writer.end();await admin.end();}
