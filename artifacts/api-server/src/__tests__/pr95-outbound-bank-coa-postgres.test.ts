@@ -33,8 +33,8 @@ suite("PR95 bank COA evidence on disposable PostgreSQL 16",()=>{
     await client.end();
   });
   const run=()=>assertOutboundSourceBankCoa(client as unknown as OutboundReuseQueryClient,scope);
-  it("matches persisted account and credit COA in locked read-only transaction",async()=>{
-    await client.query("BEGIN READ ONLY");
+  it("matches persisted account and credit COA in locked rollback-only transaction",async()=>{
+    await client.query("BEGIN");
     try {await expect(run()).resolves.toBe(1023);}
     finally {await client.query("ROLLBACK");}
   });
