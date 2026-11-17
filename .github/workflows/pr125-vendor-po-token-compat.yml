@@ -38,11 +38,11 @@ jobs:
           echo PR125_SOURCE_SECURITY_GUARDS_PASS
       - name: Pull approved PostgreSQL image
         env:
-          PR123_POSTGRES_IMAGE: ${{ matrix.postgres }}
-        run: docker pull "$PR123_POSTGRES_IMAGE"
+          PR125_POSTGRES_IMAGE: ${{ matrix.postgres }}
+        run: docker pull "$PR125_POSTGRES_IMAGE"
       - name: Real session_user parent lock with 48/64 tokens and exact rollback
         env:
-          PR123_POSTGRES_IMAGE: ${{ matrix.postgres }}
+          PR125_POSTGRES_IMAGE: ${{ matrix.postgres }}
         run: bash scripts/tests/pr125-run-48-64-token-compat-disposable.sh
       - uses: pnpm/action-setup@v4
         with:
