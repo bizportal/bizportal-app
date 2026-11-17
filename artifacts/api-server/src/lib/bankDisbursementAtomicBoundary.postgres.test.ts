@@ -7,6 +7,9 @@ import {
   type LockedInvoice,
 } from "./bankDisbursementAtomicBoundary";
 import type { PoolClient } from "pg";
+import express from "express";
+import { createServer, type Server } from "node:http";
+import { once } from "node:events";
 
 const enabled = Boolean(process.env.PR95_ATOMIC_PG_URL);
 const base: InvoiceSettlementInput = {
@@ -16,6 +19,8 @@ const base: InvoiceSettlementInput = {
 
 describe.skipIf(!enabled)("PR95 boundary with real disposable PostgreSQL transactions", () => {
   let pool: typeof import("@workspace/db")["pool"];
+  let server: Server;
+  let httpBase: string;
   let failAfter: "journal" | "disbursement" | null = null;
   let corruptJournal = false;
 
@@ -150,6 +155,35 @@ describe.skipIf(!enabled)("PR95 boundary with real disposable PostgreSQL transac
       CREATE TABLE pr95_real.disbursements(
         id serial PRIMARY KEY,company_id integer NOT NULL,invoice_id integer NOT NULL,
         journal_id integer NOT NULL UNIQUE REFERENCES pr95_real.journals(id));`);
+
+    // Test-only HTTP harness. Never imported by any production router.
+    // This verifies the SAME candidate boundary + real PG adapter over HTTP,
+    // not the archived sole-executor, real auth, or payment posting service.
+    const app=express();
+    app.use(express.json({ limit: "8kb" }));
+    app.post("/__test_only__/atomic-vendor-payment", async (req,res) => {
+      if (req.get("x-pr95-test-token") !== "disposable-only") {
+        res.status(403).json({ error:"FORBIDDEN" }); return;
+      }
+      const body=req.body as Record<string, unknown>;
+      if (body && Object.keys(body).some(k =>
+        !["companyId","invoiceId","idempotencyKey","grossMinor","withholdingMinor"].includes(k))) {
+        res.status(422).json({ error:"UNSUPPORTED_FIELD" }); return;
+      }
+      try {
+        const result=await commitVendorInvoicePaymentAtomic(body as InvoiceSettlementInput,adapter());
+        res.status(result.outcome==="created"?201:result.outcome==="replayed"?200:
+          result.reason==="idempotency_conflict"?409:422).json(result);
+      } catch {
+        res.status(503).json({ error:"TRANSACTION_ROLLED_BACK" });
+      }
+    });
+    server=createServer(app);
+    server.listen(0,"127.0.0.1");
+    await once(server,"listening");
+    const address=server.address();
+    if (!address || typeof address==="string") throw Error("No isolated HTTP port");
+    httpBase="http://127.0.0.1:"+address.port;
   });
   beforeEach(async () => {
     failAfter=null;
@@ -158,6 +192,8 @@ describe.skipIf(!enabled)("PR95 boundary with real disposable PostgreSQL transac
     await pool.query("INSERT INTO pr95_real.invoices(id,company_id,outstanding_minor,status) VALUES(77,1,10000,'posted'),(78,1,10000,'posted'),(88,2,10000,'posted')");
   });
   afterAll(async () => {
+    if (server) await new Promise<void>((resolve,reject)=>
+      server.close(error=>error?reject(error):resolve()));
     if (pool) {
       await pool.query("DROP SCHEMA IF EXISTS pr95_real CASCADE");
       await pool.end();
@@ -230,6 +266,47 @@ describe.skipIf(!enabled)("PR95 boundary with real disposable PostgreSQL transac
     });
     expect(await counters()).toMatchObject({
       journal_count:1,disbursement_count:1,unbalanced:0,
+    });
+  });
+
+  async function httpPayment(body: InvoiceSettlementInput, token="disposable-only") {
+    const response=await fetch(httpBase+"/__test_only__/atomic-vendor-payment",{
+      method:"POST",headers:{"Content-Type":"application/json","x-pr95-test-token":token},
+      body:JSON.stringify(body),
+    });
+    return { status:response.status, body:await response.json() as Record<string,unknown> };
+  }
+
+  it("exercises the candidate through actual HTTP and real PG with exact replay", async () => {
+    expect((await httpPayment(base,"wrong-token")).status).toBe(403);
+    expect((await httpPayment(base)).status).toBe(201);
+    const replay=await httpPayment(base);
+    expect(replay.status).toBe(200);
+    expect(replay.body).toMatchObject({outcome:"replayed"});
+    const conflict=await httpPayment({...base,grossMinor:6100});
+    expect(conflict.status).toBe(409);
+    expect(await counters()).toMatchObject({
+      journal_count:1,disbursement_count:1,outstanding:4000,unbalanced:0,
+    });
+  });
+
+  it("rejects simultaneous HTTP attempts with the same key across different invoices", async () => {
+    const results=await Promise.all([
+      httpPayment({...base,idempotencyKey:"pr95-http-cross-invoice"}),
+      httpPayment({...base,invoiceId:78,idempotencyKey:"pr95-http-cross-invoice"}),
+    ]);
+    expect(results.map(x=>x.status).sort()).toEqual([201,409]);
+    expect(await counters()).toMatchObject({
+      journal_count:1,disbursement_count:1,unbalanced:0,
+    });
+  });
+
+  it("rolls back journal and disbursement on simulated HTTP transaction failure", async () => {
+    failAfter="disbursement";
+    const result=await httpPayment(base);
+    expect(result).toMatchObject({status:503,body:{error:"TRANSACTION_ROLLED_BACK"}});
+    expect(await counters()).toMatchObject({
+      journal_count:0,disbursement_count:0,outstanding:10000,unbalanced:0,
     });
   });
 
