@@ -34,3 +34,20 @@ export { suppliersTable } from "./suppliers";
 export { vendorInvoiceLinesTable } from "./purchaseWorkflow";
 export { vendorInvoicesTable } from "./purchaseWorkflow";
 export { vendorNotificationsTable } from "./vendorNotifications";
+
+
+// Source-only compatibility exports for the already-existing legacy
+// CanonicalPostingEngine. No posting route or runtime is activated by these
+// exports; source parity is tested before any promotion.
+export {
+  accountingEntriesTable,
+  accountingEntryLinesTable,
+  accountingJournalsTable,
+  accountingSettingsTable,
+  accountingTaxesTable,
+  accountingPostingErrorsTable,
+  chartOfAccountsTable,
+  costCentersTable,
+} from "./accounting";
+export { companiesTable } from "./companies";
+export { expenseCategoriesTable } from "./expenses";

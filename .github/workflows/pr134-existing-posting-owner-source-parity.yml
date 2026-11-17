@@ -1,0 +1,68 @@
+name: PR134 DEV — reuse existing Accounting posting owner safely
+
+on:
+  pull_request:
+    branches:
+      - fix/customer-invoice-preview-ui-20261117
+    paths:
+      - 'artifacts/api-server/src/lib/accounting.ts'
+      - 'artifacts/api-server/src/lib/posting-engine/**'
+      - 'artifacts/api-server/src/lib/accountingSeed.ts'
+      - 'artifacts/api-server/src/lib/__tests__/legacy-posting-owner-transactions.test.ts'
+      - 'lib/db/src/schema/index.ts'
+      - 'lib/db/src/schema/expenses.ts'
+      - 'docs/dev-customer-invoice-reuse-canonical-posting-owner.md'
+      - '.github/workflows/pr134-existing-posting-owner-source-parity.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  existing-owner-transaction-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Install exact offline-capable dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Ensure original engine is not mounted in active API
+        shell: bash
+        run: |
+          set -euo pipefail
+          f=artifacts/api-server/src/lib/accounting.ts
+          grep -Fq 'JOURNAL_SEQUENCE_TX_UNAVAILABLE: rollback required' "$f"
+          grep -Fq 'JOURNAL_ENUM_TX_UNAVAILABLE: rollback required' "$f"
+          grep -Fq 'if (client === db)' "$f"
+          ! grep -Fq 'posting-engine/index' artifacts/api-server/src/index.ts
+          ! grep -Fq 'postSalesInvoiceWithClient' artifacts/api-server/src/index.ts
+          test -f docs/dev-customer-invoice-reuse-canonical-posting-owner.md
+          echo PR134_ORIGINAL_OWNER_REUSE_ONLY_NO_RUNTIME_ACTIVATION_PASS
+      - name: Original unchanged engine hashes and caller-transaction fail-closed tests
+        run: pnpm --dir artifacts/api-server exec vitest run src/lib/__tests__/legacy-posting-owner-transactions.test.ts
+      - name: Canonical TypeScript and complete credential-free API regression
+        env:
+          APP_ENV: development
+          NODE_ENV: test
+          TZ: Asia/Jakarta
+        run: |
+          pnpm --dir artifacts/api-server typecheck
+          pnpm --dir artifacts/api-server exec vitest run --maxWorkers=2
+      - name: Inactive API / frontend build (no deployment)
+        env:
+          NODE_ENV: production
+          BIZPORTAL_SIGNED_PASSWORD_ENABLED_DEV: 'true'
+          BIZPORTAL_SIGNED_OTP_ENABLED_DEV: 'false'
+        run: |
+          pnpm --filter @workspace/api-server run build
+          pnpm --filter @workspace/bizportal run build
+          node scripts/prepare-hostinger.mjs
+      - name: No unexpected tracked source mutations
+        run: git diff --exit-code -- artifacts/api-server/src lib/db/src docs pnpm-lock.yaml
