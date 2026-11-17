@@ -333,6 +333,7 @@ def current_baseline(expected_sha: str) -> None:
                 "PREVIOUS_ACTIVE_WRITER_DROP_CHANGED")
         require(digest(NGINX) == ACTIVE_WRITER_NGINX,
                 "PREVIOUS_ACTIVE_WRITER_NGINX_CHANGED")
+        flags = public_flags()
         for key in ("BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV",
                     "BIZPORTAL_MARKETPLACE_ACCOUNTING_HANDOFF_ENABLED_DEV",
                     "BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV",
