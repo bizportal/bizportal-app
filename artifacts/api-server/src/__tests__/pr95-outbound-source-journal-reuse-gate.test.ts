@@ -33,6 +33,8 @@ const base: OutboundReuseEvidence = {
   payableAccountId: 1010,
   postedSourceEntryCount: 1,
   activeApprovedMutationLinkCount: 0,
+  mutationFinalMatchCount: 0,
+  sourceFinalAllocationCount: 0,
   outstandingInvoiceMinor: 3169439200,
   requestedWithholdingMinor: 0,
 };
@@ -66,6 +68,8 @@ describe("PR95 outgoing bank source-journal reuse: unregistered fail-closed pref
     reject({ disbursementInvoiceIds: [8] }, "AMBIGUOUS_SOURCE_CUSTODY");
     reject({ postedSourceEntryCount: 2 }, "AMBIGUOUS_SOURCE_CUSTODY");
     reject({ activeApprovedMutationLinkCount: 1 }, "AMBIGUOUS_SOURCE_CUSTODY");
+    reject({ mutationFinalMatchCount: 1 }, "AMBIGUOUS_SOURCE_CUSTODY");
+    reject({ sourceFinalAllocationCount: 1 }, "AMBIGUOUS_SOURCE_CUSTODY");
   });
   it("rejects mismatch, partial settlement, WHT, or incorrect bank amount", () => {
     reject({ mutationAmountMinor: 3169439100 }, "AMOUNT_OR_PARTIAL_PAYMENT_NOT_PROVEN");
