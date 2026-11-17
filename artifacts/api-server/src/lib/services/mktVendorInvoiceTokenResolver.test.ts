@@ -47,4 +47,18 @@ describe("vendor token bootstrap with real company identity boundaries",()=>{
     expect(await resolveVendorInvoiceToken(token)).toEqual({ok:false,code:"NOT_FOUND"});
     expect(mocks.lookup).toHaveBeenCalledWith(token);expect(mocks.read).not.toHaveBeenCalled();
   });
+  it("accepts the already-issued Customer Portal 48-hex token in both company-scoped readers",async()=>{
+    const legacy="a".repeat(48);
+    expect(await resolveVendorInvoiceToken(legacy)).toMatchObject({ok:true,po:{companyId:1}});
+    expect(mocks.read.mock.calls.map(call=>call[0])).toEqual([1,3]);
+    expect(mocks.lookup.mock.calls.every(call=>call[0]===legacy&&call[1]!=null)).toBe(true);
+  });
+  it.each(["a".repeat(47),"a".repeat(49),"a".repeat(63),"a".repeat(65),"g".repeat(48)])(
+    "keeps malformed or nonhex vendor capabilities out of company credential readers",async malformed=>{
+      expect(await resolveVendorInvoiceToken(malformed)).toEqual({ok:false,code:"MALFORMED"});
+      expect(mocks.read).not.toHaveBeenCalled();
+      expect(mocks.lookup).not.toHaveBeenCalled();
+    },
+  );
+
 });
