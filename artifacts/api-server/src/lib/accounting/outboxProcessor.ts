@@ -368,3 +368,52 @@ export async function processCustomerPortalSalesInvoiceOutboxDevOnce():
     return { status: "processed", outboxId: id };
   });
 }
+
+
+/**
+ * Opt-in scheduler for the strict Customer Portal DEV consumer. Reuses the
+ * existing outbox module and database pool; no second worker service/pool.
+ * The legacy poller is not started here. Exact event ownership is protected
+ * by its matching exclusion above. Every flag is required and default OFF.
+ */
+export function startCustomerPortalSalesInvoiceOutboxDevProcessor(): (() => void) | null {
+  if (process.env.APP_ENV?.trim().toLowerCase() !== "development" ||
+      process.env.CUSTOMER_PORTAL_ATOMIC_ACCOUNTING_POST_DEV !== "true" ||
+      process.env.CUSTOMER_PORTAL_REQUIRE_POSTED_AR_EVIDENCE_DEV !== "true" ||
+      process.env.CUSTOMER_PORTAL_OUTBOX_SAFE_CONSUME_DEV !== "true") {
+    return null;
+  }
+
+  let running = false;
+  const runOnce = async () => {
+    if (running) return;
+    running = true;
+    try {
+      const result = await processCustomerPortalSalesInvoiceOutboxDevOnce();
+      if (result.status === "processed") {
+        logger.info({ outboxId: result.outboxId }, "[customer-invoice-outbox] event processed");
+      } else if (result.status === "quarantined") {
+        logger.warn(
+          { outboxId: result.outboxId, reason: result.reason },
+          "[customer-invoice-outbox] event quarantined; no external delivery performed",
+        );
+      }
+    } catch (error) {
+      logger.error({ error }, "[customer-invoice-outbox] transaction failed; event remains retryable");
+    } finally {
+      running = false;
+    }
+  };
+
+  const interval = setInterval(() => { void runOnce(); }, POLL_INTERVAL_MS);
+  const initial = setTimeout(() => { void runOnce(); }, 5_000);
+  interval.unref?.();
+  initial.unref?.();
+  logger.warn(
+    "[customer-invoice-outbox] Strict DEV consumer enabled by all explicit flags; legacy worker not started here",
+  );
+  return () => {
+    clearInterval(interval);
+    clearTimeout(initial);
+  };
+}
