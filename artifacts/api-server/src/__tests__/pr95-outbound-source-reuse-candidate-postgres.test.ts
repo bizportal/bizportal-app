@@ -156,6 +156,55 @@ suite("PR95 unregistered source-owned OUT reuse transition on disposable Postgre
     const absent=await client.query("select count(*)::int as n from public.bank_mutations where id=90002");
     expect(absent.rows[0].n).toBe(0);
   });
+  it("serializes two actual PostgreSQL sessions attempting different mutations for one invoice",async()=>{
+    const second=new pg.Client({connectionString:url});
+    await second.connect();
+    let firstCommitted=false;
+    try {
+      await client.query(`INSERT INTO public.bank_mutations
+        (id,company_id,direction,status,journal_entry_id,amount,bank_account_id)
+        VALUES(90002,1,'OUT','unmatched',NULL,100.00,'17')`);
+      await client.query("BEGIN");
+      await execute();
+      await second.query("BEGIN");
+      await second.query("SET LOCAL lock_timeout='8s'");
+      // Second session must wait on invoice lock held by first transaction;
+      // after first COMMIT its canonical allocation is visible and rejected.
+      const racing=finalizeOutboundSourceReuseCandidate(
+        second as unknown as OutboundReuseQueryClient,
+        {...input,mutationId:90002}
+      ).then(()=>({ok:true,error:""}),(e:unknown)=>({ok:false,error:String(e)}));
+      await client.query("COMMIT");
+      firstCommitted=true;
+      const raced=await racing;
+      expect(raced.ok).toBe(false);
+      expect(raced.error).toContain("PR95_OUTBOUND_FINALIZED_CUSTODY_EXISTS");
+      await second.query("ROLLBACK");
+      const result=await counts();
+      expect(result).toMatchObject({
+        journals:1,allocations:1,matches:1,audits:1,mutation_status:"posted",journal_id:314,
+      });
+    }finally{
+      await second.query("ROLLBACK").catch(()=>{});
+      await second.end();
+      if(!firstCommitted) await client.query("ROLLBACK").catch(()=>{});
+      // Cleanup is ONLY against disposable PostgreSQL and leaves test
+      // baseline unchanged for subsequent scenarios.
+      await client.query("BEGIN");
+      try {
+        await client.query("DELETE FROM public.bank_reconciliation_audit");
+        await client.query("DELETE FROM public.bank_reconciliation_matches");
+        await client.query("DELETE FROM public.payment_allocations");
+        await client.query("DELETE FROM public.payment_matching_groups");
+        await client.query("UPDATE public.bank_mutations SET status='unmatched',journal_entry_id=NULL,reconciliation_status=NULL,accounting_posted=false,approved_at=NULL,approved_by=NULL,posted_at=NULL,linked_transaction_type=NULL,linked_transaction_id=NULL,review_code=NULL WHERE id=90001");
+        await client.query("DELETE FROM public.bank_mutations WHERE id=90002");
+        await client.query("COMMIT");
+      }catch(err){await client.query("ROLLBACK");throw err;}
+    }
+    expect(await counts()).toMatchObject({
+      journals:1,allocations:0,matches:0,audits:0,mutation_status:"unmatched",journal_id:null,
+    });
+  });
   it("rejects invalid AP debit account before financial writes",async()=>{
     await client.query("BEGIN");
     try{
