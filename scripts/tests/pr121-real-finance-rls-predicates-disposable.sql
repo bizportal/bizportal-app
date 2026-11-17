@@ -4,6 +4,20 @@
 -- Apply only AFTER PR107/108 synthetic fixture and Drizzle column/type parity setup.
 -- Existing original PR107/108 abort guards remain untouched.
 BEGIN;
+-- Convert the existing minimal CI fixture's status TEXT columns to the
+-- enum types defined by the canonical Drizzle schema, solely in disposable PG.
+-- The synthetic baseline's old AP status 'draft' is not a valid modern enum;
+-- normalize this inert historical test row before the enum cast.
+UPDATE public.mkt_ap_preparations SET status='ap_preparation' WHERE status='draft';
+ALTER TABLE public.mkt_purchase_orders
+  ALTER COLUMN status TYPE mkt_po_status USING status::mkt_po_status;
+ALTER TABLE public.vendor_invoices
+  ALTER COLUMN status TYPE vi_status USING status::vi_status;
+ALTER TABLE public.mkt_ap_preparations
+  ALTER COLUMN status TYPE mkt_ap_preparation_status USING status::mkt_ap_preparation_status;
+ALTER TABLE public.payment_requests
+  ALTER COLUMN status TYPE pay_req_status USING status::pay_req_status;
+
 ALTER POLICY pr50_finance_dev_handoff_insert ON public.mkt_accounting_handoffs
   WITH CHECK (((company_id = (NULLIF(current_setting('app.marketplace_company_id'::text, true), ''::text))::integer) AND (accounting_status = 'draft_not_posted'::text) AND (EXISTS ( SELECT 1
    FROM mkt_ap_preparations ap
