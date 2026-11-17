@@ -1,0 +1,39 @@
+name: PR132 Private Finance Writer Pinned DEV Upgrade
+
+on:
+  pull_request:
+    branches:
+      - test/pr131-dev-finance-pinned-ipv4-pooler-20261117
+    paths:
+      - 'scripts/deploy-invoice-finance-pinned-ipv4-upgrade-dev.py'
+      - 'scripts/tests/test_pr132_private_finance_upgrade.py'
+      - '.github/workflows/pr132-private-finance-pinned-upgrade.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pinned-upgrade-rollback-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Offline scoped upgrade contract / rollback tests
+        run: python3 scripts/tests/test_pr132_private_finance_upgrade.py
+      - name: Verify no source drift or any secret-writing commands
+        shell: bash
+        run: |
+          set -euo pipefail
+          f=scripts/deploy-invoice-finance-pinned-ipv4-upgrade-dev.py
+          grep -Fq 'UPGRADE_EXACT_CANDIDATE_SHA_REQUIRED' "$f"
+          grep -Fq 'PREVIOUS_ACTIVE_WRITER_DROP_CHANGED' "$f"
+          grep -Fq 'PREVIOUS_ACTIVE_WRITER_NGINX_CHANGED' "$f"
+          grep -Fq 'BIZPORTAL_MARKETPLACE_FINANCE_PINNED_IPV4_SESSION_POOLER_DEV=true' "$f"
+          grep -Fq 'PINNED_CANDIDATE_SHA = "c2d092e18a272a8c2606daaf76a01ec56c77b8c8"' "$f"
+          ! grep -Ei 'gcloud secrets versions add|ALTER ROLE|CREATE POLICY|DROP ROLE' "$f"
+          echo PR132_NO_GCP_OR_DATABASE_MUTATION_SOURCE_GUARD_PASS
+      - name: Test original private stage deployment retains guard behavior
+        run: python3 scripts/tests/test_invoice_preview_deploy.py
+      - name: No tracked source edits
+        run: git diff --exit-code -- scripts
