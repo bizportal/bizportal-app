@@ -108,7 +108,7 @@ async function verifyPosted(companyId, sourceId, { gross = 100, tax = 0 } = {}) 
   if(tax) {
     assert.equal(Number(taxRows.rows[0].tax_amount),tax);
     assert.equal(Number(taxRows.rows[0].base_amount),gross-tax);
-    assert.equal(Number(taxRows.rows[0].tax_rate),11);
+    assert.equal(Number(taxRows.rows[0].tax_rate),tax);
     assert.equal(taxRows.rows[0].status,"posted");
     assert.equal(taxRows.rows[0].direction,"output");
     console.log("ATOMIC_OUTPUT_PPN_RECORD_PASS",companyId,sourceId);
@@ -154,6 +154,12 @@ try {
   assert.equal(await counts(183),1);
   await verifyPosted(1,179,{gross:111,tax:11});
   await verifyPosted(3,183,{gross:111,tax:11});
+  await assertReceipt(3,191);
+  await verifyPosted(3,191,{gross:112,tax:12});
+  await assertReceipt(3,191);
+  assert.equal(await counts(191),1);
+  await verifyPosted(3,191,{gross:112,tax:12});
+  console.log("DIVA_12_PERCENT_EXPLICIT_SOURCE_PPN_PASS");
   console.log("ATOMIC_PPN_AND_REPLAY_PASS");
   await assertReceipt(1,189,{rollback:true});
   assert.equal(await counts(189),0);
