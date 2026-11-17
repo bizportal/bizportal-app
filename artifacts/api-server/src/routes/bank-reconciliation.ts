@@ -4330,8 +4330,10 @@ router.post("/bank-reconciliation/:mutationId/post", async (req, res): Promise<v
     if (mutation.status === "posted" && mutation.journal_entry_id != null) {
       // Never acknowledge a replay using only the mutation's historical marker.
       // The source journal must still be posted and company-owned, not voided.
-      const receipt = await client.query<{ id: number }>(
-        `select id from public.accounting_entries
+      const receipt = await client.query<{
+        id: number; source: string; source_id: number | null;
+      }>(
+        `select id,source::text as source,source_id from public.accounting_entries
           where id=$1 and company_id=$2 and status='posted'
             and cancelled_at is null and voided_at is null
           for update`,
@@ -4342,6 +4344,17 @@ router.post("/bank-reconciliation/:mutationId/post", async (req, res): Promise<v
           "Jurnal mutasi tidak posted, sudah dibatalkan, atau berbeda perusahaan.",
           409,
           "POSTED_JOURNAL_RECEIPT_INVALID",
+        );
+      }
+      // A bank_reconciliation-owned journal must belong to this mutation.
+      // Other source-owned receipts use separate canonical reuse custody.
+      const linkedEntry = receipt.rows[0]!;
+      if (linkedEntry.source === "bank_reconciliation"
+        && Number(linkedEntry.source_id) !== mutationId) {
+        throw new ApprovalError(
+          "Jurnal rekonsiliasi tertaut ke mutasi lain.",
+          409,
+          "POSTED_JOURNAL_SOURCE_MISMATCH",
         );
       }
       await client.query("commit");
