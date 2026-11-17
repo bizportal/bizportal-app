@@ -11,6 +11,9 @@ on:
       - test/pr123-dev-finance-rls-phase1-20261117
       - develop
     paths:
+      - 'artifacts/api-server/src/app.ts'
+      - 'artifacts/api-server/src/lib/vendorCapabilityLogPrivacy*'
+      - 'artifacts/api-server/src/lib/services/mktVendorPoTokenService.ts'
       - 'artifacts/api-server/src/lib/services/mktVendorInvoiceService.ts'
       - 'artifacts/api-server/src/lib/services/mktVendorInvoiceTokenResolver*'
       - 'artifacts/api-server/src/routes/mktVendorInvoice.ts'
@@ -128,6 +131,7 @@ jobs:
       - name: Existing Marketplace API and Accounting regressions
         run: |
           pnpm --dir artifacts/api-server exec vitest run \
+            src/lib/vendorCapabilityLogPrivacy.test.ts \
             src/routes/mktVendorInvoice.dev-compat.test.ts \
             src/routes/dev-otp-to-finance-http.test.ts \
             src/routes/dev-finance-company-role-routing.test.ts \

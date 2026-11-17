@@ -18,6 +18,36 @@ spec.loader.exec_module(deploy)
 
 
 class DeployBoundaries(unittest.TestCase):
+    def test_reload_transition_waits_for_401_and_never_accepts_old_404(self):
+        # readiness, auth, old worker 404, new worker 401, then remaining gates
+        replies = [200, 401, 404, 401, 401, 401, 404, 404]
+        with patch.object(deploy, "status", side_effect=replies) as status, \
+             patch.object(deploy.time, "monotonic", return_value=0), \
+             patch.object(deploy.time, "sleep") as sleep:
+            deploy.check_http_gates("writer", after_nginx_reload=True)
+            writer_calls = [call for call in status.call_args_list if call.args[0].endswith("/match")]
+            self.assertEqual(len(writer_calls), 2)
+            sleep.assert_called_once_with(0.5)
+
+    def test_reload_persistent_404_fails_with_loopback_status_diagnostic(self):
+        diagnostics = io.StringIO()
+        with patch.object(deploy, "status", side_effect=[200, 401, 404, 401]) as status, \
+             patch.object(deploy.time, "monotonic", side_effect=[0, 11]), \
+             patch.object(deploy.time, "sleep") as sleep, contextlib.redirect_stderr(diagnostics):
+            with self.assertRaisesRegex(RuntimeError, "ANONYMOUS_WRITER_GATE_FAILED_EXPECTED_401_OBSERVED_404"):
+                deploy.check_http_gates("writer", after_nginx_reload=True)
+            status.assert_called_with("http://127.0.0.1:19881/api/mkt/admin/vendor-invoices/1/match", "POST")
+            sleep.assert_not_called()
+        self.assertIn("expected=401 ingress=404 loopback=401", diagnostics.getvalue())
+
+    def test_reload_unexpected_200_fails_without_transition_retry(self):
+        with patch.object(deploy, "status", side_effect=[200, 401, 200, 200]), \
+             patch.object(deploy.time, "monotonic", return_value=0), \
+             patch.object(deploy.time, "sleep") as sleep, contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaisesRegex(RuntimeError, "EXPECTED_401_OBSERVED_200"):
+                deploy.check_http_gates("writer", after_nginx_reload=True)
+            sleep.assert_not_called()
+
     def test_only_throttle_responses_are_retried_with_bounded_delay(self):
         headers = Message()
         headers["Retry-After"] = "90"

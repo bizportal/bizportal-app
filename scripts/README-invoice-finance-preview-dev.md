@@ -129,6 +129,11 @@ The generic `/api/` denial and all existing login routes remain in place.
 The existing shared Nginx rate limit remains 10 requests/minute. Smoke checks
 retry only HTTP 429, at most three attempts, with a 6.2-second minimum delay and
 `Retry-After` bounded to 30 seconds. Other HTTP/transport failures are not retried.
+Immediately after signaling Nginx reload, newly allowed Writer routes share a
+ten-second window in which only an old worker's 404 is retried. Each route must
+still return exactly 401 to pass. Unexpected statuses fail immediately; a final
+failure reports the ingress and same-path loopback statuses without response
+headers or bodies. Existing/stage routes retain their original exact guards.
 
 The Writer drop-in clears the inherited generic Finance DSN/secret-name settings:
 company mode deliberately rejects those values. It selects the existing one-GCP
@@ -204,11 +209,13 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p 'test
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p 'test_invoice_preview_build.py' -v
 ```
 
-Eleven checks cover rejected payment/unrecognized paths, preserved authentication,
+Fourteen checks cover rejected payment/unrecognized paths, preserved authentication,
 stale Nginx baseline refusal, artifact manifest path traversal, concurrent-change
 rollback refusal, restoration after an injected Nginx validation failure and the
 exact Customer AR route/anonymous denial in each mode, plus bounded 429-only
 retries without retrying a failed connection or accepting anonymous access.
+Reload-specific checks cover 404-to-401 transition, persistent 404 diagnostics,
+and immediate failure on an unexpected anonymous 200.
 These checks never invoke a real service or replace the signed DEV business test.
 Seven additional build-tool checks cover secret/environment isolation, portable
 symlinks, narrow pnpm self-link rebasing, complete checksum generation and atomic

@@ -233,20 +233,45 @@ def ready() -> None:
     raise RuntimeError("PRIVATE_PREVIEW_NOT_READY")
 
 
-def check_http_gates(mode: str) -> None:
-    require(status(ORIGIN + "/api/health/ready") == 200, "HTTPS_READINESS_FAILED")
-    require(status(ORIGIN + "/api/auth/user") == 401, "ANONYMOUS_AUTH_GATE_FAILED")
+def http_gate(path: str, expected: int, code: str, method: str = "GET", *,
+              ingress_deadline: float | None = None) -> None:
+    while True:
+        actual = status(ORIGIN + path, method) if method != "GET" else status(ORIGIN + path)
+        if actual == expected:
+            return
+        # nginx -s reload returns after signaling the master, before every
+        # worker serves the new allowlist. Only the old 404 may be transient;
+        # success still requires the new route's exact anonymous 401.
+        remaining = (ingress_deadline - time.monotonic()) if ingress_deadline is not None else 0
+        if expected == 401 and actual == 404 and remaining > 0:
+            time.sleep(min(0.5, remaining))
+            continue
+        diagnostic = f"HTTP_GATE {code} expected={expected} ingress={actual}"
+        if ingress_deadline is not None:
+            local = "http://127.0.0.1:19881" + path
+            loopback = status(local, method) if method != "GET" else status(local)
+            diagnostic += f" loopback={loopback}"
+        # Only numeric statuses and a fixed gate identifier are emitted. Never
+        # headers, response bodies, credentials, or capability-bearing URLs.
+        print(diagnostic, file=sys.stderr)
+        raise RuntimeError(f"{code}_EXPECTED_{expected}_OBSERVED_{actual}")
+
+
+def check_http_gates(mode: str, *, after_nginx_reload: bool = False) -> None:
+    # One shared ten-second transition window for the newly allowed routes.
+    # Existing routes, stage mode and direct checks keep their exact guards.
+    deadline = time.monotonic() + 10 if mode == "writer" and after_nginx_reload else None
+    http_gate("/api/health/ready", 200, "HTTPS_READINESS_FAILED")
+    http_gate("/api/auth/user", 401, "ANONYMOUS_AUTH_GATE_FAILED")
     required = 401 if mode == "writer" else 404
-    require(status(ORIGIN + "/api/mkt/admin/vendor-invoices/1/match", "POST") == required,
-            "ANONYMOUS_WRITER_GATE_FAILED")
-    require(status(ORIGIN + "/api/mkt/admin/ap-preparations/1/accounting-handoff", "POST") == required,
-            "ANONYMOUS_HANDOFF_GATE_FAILED")
-    require(status(ORIGIN + "/api/sales/customer-invoices/auto-match-preview?company_id=1") == required,
-            "ANONYMOUS_CUSTOMER_AR_GATE_FAILED")
-    require(status(ORIGIN + "/api/mkt/admin/vendor-invoices/1/settle", "POST") == 404,
-            "UNRELATED_API_GATE_FAILED")
-    require(status(ORIGIN + "/api/sales/documents/1/action", "POST") == 404,
-            "CUSTOMER_ISSUANCE_NOT_ALLOWLISTED")
+    http_gate("/api/mkt/admin/vendor-invoices/1/match", required,
+              "ANONYMOUS_WRITER_GATE_FAILED", "POST", ingress_deadline=deadline)
+    http_gate("/api/mkt/admin/ap-preparations/1/accounting-handoff", required,
+              "ANONYMOUS_HANDOFF_GATE_FAILED", "POST", ingress_deadline=deadline)
+    http_gate("/api/sales/customer-invoices/auto-match-preview?company_id=1", required,
+              "ANONYMOUS_CUSTOMER_AR_GATE_FAILED", ingress_deadline=deadline)
+    http_gate("/api/mkt/admin/vendor-invoices/1/settle", 404, "UNRELATED_API_GATE_FAILED", "POST")
+    http_gate("/api/sales/documents/1/action", 404, "CUSTOMER_ISSUANCE_NOT_ALLOWLISTED", "POST")
 
 
 def check_artifact(expected_sha: str) -> None:
@@ -348,7 +373,7 @@ def apply(mode: str, expected_sha: str) -> None:
         command("systemctl", "restart", UNIT)
         ready()
         command("systemctl", "reload", "nginx")
-        check_http_gates(mode)
+        check_http_gates(mode, after_nginx_reload=True)
         require(property_of(LEGACY_UNIT, "MainPID") == legacy_pid and digest(LEGACY_NGINX) == legacy_hash, "LEGACY_DEV_CHANGED")
         require(property_of(UNIT, "WorkingDirectory") == str(TARGET), "DEPLOYED_SOURCE_MISMATCH")
     except BaseException:
