@@ -52,9 +52,10 @@ export interface AtomicSettlementAdapter<Tx> {
   postJournal(tx: Tx, input: InvoiceSettlementInput): Promise<number>;
   /** Existing disbursement service, passed the same transaction context. */
   createDisbursement(tx: Tx, input: InvoiceSettlementInput, journalId: number): Promise<number>;
-  /** Verify posted ledger lines from the SAME transaction context.
-   * Require at least two lines, positive equal debit/credit totals, and the
-   * matching company/journal. Never trust claimed totals from the HTTP body.
+  /** Reuse the canonical Accounting posting invariant in the SAME transaction.
+   * Verify company ownership, posted journal status, at least two lines,
+   * positive balanced debit/credit lines AND exact header/line total parity.
+   * This check must query persisted data, not the request body.
    */
   isJournalBalanced(tx: Tx, companyId: number, journalId: number): Promise<boolean>;
   /** Performs a company-scoped conditional/CAS balance update, returning success. */
