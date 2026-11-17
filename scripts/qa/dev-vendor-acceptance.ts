@@ -202,7 +202,7 @@ async function seed() {
         (po_id,shipment_number,shipment_status,notes,created_by) values($1,$2,'delivered',$3,$3) returning id`, [poId, label, marker]);
       const shipmentItemIds = [];
       for (let i = 0; i < lineIds.length; i++) shipmentItemIds.push(await insertId(`insert into public.mkt_po_shipment_items
-        (shipment_id,po_line_id,line_number,qty) values($1,$2,$3,$3) returning id`, [shipmentId, lineIds[i], i + 1]));
+        (shipment_id,po_line_id,line_number,qty) values($1,$2,$3::integer,$4::numeric) returning id`, [shipmentId, lineIds[i], i + 1, i + 1]));
       const grId = await insertId(`insert into public.mkt_po_goods_receipts
         (shipment_id,receipt_number,receipt_type,inspection_status,received_by,received_at,notes)
         values($1,$2,'full','passed',$3,clock_timestamp(),$3) returning id`, [shipmentId, label, marker]);
