@@ -11,6 +11,7 @@ on:
       - 'artifacts/api-server/src/lib/services/mktVendorInvoiceTokenResolver.test.ts'
       - 'scripts/deploy-invoice-finance-preview-dev.py'
       - 'scripts/tests/test_invoice_preview_deploy.py'
+      - 'scripts/qa/dev-vendor-acceptance.ts'
       - '.github/workflows/pr127-vendor-token-invoice-compat.yml'
   workflow_dispatch:
 
