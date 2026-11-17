@@ -45,10 +45,10 @@ root,tmp,full,pred=Path(sys.argv[1]),Path(sys.argv[2]),sys.argv[3],sys.argv[4]
 names=[
  '20261117_dev_finance_dormant_roles_phase0.sql',
  '20261117_dev_finance_company_rls_phase1.sql',
- '20261117_dev_finance_parent_locks_phase2.sql',
+ '20261117_dev_finance_parent_lock_phase2.sql',
  '20261117_dev_finance_po_vendor_token_48_64_compat.sql',
  '20261117_dev_finance_po_vendor_token_48_64_compat_rollback.sql',
- '20261117_dev_finance_parent_locks_phase2_rollback.sql',
+ '20261117_dev_finance_parent_lock_phase2_rollback.sql',
  '20261117_dev_finance_company_rls_phase1_rollback.sql',
  '20261117_dev_finance_dormant_roles_phase0_rollback.sql',
 ]
@@ -83,7 +83,7 @@ UPDATE public.mkt_purchase_orders
  vendor_token_expires_at=(now() AT TIME ZONE 'UTC')+interval '1 day'
  WHERE id IN (11,31);
 SQL
-admin < "$TMP/20261117_dev_finance_parent_locks_phase2.sql" >/dev/null
+admin < "$TMP/20261117_dev_finance_parent_lock_phase2.sql" >/dev/null
 verified="$(printf '%s\n' "SELECT (SELECT count(*) FROM pg_policies WHERE schemaname='public' AND policyname IN ('pr108_definer_read','pr108_definer_lock'))::text || ':' || (SELECT count(*) FROM pg_roles WHERE rolname='bizportal_finance_parent_lock_owner_dev' AND NOT rolcanlogin AND NOT rolbypassrls)::text;" | admin)"
 test "$verified" = "6:1"
 echo PR124_PRIVATE_OWNER_AND_SIX_RLS_POLICIES_PASS
@@ -150,7 +150,7 @@ admin <<'SQL' >/dev/null
 ALTER ROLE bizportal_finance_cst_login_dev NOLOGIN CONNECTION LIMIT 0 PASSWORD NULL;
 ALTER ROLE bizportal_finance_diva_login_dev NOLOGIN CONNECTION LIMIT 0 PASSWORD NULL;
 SQL
-admin < "$TMP/20261117_dev_finance_parent_locks_phase2_rollback.sql" >/dev/null
+admin < "$TMP/20261117_dev_finance_parent_lock_phase2_rollback.sql" >/dev/null
 after="$(printf '%s\n' "SELECT (SELECT count(*) FROM pg_roles WHERE rolname='bizportal_finance_parent_lock_owner_dev')::text || ':' || (SELECT count(*) FROM pg_policies WHERE schemaname='public' AND policyname IN ('pr108_definer_read','pr108_definer_lock'))::text || ':' || (SELECT count(*) FROM pg_namespace WHERE nspname='finance_ops_private')::text;" | admin)"
 test "$after" = "0:0:0"
 echo PR124_PHASE2_ROLLBACK_REMOVES_PRIVATE_FUNCTION_OWNER_AND_POLICIES_PASS
