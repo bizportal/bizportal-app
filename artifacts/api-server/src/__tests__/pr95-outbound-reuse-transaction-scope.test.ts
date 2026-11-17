@@ -3,7 +3,7 @@ import { lockOutboundSourceJournalReuseScope } from "../lib/outboundReuseTransac
 import type { OutboundReuseQueryClient } from "../lib/outboundReuseFinalityReader";
 
 const ids = { companyId: 1, mutationId: 90001, invoiceId: 7 };
-function build(overrides: { mutation?: Record<string, unknown> | null; invoice?: boolean; bd?: {id:number;entry_id:number|null}[]; entry?: boolean; counts?: number[] } = {}) {
+function build(overrides: { mutation?: Record<string, unknown> | null; invoice?: boolean; bd?: {id:number;entry_id:number|null}[]; entry?: boolean; counts?: number[]; sourceItems?: Array<{vendor_invoice_id:number|null}> } = {}) {
   const seen: Array<{sql:string;params:readonly (string|number)[]}> = [];
   let n=0;
   const client: OutboundReuseQueryClient = {
@@ -14,6 +14,7 @@ function build(overrides: { mutation?: Record<string, unknown> | null; invoice?:
           (overrides.mutation === null ? [] : [overrides.mutation ?? {id:90001,company_id:1,direction:"OUT",status:"unmatched",journal_entry_id:null}])
         : sql.includes("from public.vendor_invoices") ? (overrides.invoice === false ? [] : [{id:7}])
         : sql.includes("from public.bank_disbursements") ? (overrides.bd ?? [{id:2,entry_id:314}])
+        : sql.includes("from public.bank_disbursement_items") ? (overrides.sourceItems ?? [{vendor_invoice_id:7}])
         : sql.includes("from public.accounting_entries") ? (overrides.entry === false ? [] : [{id:314}])
         : [{n:String((overrides.counts ?? [0,0,0])[n++])}];
       return {rows:row as unknown as T[]};
@@ -37,8 +38,12 @@ describe("PR95 unregistered PostgreSQL lock-scoped outbound reuse preflight", ()
     expect(seen[3].sql).toContain("for update");
     expect(seen[3].params).toEqual([7,1]);
     expect(seen[4].sql).toContain("for update of bd,bdi");
+    expect(seen[5].sql).toContain("from public.bank_disbursement_items");
     expect(seen[5].sql).toContain("for update");
-    expect(seen.slice(6)).toHaveLength(3);
+    expect(seen[5].params).toEqual([2]);
+    expect(seen[6].sql).toContain("from public.accounting_entries");
+    expect(seen[6].sql).toContain("for update");
+    expect(seen.slice(7)).toHaveLength(3);
     expect(seen.every(q=>!/(insert into|update public|delete from)/i.test(q.sql))).toBe(true);
   });
   it("rejects missing actual mutation, wrong direction, prelinked journal, and invalid company input", async () => {
@@ -53,6 +58,10 @@ describe("PR95 unregistered PostgreSQL lock-scoped outbound reuse preflight", ()
       .rejects.toThrow("PR95_OUTBOUND_INVOICE_NOT_POSTED");
     await expect(lockOutboundSourceJournalReuseScope(build({bd:[{id:2,entry_id:314},{id:3,entry_id:315}]}).client,ids))
       .rejects.toThrow("PR95_OUTBOUND_SOURCE_AMBIGUOUS");
+    await expect(lockOutboundSourceJournalReuseScope(build({sourceItems:[{vendor_invoice_id:7},{vendor_invoice_id:8}]}).client,ids))
+      .rejects.toThrow("PR95_OUTBOUND_SOURCE_MULTI_INVOICE");
+    await expect(lockOutboundSourceJournalReuseScope(build({sourceItems:[]}).client,ids))
+      .rejects.toThrow("PR95_OUTBOUND_SOURCE_MULTI_INVOICE");
     await expect(lockOutboundSourceJournalReuseScope(build({entry:false}).client,ids))
       .rejects.toThrow("PR95_OUTBOUND_SOURCE_JOURNAL_INVALID");
     for (const counts of [[1,0,0],[0,1,0],[0,0,1]]) {
