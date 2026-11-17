@@ -73,6 +73,26 @@ describe("canonical existing posting owner injected into Customer Portal's PG cl
    expect(drizzleTx).toHaveProperty("execute");
    expect(drizzleTx).toHaveProperty("insert");
  });
+ it("posts using the locked database invoice date rather than potentially stale application data",async()=>{
+   const a=args(1);
+   (a.input.invoice as any).invoice_date="2026-10-01";
+   (a.input.invoice as any).due_date="2026-11-01";
+   await expect(post(a)).resolves.toEqual({posted:true,entryId:77});
+   const [request]=m.post.mock.calls[0]!;
+   expect(request.date).toEqual(new Date("2026-11-18"));
+ });
+ it("rejects a locked database row with a mismatched invoice identity",async()=>{
+   const a=args(1);
+   a.client.query.mockResolvedValueOnce({rows:[{...row(),id:92}]});
+   await expect(post(a)).rejects.toThrow("DEV_SALES_POSTING_SOURCE_MISMATCH");
+   expect(m.post).not.toHaveBeenCalled();
+ });
+ it("rejects missing accounting dates in the locked invoice",async()=>{
+   const a=args(1);
+   a.client.query.mockResolvedValueOnce({rows:[{...row(),invoice_date:null}]});
+   await expect(post(a)).rejects.toThrow("DEV_SALES_POSTING_SOURCE_MISMATCH");
+   expect(m.post).not.toHaveBeenCalled();
+ });
  it("rejects nonzero tax from LOCKED DB even if the Portal response does not carry tax_amount",async()=>{
    const a=args(1,11);
    await expect(post(a)).rejects.toThrow("DEV_SALES_POSTING_FINANCIAL_TOTAL_INVALID");
