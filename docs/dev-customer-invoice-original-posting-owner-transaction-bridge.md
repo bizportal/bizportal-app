@@ -57,3 +57,23 @@ BizPortal canonical owner source = Draft PR #135.
 BizPortal same-client adapter = this stacked Draft PR.
 Customer Portal issuer = Draft PR #206.
 One existing Supabase DEV project xssrfshdrtdfupgqwfdw and one existing GCP Finance bundle.
+
+
+## Strict Customer Invoice outbox scheduler — isolated DEV proof (18 Nov 2026 WIB)
+
+The existing outboxProcessor.ts now contains the strict Customer Invoice drain and its scheduler. The existing API src/index.ts starts **only this strict consumer** when all of these explicit flags are true:
+
+- APP_ENV=development
+- CUSTOMER_PORTAL_ATOMIC_ACCOUNTING_POST_DEV=true
+- CUSTOMER_PORTAL_REQUIRE_POSTED_AR_EVIDENCE_DEV=true
+- CUSTOMER_PORTAL_OUTBOX_SAFE_CONSUME_DEV=true
+
+All flags remain OFF by default. It does not start the legacy outbox poller, another worker service, or another DB pool. It uses one 10-second interval plus one delayed initial tick, with overlap guard and graceful shutdown. A tagged sales_invoice: event is excluded from the legacy poller's query; untagged historical events are unaffected. The original Accounting engine's _postEntryCore outbox/ledger hooks are guarded by client === db, so the Portal's caller-owned transaction path does not generate a second legacy outbox event; the Portal inserts its single tagged event and audit itself before COMMIT.
+
+**VPS QA proof:** strict consumer source from this PR was run against a disposable local PostgreSQL 16 container (PG17 Docker image pull timed out). Four synthetic outbox rows (CST + Diva) were processed exactly once, with one matching financial_events row per event; fresh Node processes after COMMIT returned empty; a forced SQL failure at the done status update rolled back the preceding financial_events insert and left the event pending; retry processed it once; three simultaneous consumers claimed one event once. Final QA DB: four done, four event rows, zero duplicates, zero pending. QA container, scratch source, and credential files were removed.
+
+**Actual CST-DEV PostgreSQL 17 proof:** a source bundle was run on srv1792369 using the DEV-only database URL, with all three explicit flags enabled, through both the isolated scheduler and direct strict-drain invocation. Scheduler started and stopped cleanly; direct drain returned {"status":"empty"} because Supabase currently has zero newly tagged Customer Invoice events. No rows were inserted, updated, quarantined, or delivered. Read-only EXPLAIN confirmed the claim and full ledger/Invoice/AR/audit proof query are valid on the actual PG17 schema.
+
+The latest CI [#44167204132](https://github.com/bizportal/bizportal-app/actions/runs/44167204132) is SUCCESS: strict outbox scheduler/ownership suite 20/20 PASS, combined focused Accounting/worker suite 45/45 PASS, full API 965 PASS / 54 skipped, TypeScript and API/frontend build PASS. Local canonical API pnpm run typecheck also PASS.
+
+**Still not a live activation:** no new tagged event exists in Supabase to process, the scheduler was only run in an isolated one-shot process and stopped, active DEV remains on its prior release with all flags OFF, PR remains Draft, PROD untouched. A real committed new Invoice/journal/AR followed by strict worker restart on Supabase PG17 remains a separate gate.
