@@ -33,7 +33,13 @@ export function registerPayrollSetupReadinessRoutes(router: IRouter): void {
     }
     // Never fall back to a broad application pool for DEV salary data.
     // DEV must use the existing separate, project-pinned Payroll role.
-    const ready = isDev ? devPayrollDedicatedEnabled() : payrollReadOnlyReady();
+    let ready = false;
+    try {
+      ready = isDev ? devPayrollDedicatedEnabled() : payrollReadOnlyReady();
+    } catch {
+      // A malformed or stale dedicated URL must not escape as a raw DB error.
+      ready = false;
+    }
     if (!ready) {
       res.status(503).json({ message: "Koneksi Payroll baca-saja khusus belum tersedia." });
       return;
