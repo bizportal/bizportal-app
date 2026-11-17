@@ -146,7 +146,8 @@ try {
   console.log("ATOMIC_PPN_AND_REPLAY_PASS");
   await assertReceipt(1, 177, { expectedFailure: /TAX_OR_ADJUSTMENT_UNSUPPORTED/ });
   await assertReceipt(1, 185, { expectedFailure: /TAX_CONFIGURATION_OR_AMOUNT_MISMATCH/ });
-  for(const sourceId of [177,185]){
+  await assertReceipt(3, 187, { expectedFailure: /TAX_CONFIGURATION_MISSING/ });
+  for(const sourceId of [177,185,187]){
     assert.equal(await counts(sourceId),0);
     const taxAr = await pool.query("SELECT COUNT(*)::int AS n FROM public.ar_subledger WHERE invoice_id=$1",[sourceId]);
     assert.equal(Number(taxAr.rows[0].n), 0);
