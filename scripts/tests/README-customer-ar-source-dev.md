@@ -148,13 +148,39 @@ pnpm --dir artifacts/api-server typecheck
 
 The integration harness uses an internal Docker network, no published ports,
 synthetic credentials, a temporary PostgreSQL volume, and no live database or
-outbound business integration. Its 21 scenario groups execute the exact
+outbound business integration. Its original 21 scenario groups execute the exact
 release/rollback SQL and the real preview SQL/matcher. They cover deferred
 completion, missing/ambiguous/void/reversed evidence, both reversal ID
 conventions, cross-company lines/accounts/headers, absolute partial payments,
 overpayment rejection, duplicate replays, two concurrent commit orders,
 restricted real login sessions, GUC/SET ROLE attacks, stale-row tampering,
 accidental grant loss, unlisted issuer invalidation, and rollback preservation.
+
+Two additional groups close the joint bank-to-AR integration gap: the original
+matching cases used real invoice SQL with in-memory bank inputs, while bank
+RLS was tested separately. The extension creates three new valid invoice and
+posted-source fixtures per company through the existing trigger, then reads
+their projected AR and real bank rows in the same READ COMMITTED, READ ONLY
+transaction under each actual CST/DIVA login. It checks both `current_user`
+and `session_user`, exact/partial/overpayment results, all three reference
+fields, and duplicate invoice numbers across companies with different balances.
+Passing the other company's SQL parameter returns no invoice or bank rows.
+
+The test extracts the route's literal `MUTATIONS_SQL` as JSON strings, verifies
+its exact reviewed shape, and executes it with the company parameter. It does
+not import the route, initialize its pools, or evaluate extracted code. A static
+source comparison also pins the test adapter to the route's row conversions;
+query or mapping drift fails closed. Both reads use the real shared invoice
+query and the real matcher. Repeated previews must return identical results
+and leave complete ordered snapshots of invoices, journal headers/lines, AR,
+bank rows and payments unchanged. Only the six newly seeded bank rows are
+removed afterward, preserving the original bank/payment invariant. The new
+source and AR fixtures remain in the disposable database for the existing
+rollback-preservation checks and are destroyed by the unchanged runner.
+
+These additional groups require a fresh PG17 CI result before they are claimed
+PASS. They do not re-test deployed HTTP authentication, TLS, the Finance pool
+resolver, or UI behavior, and they do not issue or settle a live invoice.
 
 The synthetic source fixture intentionally gives its company logins source
 write grants **only inside the disposable database** to prove the invoker path
