@@ -19,7 +19,7 @@ export type LockedInvoice = Readonly<{
   companyId: number;
   invoiceId: number;
   outstandingMinor: number;
-  status: "posted";
+  status: "posted" | "paid";
 }>;
 
 export type CommittedSettlement = Readonly<{
@@ -72,9 +72,11 @@ export async function commitVendorInvoicePaymentAtomic<Tx>(
   return adapter.transaction(async (tx) => {
     const invoice = await adapter.lockInvoice(tx, input.companyId, input.invoiceId);
     if (!invoice || invoice.companyId !== input.companyId
-      || invoice.invoiceId !== input.invoiceId || invoice.status !== "posted") {
+      || invoice.invoiceId !== input.invoiceId) {
       return { outcome: "rejected", reason: "unavailable" };
     }
+    // A completed payment may have moved the invoice to "paid".
+    // Exact replay must still return its original committed result.
     const prior = await adapter.findByKey(tx, input.companyId, input.idempotencyKey);
     if (prior) {
       if (prior.companyId === input.companyId
@@ -84,6 +86,9 @@ export async function commitVendorInvoicePaymentAtomic<Tx>(
         return { outcome: "replayed", settlement: prior };
       }
       return { outcome: "rejected", reason: "idempotency_conflict" };
+    }
+    if (invoice.status !== "posted") {
+      return { outcome: "rejected", reason: "unavailable" };
     }
     if (input.grossMinor > invoice.outstandingMinor) {
       return { outcome: "rejected", reason: "overpayment" };
