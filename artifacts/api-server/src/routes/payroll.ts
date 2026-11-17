@@ -4,6 +4,7 @@ import { getPayrollPool, payrollScopedQuery, setPayrollCompanyScope } from "./pa
 import { authorizePayrollCompany } from "./payroll-access";
 import { registerPayrollSetupReadinessRoutes } from "./payroll-setup-readiness";
 import { registerPayrollProdConnectionPreflightRoutes } from "./payroll-prod-connection-preflight";
+import { registerPayrollSuperAdminApprovalRoutes } from "./payroll-super-admin-approval";
 import { readPayrollSuperAdminApprovalReceipt } from "./payroll-super-admin-approval-receipt";
 import { getDevSession, getProductionSession, getProductionUser, isDevelopmentEnvironment, type DevAuthUser } from "./dev-auth";
 
@@ -68,6 +69,42 @@ router.use("/payroll", authorize);
 registerPayrollSetupReadinessRoutes(router);
 // Port exact legacy read-only scoped PROD connection diagnostic; write paths remain disabled.
 registerPayrollProdConnectionPreflightRoutes(router);
+
+// Approval is intentionally absent from the PROD route tree. This stage only
+// exposes the existing, independently guarded handler on an EXPLICIT DEV-only
+// canary. It does NOT grant a DB role, enable approval, or permit GL/payouts.
+// The handler still requires PAYROLL_DEV_SUPER_ADMIN_APPROVAL_ENABLED and the
+// distinct, pinned bizportal_payroll_approver_dev login before any write.
+if (process.env.APP_ENV?.trim().toLowerCase() === "development" &&
+    process.env.PAYROLL_DEV_SUPER_ADMIN_ROUTE_MOUNT_ENABLED === "true") {
+  const approvalRouter: IRouter = Router();
+  // A legacy DEV test-session cookie is NEVER sufficient for salary approval.
+  // Revalidate the server-issued OTP session and active DB user identity on
+  // each request, even when ordinary Payroll reads allow legacy DEV sessions.
+  approvalRouter.use(async (req: PayrollRequest, res: Response, next: NextFunction) => {
+    const signedSession = getProductionSession(req);
+    if (!signedSession) {
+      res.status(401).json({ message: "Persetujuan Payroll memerlukan sesi OTP Super Admin." });
+      return;
+    }
+    try {
+      const verifiedActor = await getProductionUser(signedSession);
+      const verifiedCompany = authorizePayrollCompany(verifiedActor, req.query.companyId);
+      if (!verifiedActor || verifiedActor.role.toLowerCase() !== "super_admin" ||
+          !verifiedCompany || verifiedCompany !== req.payrollCompanyId) {
+        res.status(403).json({ message: "Super Admin Payroll tidak berwenang." });
+        return;
+      }
+      req.payrollActor = verifiedActor;
+      next();
+    } catch (error) {
+      req.log?.error?.({ error }, "DEV Payroll Super Admin identity verification failed");
+      res.status(503).json({ message: "Identitas Super Admin tidak dapat diverifikasi." });
+    }
+  });
+  registerPayrollSuperAdminApprovalRoutes(approvalRouter);
+  router.use(approvalRouter);
+}
 
 router.get("/payroll/runs", async (req: PayrollRequest, res): Promise<void> => {
   const companyId = req.payrollCompanyId!;
