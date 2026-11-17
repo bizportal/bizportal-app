@@ -22,6 +22,12 @@ on:
       - 'scripts/sql/20261117_pr107_*'
       - 'scripts/sql/20261117_pr108_*'
       - 'scripts/sql/20261117_pr120_live_company_finance_readonly_preflight.sql'
+      - 'scripts/sql/20261117_dev_finance_*.sql'
+      - 'scripts/tests/pr108-run-session-bound-definer-disposable.sh'
+      - 'scripts/tests/pr123-run-company-rls-phase1-disposable.sh'
+      - 'scripts/tests/finance-phase2-release-disposable.sh'
+      - 'artifacts/api-server/src/lib/services/marketplaceFinanceNotifications.dev.test.ts'
+      - 'artifacts/api-server/src/lib/services/marketplaceNotificationQueueService.ts'
       - '.github/workflows/pr117-canonical-vendor-finance-e2e.yml'
   workflow_dispatch:
 
@@ -96,6 +102,18 @@ jobs:
         env:
           PR117_DISPOSABLE_PG_IMAGE: ${{ matrix.postgres }}
         run: bash scripts/tests/pr117-run-real-vendor-finance-pg16.sh
+      - name: Verify parent-lock expiry during a real authenticated lock wait
+        env:
+          PR108_DISPOSABLE_PG_IMAGE: ${{ matrix.postgres }}
+        run: bash scripts/tests/pr108-run-session-bound-definer-disposable.sh
+      - name: Verify phase0 and phase1 rejection and exact rollback
+        env:
+          PR123_POSTGRES_IMAGE: ${{ matrix.postgres }}
+        run: bash scripts/tests/pr123-run-company-rls-phase1-disposable.sh
+      - name: Verify phase2 with exact policy predicates and non-superuser admin
+        env:
+          FINANCE_PHASE2_PG_IMAGE: ${{ matrix.postgres }}
+        run: bash scripts/tests/finance-phase2-release-disposable.sh
       - name: Existing Marketplace API and Accounting regressions
         run: |
           pnpm --dir artifacts/api-server exec vitest run \
@@ -105,6 +123,7 @@ jobs:
             src/lib/gcp-systemd-bootstrap.test.ts \
             src/__tests__/dev-systemd-gcp-bootstrap.test.ts \
             src/lib/services/mktVendorInvoiceParentLock.dev.test.ts \
+            src/lib/services/marketplaceFinanceNotifications.dev.test.ts \
             src/lib/services/mktMarketplaceCompanyScope.test.ts \
             src/routes/dev-marketplace-finance-writer.test.ts \
             src/lib/services/mktAccountingHandoff.test.ts

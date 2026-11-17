@@ -6,7 +6,7 @@ BEGIN;
 SET LOCAL lock_timeout = '1000ms';
 SET LOCAL statement_timeout = '15000ms';
 DO $preflight$
-DECLARE fp text;
+DECLARE fp text; policy_count integer;
 BEGIN
   IF current_database() <> 'postgres' OR current_user <> 'postgres'
   THEN RAISE EXCEPTION 'DEV_FINANCE_WRONG_DATABASE_OR_ADMIN'; END IF;
@@ -20,13 +20,13 @@ BEGIN
              policyname='pr107_company_role_restrictive_all') OR
      to_regnamespace('finance_ops_private') IS NOT NULL
   THEN RAISE EXCEPTION 'DEV_FINANCE_SECURITY_MIGRATION_ALREADY_STAGED'; END IF;
-  SELECT md5(string_agg(
+  SELECT count(*), md5(string_agg(
      tablename||'|'||policyname||'|'||cmd||'|'||permissive||'|'||roles::text||'|'||
      coalesce(qual,'')||'|'||coalesce(with_check,''),
      E'\n' ORDER BY tablename,policyname,cmd))
-    INTO fp FROM pg_policies WHERE schemaname='public'
+    INTO policy_count,fp FROM pg_policies WHERE schemaname='public'
       AND policyname LIKE 'pr50_finance_dev_%';
-  IF fp <> 'f69295cc7f66f8bc4645a6fc02e2f36e'
+  IF policy_count <> 18 OR fp IS DISTINCT FROM 'f69295cc7f66f8bc4645a6fc02e2f36e'
   THEN RAISE EXCEPTION 'DEV_FINANCE_ORIGINAL_POLICY_FINGERPRINT_CHANGED'; END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE
        rolname='bizportal_marketplace_finance_login_dev'
@@ -41,7 +41,7 @@ CREATE ROLE bizportal_finance_diva_login_dev
   NOLOGIN NOINHERIT NOBYPASSRLS NOSUPERUSER NOCREATEDB NOCREATEROLE CONNECTION LIMIT 0;
 
 DO $postflight$
-DECLARE ready integer; fp text;
+DECLARE ready integer; fp text; policy_count integer;
 BEGIN
   SELECT count(*) INTO ready FROM pg_roles
     WHERE rolname IN ('bizportal_finance_cst_login_dev','bizportal_finance_diva_login_dev')
@@ -51,12 +51,12 @@ BEGIN
   IF EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.member
      WHERE r.rolname IN ('bizportal_finance_cst_login_dev','bizportal_finance_diva_login_dev'))
   THEN RAISE EXCEPTION 'DEV_FINANCE_DORMANT_ROLE_MEMBERSHIP_INVALID'; END IF;
-  SELECT md5(string_agg(tablename||'|'||policyname||'|'||cmd||'|'||permissive||'|'||
+  SELECT count(*), md5(string_agg(tablename||'|'||policyname||'|'||cmd||'|'||permissive||'|'||
        roles::text||'|'||coalesce(qual,'')||'|'||coalesce(with_check,''),
        E'\n' ORDER BY tablename,policyname,cmd))
-    INTO fp FROM pg_policies
+    INTO policy_count,fp FROM pg_policies
     WHERE schemaname='public' AND policyname LIKE 'pr50_finance_dev_%';
-  IF fp <> 'f69295cc7f66f8bc4645a6fc02e2f36e'
+  IF policy_count <> 18 OR fp IS DISTINCT FROM 'f69295cc7f66f8bc4645a6fc02e2f36e'
   THEN RAISE EXCEPTION 'DEV_FINANCE_ORIGINAL_POLICIES_CHANGED'; END IF;
 END
 $postflight$;

@@ -143,7 +143,15 @@ BEGIN
     FOR UPDATE OF sh;
   IF NOT FOUND THEN RETURN FALSE; END IF;
 
-  RETURN TRUE;
+  -- Waiting for a PO, GR or Shipment lock can outlast a token that was valid
+  -- when the first SELECT started. Revalidate with wall-clock time AFTER all
+  -- locks are held; the caller must not create an invoice with an expired token.
+  PERFORM 1 FROM public.mkt_purchase_orders po
+    WHERE po.id=p_po_id AND po.company_id=v_company
+      AND po.vendor_id=p_supplier_id AND po.vendor_token=p_vendor_token
+      AND (po.vendor_token_expires_at IS NULL OR
+           po.vendor_token_expires_at > (pg_catalog.clock_timestamp() AT TIME ZONE 'UTC'));
+  RETURN FOUND;
 END
 $body$;
 REVOKE ALL ON FUNCTION finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text) FROM PUBLIC;
