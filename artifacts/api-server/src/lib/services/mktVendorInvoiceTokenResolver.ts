@@ -11,7 +11,9 @@ export async function resolveVendorInvoiceToken(token: string): Promise<TokenLoo
       process.env.BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV !== "true") {
     return findPoByVendorToken(token);
   }
-  if (!/^[0-9a-f]{64}$/i.test(token)) return { ok: false, code: "MALFORMED" };
+  // Customer Portal already issues 24-byte / 48-hex PO links, while canonical
+  // BizPortal issues 32-byte / 64-hex. Exact-length only, never prefix match.
+  if (!/^(?:[0-9a-f]{48}|[0-9a-f]{64})$/i.test(token)) return { ok: false, code: "MALFORMED" };
   const results = await Promise.all(([1, 3] as const).map(companyId =>
     withMarketplaceFinanceDevReadOnlyTransaction(companyId, async scopedDb => {
       const result = await findPoByVendorToken(token, scopedDb);

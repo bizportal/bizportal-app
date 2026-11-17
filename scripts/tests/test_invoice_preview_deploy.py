@@ -82,12 +82,27 @@ class DeployBoundaries(unittest.TestCase):
         self.assertTrue(admitted("/api/mkt/admin/vendor-invoices/12/match"))
         self.assertTrue(admitted("/api/mkt/admin/ap-preparations/12/accounting-handoff"))
         self.assertTrue(admitted("/api/mkt/vendor-invoice/" + "a" * 64))
+        # Existing Customer Portal PO capabilities are 48 hex, not 64.
+        # Verify all three allowlisted vendor routes, not just POST.
+        self.assertTrue(admitted("/api/mkt/vendor-invoice/" + "a" * 48))
+        self.assertTrue(admitted("/api/mkt/vendor-invoice/" + "b" * 48 + "/invoices"))
+        self.assertTrue(admitted("/api/mkt/vendor-invoice/" + "b" * 48 + "/invoices/5"))
+        self.assertTrue(admitted("/api/mkt/vendor-invoice/" + "a" * 48 + "/invoices/5/submit"))
+        self.assertTrue(admitted("/api/mkt/vendor-invoice/" + "a" * 64 + "/invoices/5/submit"))
+        self.assertEqual(deploy.nginx_block().count("access_log off;"), 3)
         for path in [
             "/api/mkt/admin/vendor-invoices/12/settle",
             "/api/mkt/admin/ap-preparations/12/payment",
             "/api/mkt/admin/vendor-invoices/12/match/extra",
             "/api/mkt/admin/vendor-invoices/00/match",
+            "/api/mkt/vendor-invoice/" + "a" * 47,
+            "/api/mkt/vendor-invoice/" + "a" * 49,
             "/api/mkt/vendor-invoice/" + "a" * 63,
+            "/api/mkt/vendor-invoice/" + "a" * 65,
+            "/api/mkt/vendor-invoice/" + "a" * 48 + "!",
+            "/api/mkt/vendor-invoice/" + "a" * 47 + "/invoices",
+            "/api/mkt/vendor-invoice/" + "a" * 49 + "/invoices/5/submit",
+            "/api/mkt/vendor-invoice/" + "g" * 48,
             "/api/mkt/vendor-invoice/" + "g" * 64,
             "/api/accounting/entries/12/post",
         ]:

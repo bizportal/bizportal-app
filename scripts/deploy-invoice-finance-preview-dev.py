@@ -126,7 +126,10 @@ def route(pattern: str, methods: str, body_limit: str, *, token: bool = False, e
 
 def nginx_block() -> str:
     ident = "[1-9][0-9]{0,9}"
-    token = "[0-9A-Fa-f]{64}"
+    # Customer Portal has already issued 24-byte/48-hex PO capabilities.
+    # Canonical BizPortal uses 32-byte/64-hex. Keep exact lengths, HTTPS
+    # allowlist and access_log off for both; do not admit prefix matches.
+    token = "(?:[0-9A-Fa-f]{48}|[0-9A-Fa-f]{64})"
     return BEGIN + (
         route("/api/sales/customer-invoices/auto-match-preview", "GET", "1024", exact=True) +
         route(f"^/api/mkt/admin/vendor-invoices/{ident}/(match|ap-preparation)$", "POST", "1024") +
