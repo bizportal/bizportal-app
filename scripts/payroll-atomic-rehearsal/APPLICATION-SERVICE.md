@@ -101,3 +101,13 @@ Draft before promotion, without weakening any guard. Four copied function
 definitions match live read-only metadata hashes; six selected trigger
 registrations are enabled in the isolated fixture. 20 checks PASS; this is
 not a complete clone of every live trigger or a signed HTTP E2E result.
+
+## Ledger read-back addition (17 Nov 2026)
+
+The same transaction now also requires the existing line-sync ledger to exactly
+match the journal. No ledger writer or automatic repair is added. See
+`LEDGER-READBACK.md` for the pure comparison tests, reused PostgreSQL scenario
+scope and explicit limitations of the blocked additional SQL fault harness.
+The fixture includes three exact ledger trigger functions but uses synthetic
+scoped grants/policy: live ledger RLS currently has no policies and the
+settlement role has no ledger access. No live permission change is implied.

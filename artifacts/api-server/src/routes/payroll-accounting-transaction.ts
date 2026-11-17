@@ -2,6 +2,7 @@ import type { Pool, PoolClient } from "pg";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { prepareReviewedPayrollAccrual, type PayrollHandoffInput, type PayrollHandoffAccount } from "./payroll-accounting-handoff";
 import { buildPayrollPreview, type PayrollPreviewItem } from "./payroll-preview";
+import { assertPayrollLedgerMirror, type PayrollLedgerRow, type PayrollJournalLine } from "./payroll-accounting-ledger";
 import { centsToMoney, moneyToCents, payrollMonth } from "./payroll-kasbon-automatic";
 import { payrollSuperAdminApprovalDigest, readPayrollSuperAdminApprovalReceipt } from "./payroll-super-admin-approval-receipt";
 
@@ -86,8 +87,8 @@ async function verifyPersistedJournal(client: PoolClient, companyId: number, run
   const preview = buildPayrollPreview(items.map(cleanItem));
   if (preview.mismatchedItemIds.length) fail("ITEM_TOTALS_CHANGED");
   const journal = await client.query<{ company_id: number; source: string; source_id: number; ref: string;
-    status: string; total_debit: string; total_credit: string; voided_at: unknown; void_entry_id: number | null }>(
-    `SELECT company_id,source,source_id,ref,status,total_debit::text,total_credit::text,voided_at,void_entry_id
+    status: string; total_debit: string; total_credit: string; voided_at: unknown; void_entry_id: number | null; entry_number: string; date: string }>(
+    `SELECT company_id,source,source_id,ref,status,total_debit::text,total_credit::text,voided_at,void_entry_id,entry_number,date::text
      FROM public.accounting_entries WHERE id=$1 AND company_id=$2 FOR SHARE`, [entryId, companyId]);
   const j = journal.rows[0];
   if (journal.rows.length !== 1 || !j || j.company_id !== companyId || j.source !== "payroll" ||
@@ -95,8 +96,8 @@ async function verifyPersistedJournal(client: PoolClient, companyId: number, run
       j.voided_at != null || j.void_entry_id != null ||
       moneyToCents(j.total_debit) !== moneyToCents(preview.gross) ||
       moneyToCents(j.total_credit) !== moneyToCents(preview.gross)) fail("JOURNAL_NOT_VERIFIED");
-  const lines = await client.query<{ account_id: number; debit: string; credit: string }>(
-    `SELECT account_id,debit::text,credit::text FROM public.accounting_entry_lines WHERE entry_id=$1 ORDER BY id FOR SHARE`, [entryId]);
+  const lines = await client.query<PayrollJournalLine>(
+    `SELECT account_id,debit::text,credit::text,description FROM public.accounting_entry_lines WHERE entry_id=$1 ORDER BY id FOR SHARE`, [entryId]);
   const grouped = new Map<number, { debit: bigint; credit: bigint }>();
   for (const line of lines.rows) {
     const d = moneyToCents(line.debit), c = moneyToCents(line.credit);
@@ -107,6 +108,15 @@ async function verifyPersistedJournal(client: PoolClient, companyId: number, run
   const observed = [...grouped].sort(([a], [b]) => a - b).map(([key, value]) =>
     `${key}:${centsToMoney(value.debit)}:${centsToMoney(value.credit)}`);
   if (JSON.stringify(observed) !== JSON.stringify(expectedLines(items, mapping, holds))) fail("JOURNAL_LINES_CHANGED");
+  // Read and validate the existing trigger's ledger output on BOTH first post
+  // and replay. Missing permissions/rows or mismatched evidence aborts rather
+  // than inventing repair entries or silently settling the employee's kasbon.
+  const ledger = await client.query<PayrollLedgerRow>(`SELECT company_id,ledger_date::text,period,
+    source_type,source_id,source_ref,account_id,debit::text,credit::text,description,
+    currency,is_voided,void_ref_id::text
+    FROM public.fleet_ledger_entries
+    WHERE company_id=$1 AND source_type='payroll' AND source_id=$2 ORDER BY id FOR SHARE`, [companyId, runId]);
+  assertPayrollLedgerMirror({ companyId, runId, entryNumber: j.entry_number, date: j.date }, lines.rows, ledger.rows);
 }
 async function execute(client: PoolClient, writer: TransactionBoundPayrollWriter, request: PayrollAtomicRequest) {
   const { companyId, runId } = request;

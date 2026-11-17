@@ -43,7 +43,7 @@ async function createFixtureTable(table:any){
  await admin.query('CREATE TABLE '+quote(t.name)+'('+fields.join(',')+')');
 }
 async function reset(){
- await admin.query('TRUNCATE accounting_entry_lines,accounting_entries,ledger_events,financial_outbox_events,payroll_runs,payroll_items,cash_advances,payroll_kasbon_auto_reservations,journal_sequences,salary_payments,cash_advance_repayments RESTART IDENTITY');
+ await admin.query('TRUNCATE fleet_ledger_entries,accounting_entry_lines,accounting_entries,ledger_events,financial_outbox_events,payroll_runs,payroll_items,cash_advances,payroll_kasbon_auto_reservations,journal_sequences,salary_payments,cash_advance_repayments RESTART IDENTITY');
  const f=fixture();
  await admin.query("INSERT INTO payroll_runs(id,company_id,year,month,status,posting_status,approved_at,notes) VALUES(32,1,2026,11,'draft','pending',$1,$2),(33,2,2026,11,'reviewed','pending',$1,'other company')",[f.run.approvedAt,f.run.notes]);
  const i=f.items[0]!;
@@ -110,6 +110,13 @@ try{
  CREATE TABLE cash_advance_installment_schedules(id serial PRIMARY KEY,advance_id integer,status text);
  CREATE TABLE payroll_cash_advance_allocations(id serial PRIMARY KEY,payroll_item_id integer,cash_advance_id integer,amount numeric(16,2));
  CREATE TABLE payroll_kasbon_auto_reservations(id integer PRIMARY KEY,company_id integer,run_id integer,advance_id integer,payroll_item_id integer,employee_id integer,amount numeric(16,2),balance_at_preparation numeric(16,2),state text,period date,confirmed_at timestamptz,cancelled_at timestamptz,UNIQUE(company_id,run_id,advance_id));
+ CREATE TABLE fleet_ledger_entries(id bigserial PRIMARY KEY,company_id integer NOT NULL,
+ ledger_date date NOT NULL,period text NOT NULL,source_type text NOT NULL,source_id integer,source_ref text,
+ account_id integer NOT NULL REFERENCES chart_of_accounts(id),account_code text NOT NULL,
+ account_name text NOT NULL,account_type text NOT NULL,debit numeric(15,2) NOT NULL DEFAULT 0,
+ credit numeric(15,2) NOT NULL DEFAULT 0,description text,cost_center_id integer,
+ currency text NOT NULL DEFAULT 'IDR',is_voided boolean NOT NULL DEFAULT false,void_ref_id bigint,
+ created_by text,created_at timestamptz NOT NULL DEFAULT now());
  CREATE TABLE salary_payments(id serial PRIMARY KEY);
  INSERT INTO employees(id,company_id,status) VALUES(101,1,'active'),(201,2,'active');
  INSERT INTO financial_periods VALUES(1,2026,11,false,false);
@@ -121,6 +128,8 @@ try{
  GRANT UPDATE(id) ON employees,chart_of_accounts,payroll_items TO bizportal_payroll_settlement_dev;
  GRANT SELECT,UPDATE ON payroll_runs,cash_advances,payroll_kasbon_auto_reservations TO bizportal_payroll_settlement_dev;
  GRANT SELECT,INSERT ON cash_advance_repayments TO bizportal_payroll_settlement_dev;
+ GRANT SELECT,INSERT ON fleet_ledger_entries TO bizportal_payroll_settlement_dev;
+ GRANT UPDATE(id) ON fleet_ledger_entries TO bizportal_payroll_settlement_dev;
  GRANT SELECT ON accounting_settings,payroll_cash_advance_allocations,cash_advance_installment_schedules TO bizportal_payroll_settlement_dev;
  GRANT UPDATE(id) ON accounting_settings,cash_advance_repayments TO bizportal_payroll_settlement_dev;
  GRANT UPDATE(company_id) ON financial_periods TO bizportal_payroll_settlement_dev;
@@ -142,6 +151,15 @@ try{
  CREATE POLICY ci_scope ON cash_advance_repayments TO bizportal_payroll_settlement_dev
  USING(EXISTS(SELECT 1 FROM cash_advances a WHERE a.id=cash_advance_repayments.advance_id AND a.company_id=NULLIF(current_setting('app.payroll_company_id',true),'')::integer))
  WITH CHECK(EXISTS(SELECT 1 FROM cash_advances a WHERE a.id=cash_advance_repayments.advance_id AND a.company_id=NULLIF(current_setting('app.payroll_company_id',true),'')::integer))`);
+ // Test-only scoped grant/policy for representative successful fixture; live
+ // fleet ledger RLS currently has no policies. The ledger suite reproduces it.
+ await admin.query("ALTER TABLE fleet_ledger_entries ENABLE ROW LEVEL SECURITY; CREATE POLICY ci_fleet_ledger_scope ON fleet_ledger_entries TO bizportal_payroll_settlement_dev USING(company_id=NULLIF(current_setting('app.payroll_company_id',true),'')::integer) WITH CHECK(company_id=NULLIF(current_setting('app.payroll_company_id',true),'')::integer)");
+ await admin.query((await import('node:fs')).readFileSync('__ROOT__/scripts/payroll-atomic-rehearsal/dev-ledger-sync.sql','utf8'));
+ const ledgerContract=JSON.parse((await import('node:fs')).readFileSync('__ROOT__/scripts/payroll-atomic-rehearsal/dev-ledger-sync-provenance.json','utf8'));
+ const ledgerFunctions=(await admin.query("SELECT proname,md5(pg_get_functiondef(oid)) AS hash FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname=ANY($1::text[])",[Object.keys(ledgerContract.liveFunctionMd5)])).rows;
+ assert.equal(ledgerFunctions.length,3);
+ for(const row of ledgerFunctions)assert.equal(row.hash,ledgerContract.liveFunctionMd5[row.proname],row.proname+' fixture must match inspected DEV metadata');
+ console.log('LEDGER_TRIGGER_SNAPSHOT_HASHES_MATCH',3,'POLICY_AND_GRANTS','SYNTHETIC_FIXTURE_ONLY');
  const login=new URL(process.env.PAYROLL_PG_E2E_URL!);login.username='bizportal_payroll_settlement_dev';login.password='disposable-ci-only';writer=new Pool({connectionString:login.href,max:4});
  await reset();
  const plan=prepareReviewedPayrollAccrual(fixture());
