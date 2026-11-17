@@ -377,36 +377,89 @@ async function recoverExistingQaFixtures() {
       q.quote_rfq_id === q.rfq_id && q.quote_vendor_id === q.supplier_id &&
       [q.supplier_id,q.rfq_id,q.quote_id,q.shipment_id,q.gr_id].every(
         value => Number.isSafeInteger(value) && value > 0), "RECOVER_PARENT_OWNER_MISMATCH");
+    // Read only. Fail closed if any synthetic parent, finance row, payment,
+    // journal or outbound notification differs from an explicitly enumerated
+    // state of the reviewed vendor acceptance harness. No token is read.
     const evidence = (await admin!.query(`
       select
         (select count(*)::int from public.mkt_purchase_order_lines where po_id=$1) po_lines,
+        (select count(*)::int from public.mkt_po_shipments where po_id=$1) shipments,
+        (select count(*)::int from public.mkt_po_goods_receipts gr
+          join public.mkt_po_shipments sh on sh.id=gr.shipment_id
+          where sh.po_id=$1) goods_receipts,
         (select count(*)::int from public.mkt_po_shipment_items where shipment_id=$2) shipment_lines,
         (select count(*)::int from public.mkt_po_goods_receipt_items where goods_receipt_id=$3) receipt_lines,
+        (select count(*)::int from public.vendor_invoices where mkt_purchase_order_id=$1) all_invoices,
         (select count(*)::int from public.vendor_invoice_lines vil
           join public.vendor_invoices vi on vi.id=vil.invoice_id
           where vi.mkt_purchase_order_id=$1) invoice_lines,
         (select count(*)::int from public.vendor_invoices where mkt_purchase_order_id=$1
           and vendor_invoice_ref=$4 and company_id=$5 and supplier_id=$6
-          and status='ready_for_ap' and amount_paid=0 and journal_entry_id is null
-          and attachment_object_path is not null) safe_invoice,
+          and status in ('draft','ready_for_ap')
+          and amount_paid=0 and journal_entry_id is null
+          and attachment_object_path ~ '^/objects/uploads/[a-f0-9-]+\\.pdf$') safe_invoices,
+        (select min(status::text) from public.vendor_invoices
+          where mkt_purchase_order_id=$1) invoice_status,
+        (select count(*)::int from public.mkt_ap_preparations where mkt_purchase_order_id=$1) all_ap,
         (select count(*)::int from public.mkt_ap_preparations where mkt_purchase_order_id=$1
           and company_id=$5 and supplier_id=$6 and status='waiting_payment') safe_ap,
+        (select count(*)::int from public.payment_requests pr
+          join public.mkt_ap_preparations ap on ap.id=pr.mkt_ap_preparation_id
+          where ap.mkt_purchase_order_id=$1) all_payments,
         (select count(*)::int from public.payment_requests pr
           join public.mkt_ap_preparations ap on ap.id=pr.mkt_ap_preparation_id
           where ap.mkt_purchase_order_id=$1 and pr.company_id=$5
           and pr.supplier_id=$6 and pr.status='draft'
           and pr.paid_amount=0 and pr.journal_entry_id is null) safe_payment,
         (select count(*)::int from public.mkt_accounting_handoffs
+          where mkt_purchase_order_id=$1) all_handoffs,
+        (select count(*)::int from public.mkt_accounting_handoffs
           where mkt_purchase_order_id=$1 and company_id=$5 and supplier_id=$6
           and accounting_status='draft_not_posted') safe_handoff,
-        (select count(*)::int from public.mkt_notification_queue where purchase_order_id=$1) notices,
-        (select count(*)::int from public.activity_logs where mkt_purchase_order_id=$1) audits
+        (select count(*)::int from public.mkt_notification_queue where purchase_order_id=$1) notices
     `, [q.id,q.shipment_id,q.gr_id,label,companyId,q.supplier_id])).rows[0];
-    requireThat(evidence?.po_lines === 2 && evidence.shipment_lines === 2 &&
-      evidence.receipt_lines === 2 && evidence.invoice_lines === 2 &&
-      evidence.safe_invoice === 1 && evidence.safe_ap === 1 &&
-      evidence.safe_payment === 1 && evidence.safe_handoff === 1 &&
-      evidence.notices === 0 && evidence.audits === 6, "RECOVER_SYNTHETIC_FLOW_DRIFT");
+    const activities = (await admin!.query(`
+      select action::text as action,count(*)::int as n from public.activity_logs
+      where mkt_purchase_order_id=$1 group by action order by action
+    `,[q.id])).rows;
+    const vendorActions = [
+      {action:"invoice_ready_for_ap",n:1},
+      {action:"invoice_uploaded",n:1},
+      {action:"three_way_match_passed",n:1},
+    ];
+    const allActions = [
+      ...vendorActions,
+      {action:"mkt_ap_finance_reviewed",n:1},
+      {action:"mkt_ap_preparation_created",n:1},
+      {action:"mkt_ap_waiting_payment",n:1},
+    ].sort((left,right)=>left.action.localeCompare(right.action));
+    const equalActivities = (a:{action:string;n:number}[]) =>
+      JSON.stringify(activities)===JSON.stringify([...a].sort((x,y)=>x.action.localeCompare(y.action)));
+    requireThat(evidence?.po_lines===2 && evidence.shipments===1 &&
+      evidence.goods_receipts===1 && evidence.shipment_lines===2 &&
+      evidence.receipt_lines===2 && evidence.notices===0 &&
+      evidence.all_invoices===evidence.safe_invoices &&
+      evidence.all_ap===evidence.safe_ap &&
+      evidence.all_payments===evidence.safe_payment &&
+      evidence.all_handoffs===evidence.safe_handoff,
+      "RECOVER_SYNTHETIC_RELATIONS_DRIFT");
+    const noInvoice = evidence.all_invoices===0 && evidence.invoice_lines===0 &&
+      evidence.all_ap===0 && evidence.all_payments===0 && evidence.all_handoffs===0 &&
+      equalActivities([]);
+    const uploaded = evidence.all_invoices===1 && evidence.invoice_lines===2 &&
+      evidence.invoice_status==="draft" && evidence.all_ap===0 &&
+      evidence.all_payments===0 && evidence.all_handoffs===0 &&
+      equalActivities([{action:"invoice_uploaded",n:1}]);
+    const submitted = evidence.all_invoices===1 && evidence.invoice_lines===2 &&
+      evidence.invoice_status==="ready_for_ap" && evidence.all_ap===0 &&
+      evidence.all_payments===0 && evidence.all_handoffs===0 &&
+      equalActivities(vendorActions);
+    const completed = evidence.all_invoices===1 && evidence.invoice_lines===2 &&
+      evidence.invoice_status==="ready_for_ap" && evidence.all_ap===1 &&
+      evidence.all_payments===1 && evidence.all_handoffs===1 &&
+      equalActivities(allActions);
+    requireThat(noInvoice || uploaded || submitted || completed,
+      "RECOVER_SYNTHETIC_FLOW_DRIFT");
     fixtures.push({
       companyId, supplierId:q.supplier_id, rfqId:q.rfq_id,quoteId:q.quote_id,
       poId:q.id,lineIds:[],shipmentId:q.shipment_id,grId:q.gr_id,
