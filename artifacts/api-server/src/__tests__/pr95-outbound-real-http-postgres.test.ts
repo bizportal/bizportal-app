@@ -244,6 +244,41 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
     expect((await send({...input,invoiceId:8})).status).toBe(409);
     expect(await counters()).toMatchObject({journals:1,allocations:0,matches:0,audits:0});
   });
+  it("rolls back the real HTTP transaction when mutation posting fails after allocation writes",async()=>{
+    await auth.query(`CREATE FUNCTION public.pr95_http_fail_mutation() RETURNS trigger
+      LANGUAGE plpgsql AS $
+        BEGIN IF NEW.status='posted' THEN
+          RAISE EXCEPTION 'PR95_HTTP_INJECTED_FAILURE';
+        END IF;
+        RETURN NEW;
+      END $`);
+    await auth.query(`CREATE TRIGGER pr95_http_fail_mutation
+      BEFORE UPDATE ON public.bank_mutations
+      FOR EACH ROW EXECUTE FUNCTION public.pr95_http_fail_mutation()`);
+    try {
+      const result=await send();
+      expect(result.status).toBe(409);
+      expect(result.body.reason).toContain("PR95_HTTP_INJECTED_FAILURE");
+      expect(await counters()).toMatchObject({
+        journals:1,allocations:0,matches:0,audits:0,mutation_status:"unmatched",
+      });
+    } finally {
+      await auth.query("DROP TRIGGER IF EXISTS pr95_http_fail_mutation ON public.bank_mutations");
+      await auth.query("DROP FUNCTION IF EXISTS public.pr95_http_fail_mutation()");
+    }
+  });
+  it("shows finalized canonical allocation without a second journal after successful HTTP payment",async()=>{
+    expect((await send()).status).toBe(200);
+    const result=await auth.query(`select
+      coalesce(sum(pa.allocated_amount),0)::numeric as canonical_paid
+      from public.payment_allocations pa
+      join public.payment_matching_groups pmg on pmg.id=pa.group_id
+      where pa.company_id=1 and pa.invoice_id=7 and pa.is_active=true
+        and pmg.status='final'`);
+    expect(Number(result.rows[0].canonical_paid)).toBe(100);
+    const journal=await auth.query("select count(*)::int as n from public.accounting_entries");
+    expect(journal.rows[0].n).toBe(1);
+  });
   it("rejects simultaneous HTTP requests for same source with one allocation only",async()=>{
     const responses=await Promise.all([send(),send()]);
     expect(responses.map(x=>x.status).sort()).toEqual([200,409]);
