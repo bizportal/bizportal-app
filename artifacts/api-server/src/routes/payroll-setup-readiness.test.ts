@@ -10,12 +10,16 @@ const state = vi.hoisted(() => ({
   actorCompanyId: 1 as number|null,
   ready: true,
   devReady: true,
+  devCredentialInvalid: false,
   throwDbError: false,
   calls: [] as Array<{companyId:number;sql:string;args:unknown[]}>,
   devCalls: [] as Array<{companyId:number;sql:string;args:unknown[]}>,
 }));
 vi.mock("./payroll-db", () => ({
-  payrollDedicatedEnabled: () => state.devReady,
+  payrollDedicatedEnabled: () => {
+    if (state.devCredentialInvalid) throw Error("synthetic-invalid-secret-uri");
+    return state.devReady;
+  },
   payrollScopedQuery: async (companyId:number,sql:string,args:unknown[]) => {
     state.devCalls.push({companyId,sql,args});
     if (state.throwDbError) throw Error("synthetic-secret-must-never-appear");
@@ -68,7 +72,7 @@ describe("Payroll setup readiness via authenticated and company-scoped read-only
   beforeEach(()=>{
     vi.stubEnv("APP_ENV","production");
     vi.stubEnv("PAYROLL_CANONICAL_SETUP_READINESS_ENABLED","true");
-    state.role="owner";state.companyId=1;state.actorCompanyId=1;state.ready=true;state.devReady=true;state.throwDbError=false;
+    state.role="owner";state.companyId=1;state.actorCompanyId=1;state.ready=true;state.devReady=true;state.devCredentialInvalid=false;state.throwDbError=false;
     state.calls.length=0;state.devCalls.length=0;
   });
   afterEach(()=>vi.unstubAllEnvs());
@@ -195,6 +199,17 @@ describe("Payroll setup readiness via authenticated and company-scoped read-only
     expect(result.status).toBe(200);
     expect(((await result.json()) as {employeeCount:number}).employeeCount).toBe(1);
     expect(state.devCalls[0]?.companyId).toBe(3);
+  });
+
+  it("DEV fails closed if the dedicated connection configuration is malformed",async()=>{
+    vi.stubEnv("APP_ENV","development");
+    vi.stubEnv("PAYROLL_DEV_SETUP_READINESS_ENABLED","true");
+    state.devCredentialInvalid=true;
+    const response=await get();
+    expect(response.status).toBe(503);
+    expect((await response.text())).not.toContain("synthetic-invalid-secret-uri");
+    expect(state.devCalls).toHaveLength(0);
+    expect(state.calls).toHaveLength(0);
   });
 
   it("DEV never leaks SQL or credential errors in readiness response",async()=>{
