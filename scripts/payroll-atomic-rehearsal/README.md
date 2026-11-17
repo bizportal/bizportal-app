@@ -104,3 +104,11 @@ application scenarios using column-scoped UPDATE privileges, explicit sequence
 rights, Payroll-only restrictive policies and lock-only mutation guards. It
 changes no live role or permission. See `PERMISSION-CONTRACT.md` for the limits,
 one explicitly revised tamper-test expectation and the exact local command.
+
+## Packaged native accrual
+
+The `packaged` mode runs the same restricted-pool preflight and application
+scenarios with the standalone native accrual artifact loaded through the real
+SHA256 byte verifier. No signed HTTP session or live connection is created.
+See `../payroll-native-runtime/README.md` for build provenance, explicit denied
+global capabilities, startup configuration and activation limits.

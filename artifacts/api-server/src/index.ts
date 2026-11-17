@@ -11,6 +11,7 @@ import {
   isDevelopmentEnvironment,
 } from "./routes/dev-auth";
 import { prepareDevApprovalCredential } from "./routes/payroll-dev-approval-db";
+import { prepareDevPayrollAtomicRuntime } from "./routes/payroll-accounting-bootstrap";
 
 const rawPort = process.env["PORT"];
 
@@ -76,6 +77,18 @@ if (process.env.APP_ENV === "development" &&
     .then(ready => logger.info({ prepared: ready }, "DEV Payroll approver credential readiness"))
     .catch(() => logger.warn({ code: "PAYROLL_APPROVER_SECRET_UNAVAILABLE" },
       "DEV Payroll approver remains disabled"));
+}
+
+// Optional DEV assembly reuses existing GCP custody, a release-pinned accrual
+// artifact and a dedicated settlement pool. No flags means no secret/DB work.
+// Failure preserves liveness and leaves the financial HTTP runtime unbound.
+if (process.env.APP_ENV === "development" &&
+    process.env.PAYROLL_DEV_ATOMIC_ROUTE_MOUNT_ENABLED === "true" &&
+    process.env.PAYROLL_DEV_ATOMIC_POSTING_ENABLED === "true") {
+  void prepareDevPayrollAtomicRuntime()
+    .then(prepared => logger.info({ prepared }, "DEV Payroll atomic runtime readiness"))
+    .catch(() => logger.warn({ code: "PAYROLL_NATIVE_BOOTSTRAP_UNAVAILABLE" },
+      "DEV Payroll atomic runtime remains unavailable"));
 }
 
 if (!isDevelopmentEnvironment()) {

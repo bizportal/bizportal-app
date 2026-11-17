@@ -80,3 +80,12 @@ complete verified payroll data still need controlled setup and live validation.
 `index.ts` does not automatically bind this writer, and this change does not
 modify active services, Nginx, bank/WA/email transports, Supabase privileges or
 PROD. The preflight is a required step toward safe assembly, not FULL PASS.
+
+## Follow-up: gated native package assembly
+
+The later `payroll-native-runtime` candidate adds an accrual-only, SHA-pinned
+artifact builder/loader and an opt-in startup hook using existing GCP custody.
+The earlier statement that no startup composition exists describes the state
+before that follow-up. It is now present in candidate source but has NOT been
+activated in a running service. Its role/policy/data/session limitations remain;
+see `../payroll-native-runtime/README.md`.

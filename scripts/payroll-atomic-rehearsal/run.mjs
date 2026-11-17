@@ -11,7 +11,7 @@ const here=path.dirname(fileURLToPath(import.meta.url));
 const root=path.resolve(here,'../..'),api=root+'/artifacts/api-server';
 const legacy=process.argv[2];
 const suite=process.argv[3]||'native';
-if(!['native','application','triggers','permissions'].includes(suite))throw Error('UNKNOWN_REHEARSAL_SUITE');
+if(!['native','application','triggers','permissions','packaged'].includes(suite))throw Error('UNKNOWN_REHEARSAL_SUITE');
 if(!legacy||!path.isAbsolute(legacy))throw Error('EXPLICIT_LEGACY_SOURCE_REQUIRED');
 const u=new URL(process.env.PAYROLL_PG_E2E_URL||'invalid:');
 if(u.protocol!=='postgresql:'||u.hostname!=='127.0.0.1'||u.port!=='65432'||u.pathname!=='/payroll_ci'||u.username!=='postgres.xssrfshdrtdfupgqwfdw')throw Error('REFUSE_NON_DISPOSABLE_POSTGRES');
@@ -72,9 +72,17 @@ try {
   b.onLoad({filter:/.*/,namespace:'fixture'},a=>({contents:stubs[a.path],loader:'js',resolveDir:api}));
   b.onLoad({filter:/.*/,namespace:'unavailable'},a=>({contents:`throw Error('UNEXPECTED_UNMIGRATED_DEPENDENCY'); export const unavailable=true;`,loader:'js'}));
  }};}
- const builds=suite==='triggers'?[[baselineLib,baseOut],[fixedLib,fixedOut],[previousLib,previousOut]]:[[baselineLib,baseOut],[fixedLib,fixedOut]];
+ const builds=suite==='triggers'?[[baselineLib,baseOut],[fixedLib,fixedOut],[previousLib,previousOut]]:suite==='packaged'?[[baselineLib,baseOut]]:[[baselineLib,baseOut],[fixedLib,fixedOut]];
  for(const [lib,out] of builds){
   await build({stdin:{contents:`export {postEntryWithClient} from ${JSON.stringify(lib+'/accounting.ts')}; export {PayrollJournalService} from ${JSON.stringify(lib+'/payroll/PayrollJournalService.ts')};`,resolveDir:api,loader:'ts'},outfile:out,bundle:true,platform:'node',format:'esm',logLevel:'silent',external:['drizzle-orm','drizzle-orm/*','pg'],nodePaths:[api+'/node_modules',root+'/node_modules'],plugins:[boundaryPlugin()]});
+ }
+ let artifactHash=null;
+ if(suite==='packaged'){
+  const {buildNativePayrollArtifact}=await import('../payroll-native-runtime/build-artifact.mjs');
+  const artifact=await buildNativePayrollArtifact(legacy);
+  fs.writeFileSync(fixedOut,artifact.bytes,{flag:'wx',mode:0o600});
+  artifactHash=artifact.manifest.sha256;
+  console.log('CLOSED_NATIVE_ARTIFACT_BUILT',artifactHash,'BYTES',artifact.bytes.length,'FINANCIAL_MOCKS',false);
  }
  let helpers=fs.readFileSync(routes+'/payroll-accounting-handoff.test.ts','utf8').split('\ndescribe(')[0].replace(/^import \{ describe, expect, it \} from "vitest";\n/,'');
  let harness=fs.readFileSync(here+(suite==='native'?'/native-postgres-tests.ts':'/application-postgres-tests.ts'),'utf8');
@@ -83,7 +91,7 @@ try {
   const at=harness.indexOf(marker);if(at<0)throw Error('FIXTURE_SETUP_CONTRACT_CHANGED');
   harness=harness.slice(0,at)+fs.readFileSync(here+'/trigger-compatibility-tests.ts','utf8');
  }
- if(suite==='permissions'){
+ if(suite==='permissions'||suite==='packaged'){
   const marker=' await reset();\n const plan=prepareReviewedPayrollAccrual(fixture());';
   const at=harness.indexOf(marker);if(at<0)throw Error('FIXTURE_SETUP_CONTRACT_CHANGED');
   harness=harness.slice(0,at)+fs.readFileSync(here+'/permission-contract-tests.ts','utf8')+'\n'+harness.slice(at);
@@ -94,6 +102,24 @@ try {
   if(!harness.includes(oldTamper))throw Error('TAMPER_TEST_CONTRACT_CHANGED');
   harness=harness.replace(oldTamper,newTamper);
 
+ }
+ if(suite==='packaged'){
+  const originalImport="const patched=await import('__FIXED__');";
+  if(!harness.includes(originalImport)||!artifactHash)throw Error('PACKAGED_FIXTURE_CONTRACT_CHANGED');
+  const verifiedImport=`
+const nativeLoader=await import('./payroll-accounting-native-runtime');
+const previousPackageEnv={APP_ENV:process.env.APP_ENV,PAYROLL_DEV_ATOMIC_ROUTE_MOUNT_ENABLED:process.env.PAYROLL_DEV_ATOMIC_ROUTE_MOUNT_ENABLED,PAYROLL_DEV_ATOMIC_POSTING_ENABLED:process.env.PAYROLL_DEV_ATOMIC_POSTING_ENABLED};
+let verifiedPackagedWriter;
+try {
+ process.env.APP_ENV='development';process.env.PAYROLL_DEV_ATOMIC_ROUTE_MOUNT_ENABLED='true';process.env.PAYROLL_DEV_ATOMIC_POSTING_ENABLED='true';
+ verifiedPackagedWriter=await nativeLoader.loadDevPayrollNativeArtifact('__FIXED__',${JSON.stringify(artifactHash)});
+ assert.deepEqual(Object.keys(verifiedPackagedWriter).sort(),['postAccrualJournal','transactionalAccrualVersion']);
+ assert.equal(Object.isFrozen(verifiedPackagedWriter),true);
+} finally { for(const [k,v] of Object.entries(previousPackageEnv)){if(v===undefined)delete process.env[k];else process.env[k]=v;} }
+const patched={PayrollJournalService:verifiedPackagedWriter};
+console.log('VERIFIED_PACKAGE_LOADER_USED',true,'HTTP_SESSION_TESTED',false);
+`;
+  harness=harness.replace(originalImport,verifiedImport);
  }
  harness=harness.replaceAll('__ROOT__',root).replaceAll('__BASE__',baseOut).replaceAll('__FIXED__',fixedOut).replaceAll('__PREVIOUS__',previousOut);
  fs.writeFileSync(entry,helpers+'\n'+harness,{flag:'wx',mode:0o600});
