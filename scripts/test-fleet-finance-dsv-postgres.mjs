@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Actual Fleet client -> actual canonical Express router -> isolated PostgreSQL.
-// Requires a disposable QA DB created from fixtures/fleet-finance-dev-schema.sql.
+// Requires captured schema + exact reviewed scoped-runtime-role SQL in disposable postgres.
+// The actual DEV transaction wrapper runs; only pg transport uses a private Unix socket.
+// TLS configuration is checked here; real TLS negotiation is a separate DEV gate.
 // Never accepts a TCP database host or a shared database name.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -25,8 +27,8 @@ function dependency(name) {
 const { Pool } = dependency("pg");
 const { build } = dependency("esbuild");
 const express = dependency("express");
-const admin = new Pool({host:socket,database:"fleet_finance_qa",user:"postgres",max:2});
-const apiPool = new Pool({host:socket,database:"fleet_finance_qa",user:"fleet_finance_qa_api",max:8});
+const admin = new Pool({host:socket,database:"postgres",user:"postgres",max:2});
+const apiPool = new Pool({host:socket,database:"postgres",user:"bizportal_fleet_finance_login_dev",max:2});
 const ledgerSyncWarnings = [];
 apiPool.on("connect",client=>client.on("notice",notice=>{
   if(notice.message?.includes("[fn_sync_entry_line_to_ledger] INSERT gagal"))ledgerSyncWarnings.push(notice.message);
@@ -44,9 +46,9 @@ async function financialSnapshot() {
 }
 async function deniedLedgerInsert(action) {
   const before=await financialSnapshot(),warningCount=ledgerSyncWarnings.length;
-  await admin.query("REVOKE INSERT ON public.fleet_ledger_entries FROM fleet_finance_qa_api");
+  await admin.query("REVOKE INSERT ON public.fleet_ledger_entries FROM bizportal_fleet_finance_login_dev");
   try {
-    const grants=(await apiPool.query("SELECT has_table_privilege(current_user,'public.fleet_ledger_entries','SELECT') can_read,has_table_privilege(current_user,'public.fleet_ledger_entries','INSERT') can_insert,has_table_privilege(current_user,'public.fleet_cash_payments','UPDATE') can_lock_source")).rows[0];
+    const grants=(await apiPool.query("SELECT has_table_privilege(current_user,'public.fleet_ledger_entries','SELECT') can_read,has_table_privilege(current_user,'public.fleet_ledger_entries','INSERT') can_insert,has_column_privilege(current_user,'public.fleet_cash_payments','id','UPDATE') can_lock_source")).rows[0];
     assert.deepEqual(grants,{can_read:true,can_insert:false,can_lock_source:true});
     const response=await action();
     assert.equal(response.status,409);assert.match(String(response.body.error),/derived ledger/i);
@@ -56,13 +58,13 @@ async function deniedLedgerInsert(action) {
     assert.deepEqual(await financialSnapshot(),before,"Rejected posting must roll back every candidate header/line and retain original source/journals/ledger");
     return {status:409,triggerWarnings:2,rolledBack:true,sourceAndOriginalUnchanged:true};
   } finally {
-    await admin.query("GRANT INSERT ON public.fleet_ledger_entries TO fleet_finance_qa_api");
+    await admin.query("GRANT INSERT ON public.fleet_ledger_entries TO bizportal_fleet_finance_login_dev");
   }
 }
 async function hiddenLedgerReplay(sourceType,sourceId,action) {
   assert.ok(["fleet_cash_payment","reversal"].includes(sourceType));assert.ok(Number.isSafeInteger(sourceId)&&sourceId>0);
   const before=await financialSnapshot();
-  await admin.query("CREATE POLICY qa_ledger_visibility_failure ON public.fleet_ledger_entries AS RESTRICTIVE FOR SELECT TO fleet_finance_qa_api USING (NOT(source_type='"+sourceType+"' AND source_id="+sourceId+"))");
+  await admin.query("CREATE POLICY qa_ledger_visibility_failure ON public.fleet_ledger_entries AS RESTRICTIVE FOR SELECT TO bizportal_fleet_finance_login_dev USING (NOT(source_type='"+sourceType+"' AND source_id="+sourceId+"))");
   try {
     assert.equal((await apiPool.query("SELECT count(*)::int n FROM public.fleet_ledger_entries WHERE source_type=$1 AND source_id=$2",[sourceType,sourceId])).rows[0].n,0);
     assert.equal((await scalar("SELECT count(*)::int n FROM public.fleet_ledger_entries WHERE source_type=$1 AND source_id=$2",[sourceType,sourceId])).n,2);
@@ -75,13 +77,12 @@ async function hiddenLedgerReplay(sourceType,sourceId,action) {
 }
 try {
   const isolation = await scalar("SELECT current_database() db, inet_server_addr() addr, version() version");
-  assert.equal(isolation.db,"fleet_finance_qa"); assert.equal(isolation.addr,null);
+  assert.equal(isolation.db,"postgres"); assert.equal(isolation.addr,null);
   proof.database = {name:isolation.db,network:"none",unixSocket:true,postgres:isolation.version.split(" ").slice(0,2).join(" ")};
-  // FOR UPDATE on an existing source row requires UPDATE privilege. This is
-  // granted only inside the disposable QA role, never shared DEV/PROD.
-  await admin.query("GRANT UPDATE ON public.fleet_cash_payments TO fleet_finance_qa_api");
+  // Runtime roles and policies must come from the exact reviewed DEV migration;
+  // this harness does not widen their grants.
   await admin.query("BEGIN");
-  await admin.query("INSERT INTO public.companies(id,name,company_name,code,company_code,is_active) VALUES (1,'QA Fleet Source','QA Fleet Source','QA-CST','QA-CST',true),(2,'QA Other','QA Other','QA-OTHER','QA-OTHER',true),(3,'PT Diva Servis','PT Diva Servis','DVS','DVS',true)");
+  await admin.query("INSERT INTO public.companies(id,name,company_name,code,company_code,is_active) VALUES (1,'QA Fleet Source','QA Fleet Source','QA-CST','QA-CST',true),(2,'QA Other','QA Other','QA-OTHER','QA-OTHER',true),(3,'PT Diva Servis','PT Diva Servis','DVS','DVS',true) ON CONFLICT(id) DO NOTHING");
   const accounts = [
     [49187,3,"1-1010-DV","QA Kas Diva","asset",true,true,false],
     [49191,3,"1-1030-DV","QA Piutang Diva","asset",true,true,false],
@@ -105,13 +106,27 @@ try {
   await admin.query("COMMIT");
   const baseline = await scalar("SELECT count(*)::int source_rows, md5(string_agg(to_jsonb(p)::text,',' ORDER BY id)) source_hash FROM public.fleet_cash_payments p");
   scratch = await mkdtemp(path.join(tmpdir(),"fleet-finance-dsv-qa-bundle-"));
-  globalThis.__fleetFinanceQaPool = apiPool;
-  const alias = {name:"isolated-db",setup(b){
-    b.onResolve({filter:/^@workspace\/db$/},()=>({path:"qa-db",namespace:"qa"}));
-    b.onLoad({filter:/.*/,namespace:"qa"},()=>({contents:"export const pool = globalThis.__fleetFinanceQaPool;",loader:"js"}));
+  // Only transport is redirected. The real wrapper validates its URL/TLS options,
+  // actual login/session identity, RLS, scope and transactional GUCs against PG.
+  globalThis.__fleetFinanceQaConnect = options => {
+    assert.equal(options.host,"db.xssrfshdrtdfupgqwfdw.supabase.co");
+    assert.equal(options.user,"bizportal_fleet_finance_login_dev");
+    assert.equal(options.database,"postgres");assert.equal(options.max,2);
+    assert.equal(options.ssl.rejectUnauthorized,true);assert.ok(options.ssl.ca);
+    proof.actualTransactionWrapper=true;
+    return apiPool;
+  };
+  const alias = {name:"isolated-transport",setup(b){
+    b.onResolve({filter:/^@workspace\/db\/fleet-finance-dev$/},()=>({path:path.join(repo,"lib/db/src/fleet-finance-dev.ts")}));
+    b.onResolve({filter:/^pg$/},()=>({path:"qa-pg",namespace:"qa"}));
+    b.onLoad({filter:/.*/,namespace:"qa"},()=>({contents:"export default {Pool: class {constructor(options){return globalThis.__fleetFinanceQaConnect(options)}}};",loader:"js"}));
   }};
   await build({entryPoints:[path.join(repo,"artifacts/api-server/src/routes/fleet-finance-integration.ts")],outfile:path.join(scratch,"receiver.cjs"),platform:"node",target:"node22",format:"cjs",bundle:true,plugins:[alias],nodePaths:[path.join(deps,"node_modules"),path.join(deps,"artifacts/api-server/node_modules")],logLevel:"silent"});
   const token = randomBytes(24).toString("hex");
+  process.env.APP_ENV="development";
+  process.env.FLEET_FINANCE_DATABASE_ENABLED_DEV="true";
+  process.env.FLEET_FINANCE_DATABASE_URL_DEV="postgresql://bizportal_fleet_finance_login_dev:qa_transport_only@db.xssrfshdrtdfupgqwfdw.supabase.co:5432/postgres?sslmode=verify-full";
+  delete process.env.FLEET_FINANCE_GCP_SECRET_NAME_DEV;
   process.env.FLEET_FINANCE_COMPANY_MAP = '{"1":3}';
   process.env.FLEET_FINANCE_SERVICE_TOKEN = token;
   process.env.FLEET_FINANCE_WRITE_ENABLED = "true";
@@ -142,12 +157,19 @@ try {
     await rejects(fleet.getFleetAccountingSettings(1),/belum dikonfigurasi/);
     assert.equal((await scalar("SELECT count(*)::int n FROM public.accounting_entries")).n,0);
   });
-  await test("actual client settings PUT and GET resolve source1 to Diva3",async()=>{
-    const a=await fleet.updateFleetAccountingSettings(settings);
+  await test("actual client settings GET and readiness resolve source1 to Diva3",async()=>{
+    await admin.query("UPDATE public.accounting_settings SET fleet_cash_account_id=49187,fleet_driver_receivable_account_id=49191,cash_journal_id=20 WHERE company_id=3");
     const b=await fleet.getFleetAccountingSettings(1);
-    assert.equal(a.companyId,3);assert.equal(b.companyId,3);assert.equal(b.sourceCompanyId,1);
+    assert.equal(b.companyId,3);assert.equal(b.sourceCompanyId,1);
     assert.equal(b.journalId,20);assert.equal(b.fleetCashAccountId,49187);assert.equal(b.fleetDriverReceivableAccountId,49191);
+    assert.equal(b.receiverWriteEnabled,true);assert.equal(b.receiverWriteReady,true);
     assert.deepEqual((await scalar("SELECT fleet_cash_account_id cash,fleet_driver_receivable_account_id ar,cash_journal_id journal FROM public.accounting_settings WHERE company_id=1")),{cash:49097,ar:49101,journal:6});
+  });
+  await test("dedicated runtime rejects settings PUT with controlled403 and no settings mutation",async()=>{
+    const before=await scalar("SELECT to_jsonb(s) value FROM public.accounting_settings s WHERE company_id=3");
+    const response=await http("/companies/3/accounting-settings",{...settings,companyId:3,sourceCompanyId:1},"qa-settings-read-only","PUT");
+    assert.equal(response.status,403);
+    assert.deepEqual(await scalar("SELECT to_jsonb(s) value FROM public.accounting_settings s WHERE company_id=3"),before);
   });
   await test("wrong token is401",async()=>assert.equal((await http("/cash-payments",scopeBody(primary),event(primary),"POST","bad-qa-token")).status,401));
   await test("missing/wrong source and wrong destination reject403",async()=>{
@@ -164,11 +186,21 @@ try {
     assert.equal((await http("/cash-payments",scopeBody(primary),"fleet-cash-payment:3:"+primary.paymentId)).status,409);
     assert.equal((await http("/cash-payments",{...scopeBody(primary),paymentId:990117399},"fleet-cash-payment:1:990117399")).status,409);
   });
-  await test("settings reject cross-company/header/nonpostable/inactive/non-asset accounts",async()=>{
-    for(const cash of [49097,900001,900002,900003,900004]) await rejects(fleet.updateFleetAccountingSettings({...settings,fleetCashAccountId:cash}),/COA/);
-    await rejects(fleet.updateFleetAccountingSettings({...settings,journalId:6}),/Jurnal/);
-    await rejects(fleet.updateFleetAccountingSettings({...settings,journalId:21}),/Jurnal/);
-    assert.equal((await scalar("SELECT fleet_cash_account_id id FROM public.accounting_settings WHERE company_id=3")).id,49187);
+  await test("settings GET and posting preflight reject wrong-company/header/nonpostable/inactive/non-asset accounts",async()=>{
+    try {
+      for(const cash of [49097,900001,900002,900003,900004]){
+        await admin.query("UPDATE public.accounting_settings SET fleet_cash_account_id=$1 WHERE company_id=3",[cash]);
+        await rejects(fleet.getFleetAccountingSettings(1),/COA/);
+        await rejects(fleet.postFleetCashPayment(blocked),/COA/);
+      }
+      await admin.query("UPDATE public.accounting_settings SET fleet_cash_account_id=49187 WHERE company_id=3");
+      for(const journal of [6,21]){
+        await admin.query("UPDATE public.accounting_settings SET cash_journal_id=$1 WHERE company_id=3",[journal]);
+        await rejects(fleet.getFleetAccountingSettings(1),/Jurnal/);
+        await rejects(fleet.postFleetCashPayment(blocked),/Jurnal/);
+      }
+    }finally{await admin.query("UPDATE public.accounting_settings SET fleet_cash_account_id=49187,cash_journal_id=20 WHERE company_id=3")}
+    assert.equal((await scalar("SELECT count(*)::int n FROM public.accounting_entries")).n,0);
   });
   await test("non-numeric, non-finite, and fractional-cent amounts reject400",async()=>{
     for(const amount of [true,false,"12500.25",null,12500.251]) assert.equal((await http("/cash-payments",{...scopeBody(primary),amount},event(primary))).status,400);
@@ -176,7 +208,6 @@ try {
   await test("inactive Diva blocks settings and new posting",async()=>{
     await admin.query("UPDATE public.companies SET is_active=false WHERE id=3");
     await rejects(fleet.getFleetAccountingSettings(1),/Perusahaan/);
-    await rejects(fleet.updateFleetAccountingSettings(settings),/Perusahaan/);
     assert.equal((await http("/cash-payments",scopeBody(primary),event(primary))).status,409);
     await admin.query("UPDATE public.companies SET is_active=true WHERE id=3");
   });
@@ -260,7 +291,7 @@ try {
     assert.deepEqual(await scalar("SELECT to_jsonb(e) value FROM public.accounting_entries e WHERE id=$1",[first.entryId]),originalBefore);
   });
   await test("reversal uses original accounts despite later settings change",async()=>{
-    await fleet.updateFleetAccountingSettings({...settings,fleetCashAccountId:49192});
+    await admin.query("UPDATE public.accounting_settings SET fleet_cash_account_id=49192 WHERE company_id=3");
     reversal=await fleet.reverseFleetCashPayment({...primary,originalEntryId:first.entryId});
     assert.equal(reversal.idempotent,false);assert.equal(reversal.companyId,3);
     const lines=(await admin.query("SELECT account_id,debit::text,credit::text,company_id FROM public.accounting_entry_lines WHERE entry_id=$1 ORDER BY account_id",[reversal.entryId])).rows;
@@ -294,6 +325,6 @@ try {
 } finally {
   if(server)await new Promise(resolve=>server.close(resolve));
   await apiPool.end();await admin.end();
-  delete globalThis.__fleetFinanceQaPool;
+  delete globalThis.__fleetFinanceQaConnect;
   if(scratch)await rm(scratch,{recursive:true,force:true});
 }

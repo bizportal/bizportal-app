@@ -1,10 +1,23 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import express from "express";
 import type { Server } from "node:http";
 
-const database = vi.hoisted(() => ({ query: vi.fn(), connect: vi.fn(), release: vi.fn() }));
-vi.mock("@workspace/db", () => ({ pool: { connect: database.connect } }));
-import router from "../routes/fleet-finance-integration";
+const database = vi.hoisted(() => ({ query: vi.fn(), connect: vi.fn(), release: vi.fn(), readiness: vi.fn() }));
+vi.mock("@workspace/db/fleet-finance-dev", () => ({
+  getFleetFinanceDevWriteReadiness: database.readiness,
+  withFleetFinanceDevTransaction: async (_scope: unknown, work: (client: any) => Promise<unknown>, options?: { readOnly?: boolean }) => {
+    const client = await database.connect();
+    try {
+      await client.query(options?.readOnly ? "BEGIN READ ONLY" : "BEGIN");
+      const result = await work(client);
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally { client.release(); }
+  },
+}));
+import { createFleetFinanceDevApp } from "../fleet-finance-dev-app";
 
 let server: Server;
 let base: string;
@@ -22,9 +35,7 @@ async function request(path: string, method = "GET", body?: unknown, key = "flee
 }
 
 beforeAll(async () => {
-  const app = express();
-  app.use(express.json());
-  app.use("/api/integrations/fleet", router);
+  const app = createFleetFinanceDevApp();
   server = await new Promise<Server>((resolve) => { const listener = app.listen(0, "127.0.0.1", () => resolve(listener)); });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Missing isolated HTTP port");
@@ -36,7 +47,10 @@ beforeEach(() => {
   vi.stubEnv("FLEET_FINANCE_SERVICE_TOKEN", token);
   vi.stubEnv("FLEET_FINANCE_COMPANY_MAP", '{"1":3}');
   vi.stubEnv("FLEET_FINANCE_WRITE_ENABLED", "true");
+  vi.stubEnv("APP_ENV", "development");
+  vi.stubEnv("FLEET_FINANCE_DATABASE_ENABLED_DEV", "");
   database.connect.mockResolvedValue({ query: database.query, release: database.release });
+  database.readiness.mockResolvedValue({ writeEnabled: true, writeReady: true, settingsReadOnly: true });
   database.query.mockImplementation(async (sql: string) => sql.includes("FROM public.companies") ?
     { rows: [{ id: 3 }], rowCount: 1 } : { rows: [], rowCount: 0 });
 });
@@ -68,18 +82,21 @@ describe("Fleet Finance source company 1 to PT Diva Servis company 3", () => {
   });
 
   it("reads only DSV settings and includes both source and accounting identities", async () => {
-    database.query.mockResolvedValueOnce({ rows: [{ id: 3 }], rowCount: 1 })
+    database.query.mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValueOnce({ rows: [{ id: 3 }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [{ fleet_cash_account_id: 49187, fleet_driver_receivable_account_id: 49191, journal_id: 20 }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [{ id: 49187 }, { id: 49191 }], rowCount: 2 })
       .mockResolvedValueOnce({ rows: [{ id: 20 }], rowCount: 1 });
     const result = await request("/companies/3/accounting-settings?sourceCompanyId=1");
-    expect(result).toEqual({ status: 200, body: { companyId: 3, sourceCompanyId: 1, fleetCashAccountId: 49187, fleetDriverReceivableAccountId: 49191, journalId: 20 } });
-    expect(database.query.mock.calls.map((call) => call[1])).toEqual([[3], [3], [3, [49187, 49191]], [20, 3]]);
+    expect(result).toEqual({ status: 200, body: { companyId: 3, sourceCompanyId: 1, writeEnabled: true, writeReady: true, settingsReadOnly: true, fleetCashAccountId: 49187, fleetDriverReceivableAccountId: 49191, journalId: 20 } });
+    expect(database.query.mock.calls.map((call) => call[1])).toEqual([undefined, [3], [3], [3, [49187, 49191]], [20, 3], undefined]);
+    expect(database.query).toHaveBeenNthCalledWith(1, "BEGIN READ ONLY");
     expect(database.release).toHaveBeenCalledOnce();
   });
 
   it("rejects configured journal that is not active in DSV", async () => {
-    database.query.mockResolvedValueOnce({ rows: [{ id: 3 }], rowCount: 1 })
+    database.query.mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValueOnce({ rows: [{ id: 3 }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [{ fleet_cash_account_id: 49187, fleet_driver_receivable_account_id: 49191, journal_id: 99 }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [{ id: 49187 }, { id: 49191 }], rowCount: 2 })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 });
@@ -95,6 +112,15 @@ describe("Fleet Finance source company 1 to PT Diva Servis company 3", () => {
     expect((await request("/companies/3/accounting-settings", "PUT", {
       companyId: 1, sourceCompanyId: 1, fleetCashAccountId: 49187, fleetDriverReceivableAccountId: 49191, journalId: 20,
     })).status).toBe(403);
+    expect(database.connect).not.toHaveBeenCalled();
+  });
+
+  it("keeps dedicated DEV accounting settings read-only before database access", async () => {
+    vi.stubEnv("APP_ENV", "development");
+    vi.stubEnv("FLEET_FINANCE_DATABASE_ENABLED_DEV", "true");
+    expect(await request("/companies/3/accounting-settings", "PUT", {
+      companyId: 3, sourceCompanyId: 1, fleetCashAccountId: 49187, fleetDriverReceivableAccountId: 49191, journalId: 20,
+    })).toMatchObject({ status: 403, body: { code: "FLEET_FINANCE_SETTINGS_READ_ONLY" } });
     expect(database.connect).not.toHaveBeenCalled();
   });
 
@@ -136,7 +162,8 @@ describe("Fleet Finance source company 1 to PT Diva Servis company 3", () => {
   it("rejects an inactive destination even if mapping is configured", async () => {
     database.query.mockResolvedValue({ rows: [], rowCount: 0 });
     expect((await request("/companies/3/accounting-settings?sourceCompanyId=1")).status).toBe(409);
-    expect(database.query).toHaveBeenCalledTimes(1);
+    expect(database.query).toHaveBeenCalledTimes(3);
+    expect(database.query).toHaveBeenLastCalledWith("ROLLBACK");
   });
 
   it("does not acknowledge a historical payment whose journal belongs to another company", async () => {

@@ -8,7 +8,8 @@
     "build": "node ./build.mjs",
     "start": "node --max-http-header-size=65536 --enable-source-maps ./dist/index.mjs",
     "typecheck": "pnpm exec tsc --build ../../lib/db ../../lib/api-zod --force && tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "build:fleet-finance-dev": "node ./build-fleet-finance-dev.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.116.0",

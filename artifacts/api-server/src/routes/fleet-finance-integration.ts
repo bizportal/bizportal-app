@@ -1,6 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { timingSafeEqual } from "node:crypto";
-import { pool } from "@workspace/db";
+import { getFleetFinanceDevWriteReadiness, withFleetFinanceDevTransaction } from "@workspace/db/fleet-finance-dev";
 
 const router = Router();
 
@@ -440,6 +440,11 @@ async function reverseCashPayment(client: any, args: {
 router.use(requireFleetFinanceService);
 
 router.use((req, res, next) => {
+  if (req.method === "PUT" && /^\/companies\/[^/]+\/accounting-settings\/?$/.test(req.path) &&
+      process.env.APP_ENV?.trim().toLowerCase() === "development" && process.env.FLEET_FINANCE_DATABASE_ENABLED_DEV === "true") {
+    res.status(403).json({ error: "Pengaturan akun Fleet dikelola oleh Finance dan hanya dapat dibaca.", code: "FLEET_FINANCE_SETTINGS_READ_ONLY" });
+    return;
+  }
   if (!["GET", "HEAD", "OPTIONS"].includes(req.method) && process.env.FLEET_FINANCE_WRITE_ENABLED !== "true") {
     res.status(503).json({ error: "Pencatatan Fleet Finance belum diaktifkan.", code: "FLEET_FINANCE_WRITES_DISABLED", writeEnabled: false });
     return;
@@ -457,18 +462,17 @@ router.get("/companies/:companyId/accounting-settings", async (req, res) => {
   if (!scope) return;
 
   try {
-    const client = await pool.connect();
-    try {
-      const settings = await resolvePostingSettings(client, companyId);
-      res.json({
-        ...scope,
-        fleetCashAccountId: settings.cashId,
-        fleetDriverReceivableAccountId: settings.receivableId,
-        journalId: settings.journalId,
-      });
-    } finally {
-      client.release();
-    }
+    const { settings, readiness } = await withFleetFinanceDevTransaction(scope, async (client) => ({
+      settings: await resolvePostingSettings(client, companyId),
+      readiness: await getFleetFinanceDevWriteReadiness(client),
+    }), { readOnly: true });
+    res.json({
+      ...scope,
+      ...readiness,
+      fleetCashAccountId: settings.cashId,
+      fleetDriverReceivableAccountId: settings.receivableId,
+      journalId: settings.journalId,
+    });
   } catch (error) {
     req.log?.error({ error, companyId }, "Fleet Finance settings integration failed");
     const message = error instanceof Error ? error.message : "Fleet Finance settings unavailable";
@@ -490,78 +494,69 @@ router.put("/companies/:companyId/accounting-settings", async (req, res) => {
   }
   const scope = requireFleetScope(req, res, companyId);
   if (!scope) return;
-
-  const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await withFleetFinanceDevTransaction(scope, async (client) => {
+      await requireActiveCompany(client, companyId);
 
-    await requireActiveCompany(client, companyId);
-
-    const accounts = await client.query(
-      `SELECT id,type::text,is_active,is_postable,is_header,status
-         FROM public.chart_of_accounts
-        WHERE company_id=$1
-          AND id=ANY($2::int[])`,
-      [companyId, [cashId, receivableId]],
-    );
-    if (accounts.rowCount !== 2) {
-      await client.query("ROLLBACK");
-      res.status(409).json({ error: "COA Fleet tidak ditemukan pada company ini." });
-      return;
-    }
-    for (const row of accounts.rows as Array<Record<string, unknown>>) {
-      if (
-        row.is_active === false ||
-        row.is_postable === false ||
-        row.is_header === true ||
-        String(row.status ?? "ACTIVE") !== "ACTIVE" ||
-        String(row.type ?? "") !== "asset"
-      ) {
-        await client.query("ROLLBACK");
-        res.status(409).json({ error: "COA Fleet harus aktif, postable, dan bertipe asset." });
-        return;
+      const accounts = await client.query(
+        `SELECT id,type::text,is_active,is_postable,is_header,status
+           FROM public.chart_of_accounts
+          WHERE company_id=$1
+            AND id=ANY($2::int[])`,
+        [companyId, [cashId, receivableId]],
+      );
+      if (accounts.rowCount !== 2) {
+        throw new FleetFinanceError("COA Fleet tidak ditemukan pada company ini.");
       }
-    }
+      for (const row of accounts.rows as Array<Record<string, unknown>>) {
+        if (
+          row.is_active === false ||
+          row.is_postable === false ||
+          row.is_header === true ||
+          String(row.status ?? "ACTIVE") !== "ACTIVE" ||
+          String(row.type ?? "") !== "asset"
+        ) {
+          throw new FleetFinanceError("COA Fleet harus aktif, postable, dan bertipe asset.");
+        }
+      }
 
-    const journal = await client.query(
-      `SELECT id
-         FROM public.accounting_journals
-        WHERE id=$1
-          AND company_id=$2
-          AND COALESCE(is_active,true)=true
-        LIMIT 1`,
-      [journalId, companyId],
-    );
-    if (!journal.rows[0]) {
-      await client.query("ROLLBACK");
-      res.status(409).json({ error: "Jurnal Fleet tidak valid atau tidak aktif untuk company ini." });
-      return;
-    }
-
-    const existing = await client.query(
-      "SELECT id FROM public.accounting_settings WHERE company_id=$1 LIMIT 1",
-      [companyId],
-    );
-    if (existing.rows[0]?.id) {
-      await client.query(
-        `UPDATE public.accounting_settings
-            SET fleet_cash_account_id=$2,
-                fleet_driver_receivable_account_id=$3,
-                cash_journal_id=$4,
-                updated_at=NOW()
-          WHERE id=$1`,
-        [existing.rows[0].id, cashId, receivableId, journalId],
+      const journal = await client.query(
+        `SELECT id
+           FROM public.accounting_journals
+          WHERE id=$1
+            AND company_id=$2
+            AND COALESCE(is_active,true)=true
+          LIMIT 1`,
+        [journalId, companyId],
       );
-    } else {
-      await client.query(
-        `INSERT INTO public.accounting_settings(
-           company_id,fleet_cash_account_id,fleet_driver_receivable_account_id,cash_journal_id,updated_at
-         ) VALUES($1,$2,$3,$4,NOW())`,
-        [companyId, cashId, receivableId, journalId],
-      );
-    }
+      if (!journal.rows[0]) {
+        throw new FleetFinanceError("Jurnal Fleet tidak valid atau tidak aktif untuk company ini.");
+      }
 
-    await client.query("COMMIT");
+      const existing = await client.query(
+        "SELECT id FROM public.accounting_settings WHERE company_id=$1 LIMIT 1",
+        [companyId],
+      );
+      if (existing.rows[0]?.id) {
+        await client.query(
+          `UPDATE public.accounting_settings
+              SET fleet_cash_account_id=$2,
+                  fleet_driver_receivable_account_id=$3,
+                  cash_journal_id=$4,
+                  updated_at=NOW()
+            WHERE id=$1`,
+          [existing.rows[0].id, cashId, receivableId, journalId],
+        );
+      } else {
+        await client.query(
+          `INSERT INTO public.accounting_settings(
+             company_id,fleet_cash_account_id,fleet_driver_receivable_account_id,cash_journal_id,updated_at
+           ) VALUES($1,$2,$3,$4,NOW())`,
+          [companyId, cashId, receivableId, journalId],
+        );
+      }
+
+    });
     res.json({
       ok: true,
       ...scope,
@@ -571,11 +566,8 @@ router.put("/companies/:companyId/accounting-settings", async (req, res) => {
       idempotencyKey: key,
     });
   } catch (error) {
-    await client.query("ROLLBACK").catch(() => undefined);
     req.log?.error({ error, companyId }, "Fleet Finance settings update failed");
     res.status(integrationErrorStatus(error)).json({ error: error instanceof Error ? error.message : "Fleet Finance settings update failed" });
-  } finally {
-    client.release();
   }
 });
 
@@ -595,10 +587,8 @@ router.post("/cash-payments", async (req, res) => {
   const scope = requireFleetScope(req, res, companyId);
   if (!scope) return;
 
-  const client = await pool.connect();
   try {
-    await client.query("BEGIN");
-    const result = await postCashPayment(client, {
+    const result = await withFleetFinanceDevTransaction(scope, (client) => postCashPayment(client, {
       ...scope,
       idempotencyKey: key,
       paymentId,
@@ -607,16 +597,12 @@ router.post("/cash-payments", async (req, res) => {
       paymentDate,
       referenceNo: typeof req.body?.referenceNo === "string" ? req.body.referenceNo : null,
       actor: typeof req.body?.actor === "string" ? req.body.actor : "fleet-service",
-    });
-    await client.query("COMMIT");
+    }));
     res.status(result.idempotent ? 200 : 201).json({ ...result, ...scope, idempotencyKey: key });
   } catch (error) {
-    await client.query("ROLLBACK").catch(() => undefined);
     req.log?.error({ error, companyId, paymentId }, "Fleet cash payment finance integration failed");
     const message = error instanceof Error ? error.message : "Fleet cash payment posting failed";
     res.status(integrationErrorStatus(error)).json({ error: message });
-  } finally {
-    client.release();
   }
 });
 
@@ -636,10 +622,8 @@ router.post("/cash-payments/reverse", async (req, res) => {
   const scope = requireFleetScope(req, res, companyId);
   if (!scope) return;
 
-  const client = await pool.connect();
   try {
-    await client.query("BEGIN");
-    const result = await reverseCashPayment(client, {
+    const result = await withFleetFinanceDevTransaction(scope, (client) => reverseCashPayment(client, {
       ...scope,
       idempotencyKey: key,
       paymentId,
@@ -647,16 +631,12 @@ router.post("/cash-payments/reverse", async (req, res) => {
       amount,
       driverName,
       actor: typeof req.body?.actor === "string" ? req.body.actor : "fleet-service",
-    });
-    await client.query("COMMIT");
+    }));
     res.status(result.idempotent ? 200 : 201).json({ ...result, ...scope, idempotencyKey: key });
   } catch (error) {
-    await client.query("ROLLBACK").catch(() => undefined);
     req.log?.error({ error, companyId, paymentId, originalEntryId }, "Fleet cash payment reversal integration failed");
     const message = error instanceof Error ? error.message : "Fleet reversal posting failed";
     res.status(integrationErrorStatus(error)).json({ error: message });
-  } finally {
-    client.release();
   }
 });
 

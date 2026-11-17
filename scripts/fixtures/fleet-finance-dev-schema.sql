@@ -959,3 +959,10 @@ ALTER TABLE public.fleet_ledger_entries ENABLE ROW LEVEL SECURITY;
 CREATE POLICY qa_target ON public.fleet_ledger_entries TO fleet_finance_qa_api USING (company_id=3) WITH CHECK(company_id=3);
 ALTER TABLE public.accounting_settings ENABLE ROW LEVEL SECURITY;
 CREATE POLICY qa_target ON public.accounting_settings TO fleet_finance_qa_api USING (company_id=3) WITH CHECK(company_id=3);
+
+-- Actual CST-DEV serial ownership, verified read-only 2026-11-17.
+-- fleet_cash_payments intentionally has no OWNED BY in the actual DEV catalog.
+ALTER SEQUENCE public.accounting_entries_id_seq OWNED BY public.accounting_entries.id;
+ALTER SEQUENCE public.accounting_entry_lines_id_seq OWNED BY public.accounting_entry_lines.id;
+ALTER SEQUENCE public.fleet_ledger_entries_id_seq OWNED BY public.fleet_ledger_entries.id;
+ALTER SEQUENCE public.fleet_outstanding_id_seq OWNED BY public.fleet_outstanding.id;
