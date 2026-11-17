@@ -3,6 +3,8 @@
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 legacy_root=${1:?Supply the absolute path to the SHA-pinned legacy source snapshot}
+suite=${2:-native}
+[[ "$suite" = native || "$suite" = application ]] || { echo UNKNOWN_SUITE >&2; exit 2; }
 [[ "$legacy_root" = /* ]] || { echo EXPLICIT_ABSOLUTE_SOURCE_REQUIRED >&2; exit 2; }
 command -v docker >/dev/null
 command -v node >/dev/null
@@ -29,4 +31,4 @@ done
 "$ready" || { echo DISPOSABLE_DATABASE_NOT_READY >&2; exit 3; }
 env -i PATH="$PATH" HOME="$HOME" \
  PAYROLL_PG_E2E_URL='postgresql://postgres.xssrfshdrtdfupgqwfdw:ci-disposable-only@127.0.0.1:65432/payroll_ci' \
- node "$here/run.mjs" "$legacy_root"
+ node "$here/run.mjs" "$legacy_root" "$suite"

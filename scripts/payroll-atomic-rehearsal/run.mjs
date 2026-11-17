@@ -10,6 +10,8 @@ import {fileURLToPath,pathToFileURL} from 'node:url';
 const here=path.dirname(fileURLToPath(import.meta.url));
 const root=path.resolve(here,'../..'),api=root+'/artifacts/api-server';
 const legacy=process.argv[2];
+const suite=process.argv[3]||'native';
+if(!['native','application'].includes(suite))throw Error('UNKNOWN_REHEARSAL_SUITE');
 if(!legacy||!path.isAbsolute(legacy))throw Error('EXPLICIT_LEGACY_SOURCE_REQUIRED');
 const u=new URL(process.env.PAYROLL_PG_E2E_URL||'invalid:');
 if(u.protocol!=='postgresql:'||u.hostname!=='127.0.0.1'||u.port!=='65432'||u.pathname!=='/payroll_ci'||u.username!=='postgres.xssrfshdrtdfupgqwfdw')throw Error('REFUSE_NON_DISPOSABLE_POSTGRES');
@@ -64,7 +66,7 @@ try {
   await build({stdin:{contents:`export {postEntryWithClient} from ${JSON.stringify(lib+'/accounting.ts')}; export {PayrollJournalService} from ${JSON.stringify(lib+'/payroll/PayrollJournalService.ts')};`,resolveDir:api,loader:'ts'},outfile:out,bundle:true,platform:'node',format:'esm',logLevel:'silent',external:['drizzle-orm','drizzle-orm/*','pg'],nodePaths:[api+'/node_modules',root+'/node_modules'],plugins:[boundaryPlugin()]});
  }
  let helpers=fs.readFileSync(routes+'/payroll-accounting-handoff.test.ts','utf8').split('\ndescribe(')[0].replace(/^import \{ describe, expect, it \} from "vitest";\n/,'');
- const harness=fs.readFileSync(here+'/native-postgres-tests.ts','utf8')
+ const harness=fs.readFileSync(here+(suite==='application'?'/application-postgres-tests.ts':'/native-postgres-tests.ts'),'utf8')
   .replaceAll('__ROOT__',root).replaceAll('__BASE__',baseOut).replaceAll('__FIXED__',fixedOut);
  fs.writeFileSync(entry,helpers+'\n'+harness,{flag:'wx',mode:0o600});
  await build({entryPoints:[entry],outfile:output,bundle:true,platform:'node',format:'esm',logLevel:'silent',nodePaths:[api+'/node_modules',root+'/node_modules'],external:['pg','drizzle-orm','drizzle-orm/*',baseOut,fixedOut],banner:{js:`import {createRequire as createNodeRequire} from 'node:module'; const require=createNodeRequire(import.meta.url);`}});

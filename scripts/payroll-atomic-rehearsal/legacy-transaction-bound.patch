@@ -172,12 +172,13 @@
 @@ -60 +60 @@
 -  const j = rows[0] ?? await db.execute<{ id: number; code: string }>(sql`
 +  const j = rows[0] ?? await client.execute<{ id: number; code: string }>(sql`
-@@ -117,2 +117,2 @@
+@@ -117,2 +117,3 @@
 -  async postAccrualJournal(mapping: PayrollAccountMapping, p: AccrualJournalParams): Promise<AccrualJournalResult> {
 -    const j = await requireJournal(p.companyId, "general");
++  transactionalAccrualVersion: "payroll-accrual-atomic-v1" as const,
 +  async postAccrualJournal(mapping: PayrollAccountMapping, p: AccrualJournalParams, client: DbClient = db): Promise<AccrualJournalResult> {
 +    const j = await requireJournal(p.companyId, "general", client);
-@@ -143 +143,4 @@
+@@ -143 +144,4 @@
 -    const entry = await postEntry(
 +    const post = client === db
 +      ? postEntry

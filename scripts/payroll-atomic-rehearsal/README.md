@@ -76,3 +76,13 @@ until an explicit legitimate mapping is supplied; this patch does not invent one
 
 The existing application API, typecheck/build and CI do **not** automatically run
 this external-source rehearsal. A PASS here must be reported separately from CI.
+
+## Application-service suite added
+
+The original `native` suite above remains unchanged in scope. A second suite
+now calls `src/routes/payroll-accounting-transaction.ts` directly, including
+real cash-advance repayment rows, source/account-line verification, preserved
+microsecond approval timestamps, and 17-person coverage. Run with the optional
+`application` argument to the same launcher. See `APPLICATION-SERVICE.md` for
+its exact activation, schema, authentication and outstanding runtime limits.
+Neither suite enables an HTTP endpoint or changes an active service.
