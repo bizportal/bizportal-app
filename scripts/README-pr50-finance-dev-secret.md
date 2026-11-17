@@ -18,6 +18,28 @@ any PROD database account.
   `BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV` with the same dedicated
   Finance database URL. Never commit a `.env` or log that URL.
 
+### Existing private DEV systemd bootstrap (no secret copying)
+
+The isolated DEV preview already mounts the service-account JSON as the
+**systemd credential file** `gcp-secret-manager-bootstrap.json`. The canonical
+`readSecret` helper can now read that mounted credential **without exporting
+the secret contents as an environment variable**, only when all of these hold:
+
+- `APP_ENV=development` (even if the Node bundle uses `NODE_ENV=production`);
+- `BIZPORTAL_DEV_SYSTEMD_GCP_BOOTSTRAP_ENABLED=true` is explicitly set;
+- `CREDENTIALS_DIRECTORY` is an absolute directory assigned by systemd;
+- the fixed credential filename is a regular nonempty file at most 16 KiB.
+
+When a direct `GCP_SECRET_MANAGER_BOOTSTRAP_JSON` is already provided, its
+original behavior takes precedence. In actual PROD, missing direct bootstrap
+is still rejected regardless of any systemd flag. The contents, file path,
+access token, dedicated Finance URL and private key are never logged.
+
+This **does not activate Finance Writer** or grant database privileges. An
+isolated DEV service must independently obtain approved dedicated Finance
+credentials, pass the official TLS/RLS read-only probe, verify signed Super
+Admin company binding and pass the staged tenant lock/rollback gates first.
+
 Both sources must not be configured simultaneously. The Finance URL must
 identify Supabase **CST-DEV**, authenticate as the dedicated Finance role,
 and include TLS (`sslmode=require`, `verify-ca`, or `verify-full`).

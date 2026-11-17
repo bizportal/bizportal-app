@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import { readFileSync, statSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 
 type ServiceAccountCredentials = {
   project_id?: string;
@@ -15,6 +17,8 @@ type SecretPayload = {
 
 const DEFAULT_DEV_SECRET_NAME = "cst-super-app-development";
 const DEFAULT_PROD_SECRET_NAME = "cst-super-app-production";
+const SYSTEMD_BOOTSTRAP_FILENAME = "gcp-secret-manager-bootstrap.json";
+const MAX_SYSTEMD_BOOTSTRAP_BYTES = 16 * 1024;
 const DATABASE_URL_KEYS = new Set([
   "SUPABASE_DATABASE_URL_DEV",
   "SUPABASE_DATABASE_URL",
@@ -31,11 +35,36 @@ function signJwt(input: string, privateKey: string): string {
   return signer.sign(privateKey, "base64url");
 }
 
-function getCredentials(): ServiceAccountCredentials {
-  const raw = process.env.GCP_SECRET_MANAGER_BOOTSTRAP_JSON;
-  if (!raw) {
+/** Reuse the already verified private-preview systemd credential mount.
+ * Never read fallback credentials in PROD or when the DEV flag is OFF.
+ * No contents or credential paths are included in error messages/logs.
+ */
+function bootstrapJson(): string {
+  const direct = process.env.GCP_SECRET_MANAGER_BOOTSTRAP_JSON;
+  if (direct) return direct;
+
+  if (process.env.APP_ENV?.trim().toLowerCase() !== "development" ||
+      process.env.BIZPORTAL_DEV_SYSTEMD_GCP_BOOTSTRAP_ENABLED !== "true") {
     throw new Error("GCP_SECRET_MANAGER_BOOTSTRAP_JSON is not configured");
   }
+  const directory = process.env.CREDENTIALS_DIRECTORY;
+  if (!directory || !isAbsolute(directory)) {
+    throw new Error("DEV_SYSTEMD_GCP_CREDENTIAL_UNAVAILABLE");
+  }
+  try {
+    const filePath = join(directory, SYSTEMD_BOOTSTRAP_FILENAME);
+    const file = statSync(filePath);
+    if (!file.isFile() || file.size <= 0 || file.size > MAX_SYSTEMD_BOOTSTRAP_BYTES) {
+      throw new Error("Invalid DEV systemd credential file");
+    }
+    return readFileSync(filePath, "utf8");
+  } catch {
+    throw new Error("DEV_SYSTEMD_GCP_CREDENTIAL_UNAVAILABLE");
+  }
+}
+
+function getCredentials(): ServiceAccountCredentials {
+  const raw = bootstrapJson();
 
   let credentials: ServiceAccountCredentials;
   try {
