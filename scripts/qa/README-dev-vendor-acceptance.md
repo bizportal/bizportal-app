@@ -7,7 +7,8 @@ This is a separately reviewed acceptance harness for CST-DEV
 ## Boundaries
 
 The harness creates two labelled synthetic supplier/RFQ/quote/PO/Shipment/GR
-chains, one for company 1 and one for company 3. It uploads an actual synthetic
+chains, one for company 1 with a 48-hex Portal-compatible token and one for
+company 3 with a 64-hex canonical token. It uploads an actual synthetic
 PDF through the vendor capability HTTPS route, repeats the upload, submits the
 invoice and repeats submission. It then calls the unchanged canonical AP
 services through the real GCP-resolved company login sessions, ending at a
@@ -25,6 +26,11 @@ code and have the explicit DEV notification, writer, company role, bundle,
 accounting handoff, and Storage flags enabled. The harness only reads these
 settings; it never changes systemd units, live credentials, roles, grants,
 policies, or functions.
+
+The preflight pins the reviewed PR126 function body hash
+`f74ae1995c4ec52505b06624c6010950`. Its only change from the previous reviewed
+body is accepting exactly 48 or 64 hex characters; session identity, parent
+lock order, ownership, privileges, and the post-lock expiry check remain intact.
 
 ## Build and read-only check
 
