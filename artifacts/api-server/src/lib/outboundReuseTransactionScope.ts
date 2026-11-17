@@ -7,6 +7,7 @@
  * The same connection and lock order must be held until COMMIT/ROLLBACK.
  * Finality reads are necessary but not sufficient for release authorization.
  */
+import { assertOutboundSourceBankCoa } from "./outboundReuseBankCoaGate";
 import {
   readOutboundReuseFinalityCounts,
   type OutboundReuseQueryClient,
@@ -136,6 +137,12 @@ export async function lockOutboundSourceJournalReuseScope(
     || mutationMinor !== creditMinor) {
     throw new Error("PR95_OUTBOUND_LEDGER_MISMATCH");
   }
+  // Verify actual bank-account-to-credit-COA provenance while the same
+  // source journal and mutation remain locked. No amount-only approval.
+  await assertOutboundSourceBankCoa(tx, {
+    companyId: ids.companyId, mutationId: ids.mutationId,
+    entryId: entry.rows[0].id, amountMinor: mutationMinor,
+  });
   const finality = await readOutboundReuseFinalityCounts(tx, {
     companyId: ids.companyId, mutationId: ids.mutationId,
     invoiceId: ids.invoiceId, entryId: entry.rows[0].id,
