@@ -116,6 +116,13 @@ run("one real signed HTTP Calculate -> Super Admin approval on disposable Postgr
   const approvalSchema=readFileSync(new URL("../../../../scripts/payroll-calculate/signed-approval-fixture.sql",import.meta.url),"utf8");
   await fixture.admin.query(baseSchema);
   await fixture.admin.query(approvalSchema);
+  // Replace broad synthetic SELECT with the exact CST-DEV approver column
+  // migration; prove this works with the original handler and real RLS.
+  await fixture.admin.query(`REVOKE SELECT ON public.payroll_runs,
+   public.payroll_items,public.employees,public.cash_advances,
+   public.payroll_kasbon_auto_reservations FROM bizportal_payroll_approver_dev`);
+  const approvalGrants=readFileSync(new URL("../../../../scripts/payroll-calculate/cst-dev-approver-scoped-readiness.sql",import.meta.url),"utf8");
+  await fixture.admin.query(approvalGrants);
   fixture.calculate=new Pool({connectionString:calculateUrl,max:2});
   fixture.approve=new Pool({connectionString:approveUrl,max:1});
   const {default:router}=await import("./payroll");
