@@ -37,7 +37,7 @@ function makeHarness(
     lockInvoice: async (tx, companyId, invoiceId) => {
       calls.push("lock");
       return options.missingInvoice || companyId !== 1 || invoiceId !== 77
-        ? null : { companyId: 1, invoiceId: 77, outstandingMinor: tx.outstanding, status: "posted" };
+        ? null : { companyId: 1, invoiceId: 77, outstandingMinor: tx.outstanding, status: tx.outstanding === 0 ? "paid" as const : "posted" as const };
     },
     findByKey: async (tx, companyId, key) => {
       calls.push("find-key");
@@ -96,6 +96,17 @@ describe("Unregistered candidate bank payment atomic boundary", () => {
       outcome: "rejected", reason: "idempotency_conflict",
     });
     expect(h.snapshot()).toMatchObject({ journalCount: 1, disbursementCount: 1 });
+  });
+
+  it("replays a fully settled invoice even after its status changed to paid", async () => {
+    const h = makeHarness();
+    const full = { ...input, grossMinor: 10000, withholdingMinor: 1000 };
+    expect((await commitVendorInvoicePaymentAtomic(full, h.adapter)).outcome).toBe("created");
+    expect((await commitVendorInvoicePaymentAtomic(full, h.adapter)).outcome).toBe("replayed");
+    expect((await commitVendorInvoicePaymentAtomic({
+      ...full, idempotencyKey: "another-full-payment-key",
+    }, h.adapter))).toEqual({ outcome: "rejected", reason: "unavailable" });
+    expect(h.snapshot()).toMatchObject({ outstanding: 0, journalCount: 1, disbursementCount: 1 });
   });
 
   it("refuses overpayment and missing company invoice before any financial write", async () => {
