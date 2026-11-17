@@ -1,0 +1,22 @@
+{
+  "purpose": "STAGED PATCH ONLY; do not apply to active services",
+  "sourceSha256": {
+    "artifacts/api-server/src/lib/accounting.ts": "3d067348df6c0dee29ce7d36250be39b730772cf1c9dd9056ff925bcee6008fe",
+    "artifacts/api-server/src/lib/payroll/PayrollJournalService.ts": "ac1b3d9cbd94c5eb6081817cccb05b730351787a53fd48c102364385cf318673"
+  },
+  "sourceFiles": [
+    "artifacts/api-server/src/lib/accounting.ts",
+    "artifacts/api-server/src/lib/payroll/PayrollJournalService.ts"
+  ],
+  "unchangedDependencies": [
+    "artifacts/api-server/src/lib/currencyTolerance.ts",
+    "artifacts/api-server/src/lib/payroll/payrollSettlementGuards.ts",
+    "artifacts/api-server/src/lib/advance/AdvanceErrors.ts"
+  ],
+  "dependencySha256": {
+    "artifacts/api-server/src/lib/currencyTolerance.ts": "8f5de848621821b8d02c045703b3e1baee4b9bc1090c7e30b5d05975c79f691e",
+    "artifacts/api-server/src/lib/payroll/payrollSettlementGuards.ts": "0ebe896e3a258b2734f15d819fbf77db59c85f86ad8ed5ad6014a8eaaeb853d6",
+    "artifacts/api-server/src/lib/advance/AdvanceErrors.ts": "7702131f46f7f43428d7148e7efbcb515650495143a232c81eb8e9d4184c5d0e"
+  },
+  "verifiedPostgresVersion": "16.15"
+}
