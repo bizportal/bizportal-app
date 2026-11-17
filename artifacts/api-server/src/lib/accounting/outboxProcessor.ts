@@ -106,6 +106,14 @@ async function processOutboxBatch(): Promise<number> {
     FROM financial_outbox_events
     WHERE status = 'pending'
       AND attempt < ${MAX_ATTEMPTS}
+      -- The strict, opt-in Customer Portal DEV consumer owns its exact
+      -- tagged sales-invoice events. Never let the legacy fire-and-forget
+      -- path claim them and duplicate financial_events.
+      AND NOT (
+        event_type = 'JOURNAL_CREATED'
+        AND payload->>'sourceType' = 'sales_invoice'
+        AND left(coalesce(payload->>'dedupeKey', ''), 14) = 'sales_invoice:'
+      )
     ORDER BY created_at ASC
     LIMIT ${BATCH_SIZE}
     FOR UPDATE SKIP LOCKED
@@ -263,7 +271,7 @@ export async function processCustomerPortalSalesInvoiceOutboxDevOnce():
       FROM public.financial_outbox_events
       WHERE status = 'pending' AND event_type = 'JOURNAL_CREATED'
         AND payload->>'sourceType' = 'sales_invoice'
-        AND payload->>'dedupeKey' LIKE 'sales_invoice:%'
+        AND left(coalesce(payload->>'dedupeKey', ''), 14) = 'sales_invoice:'
         AND attempt < 5
       ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED
     `);
