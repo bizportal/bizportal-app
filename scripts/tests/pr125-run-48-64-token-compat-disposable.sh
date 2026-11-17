@@ -23,6 +23,13 @@ done
 test "$ready" = true
 admin() { docker exec -i "$NAME" psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres -Atq; }
 admin < "$ROOT/scripts/tests/pr107-finance-synthetic-baseline.sql" >/dev/null
+# Supabase's built-in API roles exist in live CST-DEV, but not in bare PostgreSQL.
+# Create harmless NOLOGIN names in this disposable fixture so privilege-denial
+# assertions test real role names rather than raising undefined-role errors.
+admin <<'SQL' >/dev/null
+CREATE ROLE anon NOLOGIN NOINHERIT NOBYPASSRLS;
+CREATE ROLE authenticated NOLOGIN NOINHERIT NOBYPASSRLS;
+SQL
 
 # Only the disposable fixture has simplified legacy permissive policies.
 # Replace fingerprint literals in *temporary* SQL copies so we can validate
