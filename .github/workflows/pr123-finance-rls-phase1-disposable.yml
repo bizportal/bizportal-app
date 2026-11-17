@@ -1,0 +1,42 @@
+name: PR123 Finance staged RLS / rollback disposable PG16-17
+
+on:
+  pull_request:
+    branches:
+      - test/pr122-dev-finance-dormant-role-bootstrap-20261117
+    paths:
+      - 'scripts/sql/20261117_dev_finance_company_rls_phase1*'
+      - 'scripts/sql/20261117_dev_finance_dormant_roles_phase0*'
+      - 'scripts/tests/pr123-run-company-rls-phase1-disposable.sh'
+      - '.github/workflows/pr123-finance-rls-phase1-disposable.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  staged-finance-roles-rls-rollback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: [postgres:16-alpine, postgres:17-alpine]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Keep original reviewed PR107/108 SQL unexecutable
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'DO \$no_go\$' scripts/sql/20261117_pr107_finance_company_roles_RLS_REVIEW_ONLY.sql
+          grep -q 'DO \$no_go\$' scripts/sql/20261117_pr108_session_bound_vendor_lock_REVIEW_ONLY.sql
+          ! grep -Eq 'CREATE ROLE|ALTER ROLE|DROP ROLE|SECURITY DEFINER' scripts/sql/20261117_dev_finance_company_rls_phase1.sql
+          ! grep -Eq 'DROP ROLE|SECURITY DEFINER' scripts/sql/20261117_dev_finance_company_rls_phase1_rollback.sql
+          echo PR123_ORIGINAL_SECURITY_GUARDS_PRESERVED_PASS
+      - name: Test dormant NOLOGIN roles and exact narrow RLS/ACL with full rollback
+        env:
+          PR123_POSTGRES_IMAGE: ${{ matrix.postgres }}
+        run: bash scripts/tests/pr123-run-company-rls-phase1-disposable.sh
+      - name: No tracked changes
+        shell: bash
+        run: git diff --exit-code -- scripts/sql scripts/tests
