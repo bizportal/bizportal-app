@@ -20,6 +20,14 @@ describe.skipIf(!enabled)("PR95 boundary with real disposable PostgreSQL transac
 
   function adapter(): AtomicSettlementAdapter<PoolClient> {
     return {
+      lockRequestKey: async (tx, companyId, key) => {
+        // Unique transaction-scoped lock for this company/key independent of invoice.
+        // A 64-bit hash collision merely serializes unrelated operations.
+        await tx.query(
+          "SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))",
+          [companyId + ":" + key],
+        );
+      },
       transaction: async fn => {
         const client = await pool.connect();
         try {
@@ -124,7 +132,7 @@ describe.skipIf(!enabled)("PR95 boundary with real disposable PostgreSQL transac
   beforeEach(async () => {
     failAfter=null;
     await pool.query("TRUNCATE pr95_real.disbursements,pr95_real.lines,pr95_real.journals,pr95_real.invoices RESTART IDENTITY");
-    await pool.query("INSERT INTO pr95_real.invoices(id,company_id,outstanding_minor,status) VALUES(77,1,10000,'posted'),(88,2,10000,'posted')");
+    await pool.query("INSERT INTO pr95_real.invoices(id,company_id,outstanding_minor,status) VALUES(77,1,10000,'posted'),(78,1,10000,'posted'),(88,2,10000,'posted')");
   });
   afterAll(async () => {
     if (pool) {
@@ -177,6 +185,22 @@ describe.skipIf(!enabled)("PR95 boundary with real disposable PostgreSQL transac
       journal_count:1,disbursement_count:1,outstanding:4000,unbalanced:0,
     });
   });
+  it("serializes the same key across two DIFFERENT company-1 invoices", async () => {
+    const results = await Promise.all([
+      commitVendorInvoicePaymentAtomic({...base,idempotencyKey:"pr95-cross-invoice-key"},adapter()),
+      commitVendorInvoicePaymentAtomic({
+        ...base,invoiceId:78,idempotencyKey:"pr95-cross-invoice-key",
+      },adapter()),
+    ]);
+    expect(results.map(x=>x.outcome).sort()).toEqual(["created","rejected"]);
+    expect(results.find(x=>x.outcome==="rejected")).toMatchObject({
+      outcome:"rejected",reason:"idempotency_conflict",
+    });
+    expect(await counters()).toMatchObject({
+      journal_count:1,disbursement_count:1,unbalanced:0,
+    });
+  });
+
   it("rejects simultaneous distinct keys that would overpay", async () => {
     const results=await Promise.all([
       commitVendorInvoicePaymentAtomic({...base,grossMinor:8000,idempotencyKey:"pr95-key-unique-1"},adapter()),
