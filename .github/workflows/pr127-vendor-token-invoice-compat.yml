@@ -9,6 +9,8 @@ on:
       - 'artifacts/api-server/src/lib/services/mktVendorInvoiceTokenResolver.ts'
       - 'artifacts/api-server/src/lib/services/mktVendorPoTokenService.dev-compat.test.ts'
       - 'artifacts/api-server/src/lib/services/mktVendorInvoiceTokenResolver.test.ts'
+      - 'scripts/deploy-invoice-finance-preview-dev.py'
+      - 'scripts/tests/test_invoice_preview_deploy.py'
       - '.github/workflows/pr127-vendor-token-invoice-compat.yml'
   workflow_dispatch:
 
@@ -46,6 +48,8 @@ jobs:
             src/lib/services/mktVendorInvoiceTokenResolver.test.ts \
             src/routes/dev-vendor-finance-session.test.ts \
             src/lib/services/mktVendorInvoiceParentLock.dev.test.ts
+      - name: Certify private HTTPS 48/64 vendor URL allowlist and rollback guards
+        run: python3 scripts/tests/test_invoice_preview_deploy.py
       - name: Canonical API and DB typecheck
         run: pnpm --dir artifacts/api-server typecheck
       - name: No tracked application or lockfile modification
