@@ -1,0 +1,33 @@
+name: DEV Customer Invoice — original owner disposable journal acceptance
+
+on:
+  pull_request:
+    branches:
+      - fix/dev-accounting-invoice-company-source-index-20261118
+    paths:
+      - 'scripts/tests/customer-invoice-original-owner-synthetic-fixture.sql'
+      - 'scripts/tests/customer-invoice-original-owner-disposable.mjs'
+      - 'scripts/tests/customer-invoice-original-owner-disposable.sh'
+      - '.github/workflows/customer-invoice-original-owner-disposable.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  original-owner-synthetic-journal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Install exact workspace dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Post and verify original owner inside disposable PostgreSQL
+        run: bash scripts/tests/customer-invoice-original-owner-disposable.sh
