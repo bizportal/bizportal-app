@@ -1,0 +1,63 @@
+name: DEV Customer Invoice Preview UI
+
+on:
+  pull_request:
+    branches:
+      - test/pr131-dev-finance-pinned-ipv4-pooler-20261117
+    paths:
+      - 'artifacts/bizportal/src/pages/sales/**'
+      - 'artifacts/bizportal/src/pages/purchase/FinanceCompanyScopeCard.tsx'
+      - 'artifacts/bizportal/src/__tests__/customer-ar-preview-page.test.tsx'
+      - 'artifacts/bizportal/src/__tests__/finance-company-scope-card.test.tsx'
+      - '.github/workflows/customer-invoice-preview-ui-dev.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  private-customer-preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Install locked workspace dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Company isolation, error states and existing scope card
+        run: |
+          pnpm --dir artifacts/bizportal exec vitest run \
+            src/__tests__/customer-ar-preview-page.test.tsx \
+            src/__tests__/finance-company-scope-card.test.tsx
+      - name: Frontend TypeScript
+        run: pnpm --filter @workspace/bizportal run typecheck
+      - name: Build explicit private DEV frontend
+        env:
+          NODE_ENV: production
+          APP_ENV: development
+          BASE_PATH: /
+          VITE_SUPABASE_URL: ''
+          VITE_SUPABASE_ANON_KEY: ''
+          GOOGLE_MAPS_API_KEY: ''
+          VITE_BIZPORTAL_DEV_PASSWORD_ONLY: 'true'
+          VITE_BIZPORTAL_OTP_ONLY_PREVIEW: 'false'
+          VITE_BIZPORTAL_FINANCE_GLOBAL_SCOPE_UI_DEV: 'true'
+          VITE_BIZPORTAL_FINANCE_READONLY_PREVIEW_DEV: 'false'
+        run: pnpm --filter @workspace/bizportal run build
+      - name: Build default frontend with private preview disabled
+        env:
+          NODE_ENV: production
+          BASE_PATH: /
+          VITE_BIZPORTAL_DEV_PASSWORD_ONLY: 'false'
+          VITE_BIZPORTAL_OTP_ONLY_PREVIEW: 'false'
+          VITE_BIZPORTAL_FINANCE_GLOBAL_SCOPE_UI_DEV: 'false'
+          VITE_BIZPORTAL_FINANCE_READONLY_PREVIEW_DEV: 'false'
+        run: pnpm --filter @workspace/bizportal run build
+      - name: Verify source and lockfile remain unchanged
+        run: git diff --exit-code -- artifacts/bizportal/src pnpm-lock.yaml
