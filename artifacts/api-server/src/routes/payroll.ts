@@ -1,9 +1,9 @@
 import { Router, type IRouter, type Request, type Response, type NextFunction } from "express";
-import { pool } from "@workspace/db";
-import { getPayrollPool, payrollScopedQuery, setPayrollCompanyScope } from "./payroll-db";
+import { getPayrollPool, payrollDedicatedEnabled, payrollScopedQuery, setPayrollCompanyScope } from "./payroll-db";
 import { authorizePayrollCompany } from "./payroll-access";
 import { registerPayrollSetupReadinessRoutes } from "./payroll-setup-readiness";
 import { registerPayrollProdConnectionPreflightRoutes } from "./payroll-prod-connection-preflight";
+import { registerPayrollSuperAdminApprovalRoutes } from "./payroll-super-admin-approval";
 import { readPayrollSuperAdminApprovalReceipt } from "./payroll-super-admin-approval-receipt";
 import { getDevSession, getProductionSession, getProductionUser, isDevelopmentEnvironment, type DevAuthUser } from "./dev-auth";
 
@@ -32,6 +32,14 @@ async function authorize(request: PayrollRequest, response: Response, next: Next
     request.log.error({ error }, "Payroll authorization error");
     response.status(503).json({ message: "Otorisasi payroll tidak tersedia." });
   }
+}
+
+// DEV salary mutations must never fall back to the shared BizPortal DB pool.
+// A missing or malformed separate CST-DEV Payroll connection fails closed.
+function payrollDevWriterReady(): boolean {
+  if (!isDevelopmentEnvironment()) return false;
+  try { return payrollDedicatedEnabled(); }
+  catch { return false; }
 }
 
 const positiveId = (raw: unknown): number | null => {
@@ -68,6 +76,42 @@ router.use("/payroll", authorize);
 registerPayrollSetupReadinessRoutes(router);
 // Port exact legacy read-only scoped PROD connection diagnostic; write paths remain disabled.
 registerPayrollProdConnectionPreflightRoutes(router);
+
+// Approval is intentionally absent from the PROD route tree. This stage only
+// exposes the existing, independently guarded handler on an EXPLICIT DEV-only
+// canary. It does NOT grant a DB role, enable approval, or permit GL/payouts.
+// The handler still requires PAYROLL_DEV_SUPER_ADMIN_APPROVAL_ENABLED and the
+// distinct, pinned bizportal_payroll_approver_dev login before any write.
+if (process.env.APP_ENV?.trim().toLowerCase() === "development" &&
+    process.env.PAYROLL_DEV_SUPER_ADMIN_ROUTE_MOUNT_ENABLED === "true") {
+  const approvalRouter: IRouter = Router();
+  // A legacy DEV test-session cookie is NEVER sufficient for salary approval.
+  // Revalidate the server-issued OTP session and active DB user identity on
+  // each request, even when ordinary Payroll reads allow legacy DEV sessions.
+  approvalRouter.use(async (req: PayrollRequest, res: Response, next: NextFunction) => {
+    const signedSession = getProductionSession(req);
+    if (!signedSession) {
+      res.status(401).json({ message: "Persetujuan Payroll memerlukan sesi OTP Super Admin." });
+      return;
+    }
+    try {
+      const verifiedActor = await getProductionUser(signedSession);
+      const verifiedCompany = authorizePayrollCompany(verifiedActor, req.query.companyId);
+      if (!verifiedActor || verifiedActor.role.toLowerCase() !== "super_admin" ||
+          !verifiedCompany || verifiedCompany !== req.payrollCompanyId) {
+        res.status(403).json({ message: "Super Admin Payroll tidak berwenang." });
+        return;
+      }
+      req.payrollActor = verifiedActor;
+      next();
+    } catch (error) {
+      req.log?.error?.({ error }, "DEV Payroll Super Admin identity verification failed");
+      res.status(503).json({ message: "Identitas Super Admin tidak dapat diverifikasi." });
+    }
+  });
+  registerPayrollSuperAdminApprovalRoutes(approvalRouter);
+  router.use(approvalRouter);
+}
 
 router.get("/payroll/runs", async (req: PayrollRequest, res): Promise<void> => {
   const companyId = req.payrollCompanyId!;
@@ -136,10 +180,10 @@ router.get("/payroll/capabilities", (req: PayrollRequest, res) => {
     canCreateDraft: isDevelopmentEnvironment()
       && process.env.PAYROLL_DEV_DRAFT_ENABLED === "true"
       && ["admin", "owner", "super_admin"].includes(req.payrollActor?.role.toLowerCase() ?? ""),
-    canGenerate: isDevelopmentEnvironment()
+    canGenerate: payrollDevWriterReady()
       && process.env.PAYROLL_DEV_GENERATE_ENABLED === "true"
       && ["admin", "owner", "super_admin"].includes(req.payrollActor?.role.toLowerCase() ?? ""),
-    canEditItems: isDevelopmentEnvironment()
+    canEditItems: payrollDevWriterReady()
       && process.env.PAYROLL_DEV_ITEM_EDIT_ENABLED === "true"
       && ["admin", "owner", "super_admin"].includes(req.payrollActor?.role.toLowerCase() ?? ""),
     canCalculate: false,
@@ -223,12 +267,17 @@ router.post("/payroll/runs/:id/generate-items", async (req: PayrollRequest, res)
   const runId = positiveId(req.params.id);
   if (!runId) { res.status(400).json({ message: "ID payroll tidak valid." }); return; }
   const companyId = req.payrollCompanyId!;
+  if (!payrollDevWriterReady()) {
+    res.status(503).json({ message: "Koneksi Payroll DEV khusus belum tersedia." });
+    return;
+  }
   try {
-    const client = await pool.connect();
+    const client = await getPayrollPool().connect();
     let activeTransaction = false;
     try {
       await client.query("BEGIN");
       activeTransaction = true;
+      await setPayrollCompanyScope(client, companyId);
       // Serialise item generation and edits for the same run.
       await client.query("SELECT pg_advisory_xact_lock($1::integer, $2::integer)", [companyId, -runId]);
       const run = await client.query(
@@ -330,12 +379,17 @@ router.patch("/payroll/runs/:id/items/:itemId", async (req: PayrollRequest, res)
   }
 
   const companyId = req.payrollCompanyId!;
+  if (!payrollDevWriterReady()) {
+    res.status(503).json({ message: "Koneksi Payroll DEV khusus belum tersedia." });
+    return;
+  }
   try {
-    const client = await pool.connect();
+    const client = await getPayrollPool().connect();
     let activeTransaction = false;
     try {
       await client.query("BEGIN");
       activeTransaction = true;
+      await setPayrollCompanyScope(client, companyId);
       await client.query("SELECT pg_advisory_xact_lock($1::integer, $2::integer)", [companyId, -runId]);
       const run = await client.query(
         "SELECT id, status FROM public.payroll_runs WHERE company_id = $1 AND id = $2 FOR UPDATE", [companyId, runId],
