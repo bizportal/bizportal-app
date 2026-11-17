@@ -30,7 +30,7 @@ VALUES (1,1,'Synthetic PPN 11% CST',11,'sale',103),
        (3,3,'Synthetic PPN 11% DIVA',11,'sale',303);
 INSERT INTO public.accounting_settings
  (company_id,ar_account_id,sales_income_account_id,sales_journal_id,ppn_output_account_id,default_sales_tax_id)
-VALUES (1,101,102,11,103,1),(3,301,302,31,303,3);
+VALUES (1,101,102,11,103,1),(3,301,302,31,303,1); -- intentionally foreign DIVA default
 
 INSERT INTO public.sales_documents
  (id,doc_number,kind,status,invoice_status,customer_name,total_amount,tax_amount,
