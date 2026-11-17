@@ -403,8 +403,8 @@ async function recoverExistingQaFixtures() {
   // Ensure there is no third row under this exact marker, nor any missing one.
   const all = (await admin!.query(`
     select count(*)::int n from public.mkt_purchase_orders
-    where po_number like $1 escape '!' and po_number in ($2,$3)
-  `, [recoveryMarker+"-%",recoveryMarker+"-1",recoveryMarker+"-3"])).rows[0];
+    where po_number like $1 escape '!'
+  `, [recoveryMarker+"-%"])).rows[0];
   requireThat(all?.n === 2, "RECOVER_MARKER_SCOPE_CHANGED");
   seeded = true;
   passed("RECOVER_QA_EXACT_OWNERSHIP_AND_UNPAID_DRAFTS_VERIFIED", {
