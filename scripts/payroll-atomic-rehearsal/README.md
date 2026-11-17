@@ -112,3 +112,11 @@ scenarios with the standalone native accrual artifact loaded through the real
 SHA256 byte verifier. No signed HTTP session or live connection is created.
 See `../payroll-native-runtime/README.md` for build provenance, explicit denied
 global capabilities, startup configuration and activation limits.
+
+## Existing financial-period setup contract
+
+`financial-setup` reuses the same disposable PostgreSQL runner to exercise the
+application period-registration service and unchanged CST-DEV audit trigger
+snapshots. It uses fresh synthetic run/period IDs while retaining append-only
+audit guards. See `../payroll-financial-period/README.md`; no live registration,
+new grant, funding approval, session handling or bank/payment effect is enabled.

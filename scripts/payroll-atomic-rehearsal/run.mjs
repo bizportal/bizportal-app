@@ -11,7 +11,7 @@ const here=path.dirname(fileURLToPath(import.meta.url));
 const root=path.resolve(here,'../..'),api=root+'/artifacts/api-server';
 const legacy=process.argv[2];
 const suite=process.argv[3]||'native';
-if(!['native','application','triggers','permissions','packaged'].includes(suite))throw Error('UNKNOWN_REHEARSAL_SUITE');
+if(!['native','application','triggers','permissions','packaged','financial-setup'].includes(suite))throw Error('UNKNOWN_REHEARSAL_SUITE');
 if(!legacy||!path.isAbsolute(legacy))throw Error('EXPLICIT_LEGACY_SOURCE_REQUIRED');
 const u=new URL(process.env.PAYROLL_PG_E2E_URL||'invalid:');
 if(u.protocol!=='postgresql:'||u.hostname!=='127.0.0.1'||u.port!=='65432'||u.pathname!=='/payroll_ci'||u.username!=='postgres.xssrfshdrtdfupgqwfdw')throw Error('REFUSE_NON_DISPOSABLE_POSTGRES');
@@ -90,6 +90,11 @@ try {
   const marker=' await reset();\n const plan=prepareReviewedPayrollAccrual(fixture());';
   const at=harness.indexOf(marker);if(at<0)throw Error('FIXTURE_SETUP_CONTRACT_CHANGED');
   harness=harness.slice(0,at)+fs.readFileSync(here+'/trigger-compatibility-tests.ts','utf8');
+ }
+ if(suite==='financial-setup'){
+  const marker=' await reset();\n const plan=prepareReviewedPayrollAccrual(fixture());';
+  const at=harness.indexOf(marker);if(at<0)throw Error('FIXTURE_SETUP_CONTRACT_CHANGED');
+  harness=harness.slice(0,at)+fs.readFileSync(here+'/../payroll-financial-period/postgres-tests.ts','utf8');
  }
  if(suite==='permissions'||suite==='packaged'){
   const marker=' await reset();\n const plan=prepareReviewedPayrollAccrual(fixture());';
