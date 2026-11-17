@@ -7,6 +7,11 @@
    '__ROOT__/scripts/payroll-atomic-rehearsal/least-privilege-fixture.sql','utf8'));
  await admin.query((await import('node:fs')).readFileSync(
    '__ROOT__/scripts/payroll-calculate/integrated-native-fixture.sql','utf8'));
+ // Verify the proposed CST-DEV 18-table settlement grant/policy contract on
+ // the same disposable database before binding the actual HTTP preflight.
+ // This source-only candidate does not grant anything on live CST-DEV.
+ await admin.query((await import('node:fs')).readFileSync(
+   '__ROOT__/scripts/payroll-calculate/cst-dev-settlement-18table-readiness.sql','utf8'));
  const calcUrl=new URL(process.env.PAYROLL_PG_E2E_URL!);
  calcUrl.username='bizportal_payroll_dev';calcUrl.password='fixture-calc-only-2026';
  const approveUrl=new URL(process.env.PAYROLL_PG_E2E_URL!);
