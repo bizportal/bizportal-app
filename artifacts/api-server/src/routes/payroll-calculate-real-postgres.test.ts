@@ -47,6 +47,10 @@ pg("real disposable PostgreSQL Calculate / RLS / rollback",()=>{
     restricted=new Pool({connectionString:restrictedUrl,max:2});
     const schema=readFileSync(new URL("../../../../scripts/payroll-calculate/disposable-schema.sql",import.meta.url),"utf8");
     await admin.query(schema);
+    // Apply the exact proposed CST-DEV migration to this disposable fixture
+    // before executing all existing financial/role/rollback tests.
+    const restrictedGrant=readFileSync(new URL("../../../../scripts/payroll-calculate/cst-dev-calculate-role-scope.sql",import.meta.url),"utf8");
+    await admin.query(restrictedGrant);
     await restricted.query("SELECT current_user");
     vi.stubEnv("APP_ENV","development");
     vi.stubEnv("PAYROLL_DEV_CALCULATE_ENABLED","true");
@@ -60,6 +64,32 @@ pg("real disposable PostgreSQL Calculate / RLS / rollback",()=>{
     await admin.query(seed);
   },15000);
   afterAll(async()=>{await Promise.allSettled([restricted?.end(),admin?.end()]);vi.unstubAllEnvs();});
+  it("migration retains only narrow reservation INSERT and Calculate item UPDATE rights",async()=>{
+    const grants=await admin.query(`SELECT
+      has_table_privilege('bizportal_payroll_dev','public.payroll_kasbon_auto_reservations','INSERT') broad_insert,
+      has_column_privilege('bizportal_payroll_dev','public.payroll_kasbon_auto_reservations','state','INSERT') can_prepare,
+      has_column_privilege('bizportal_payroll_dev','public.payroll_kasbon_auto_reservations','id','INSERT') can_override_id,
+      has_column_privilege('bizportal_payroll_dev','public.payroll_items','kasbon_deduction','UPDATE') can_deduct,
+      has_column_privilege('bizportal_payroll_dev','public.payroll_items','base_salary','UPDATE') can_rewrite_salary`);
+    expect(grants.rows[0]).toMatchObject({broad_insert:false,can_prepare:true,
+      can_override_id:false,can_deduct:true,can_rewrite_salary:false});
+  });
+  it("RLS reveals only current-company legacy evidence, not foreign rows",async()=>{
+    await admin.query("INSERT INTO public.payroll_cash_advance_allocations(id,payroll_item_id) VALUES(901,11),(902,22)");
+    await admin.query("INSERT INTO public.cash_advance_installment_schedules(id,company_id,advance_id,status) VALUES(911,1,801,'pending'),(912,3,802,'pending')");
+    const client=await restricted.connect();
+    try{
+      await client.query("BEGIN READ ONLY");
+      await client.query("SELECT set_config('app.payroll_company_id','1',true)");
+      const al=await client.query("SELECT id FROM public.payroll_cash_advance_allocations ORDER BY id");
+      const schedule=await client.query("SELECT id FROM public.cash_advance_installment_schedules ORDER BY id");
+      expect(al.rows.map(r=>r.id)).toEqual([901]);
+      expect(schedule.rows.map(r=>r.id)).toEqual([911]);
+      await client.query("ROLLBACK");
+      const unscoped=await client.query("SELECT id FROM public.payroll_cash_advance_allocations");
+      expect(unscoped.rows).toHaveLength(0);
+    }finally{await client.query("ROLLBACK").catch(()=>undefined);client.release();}
+  });
   it("prepares one restricted real-SQL reservation while leaving Draft, then replays exactly",async()=>{
     const first=await calculateDevPayroll(restricted,1,32);
     expect(first).toMatchObject({status:"draft",net:"2900.00",
