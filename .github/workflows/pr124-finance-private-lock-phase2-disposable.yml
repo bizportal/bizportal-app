@@ -1,0 +1,53 @@
+name: PR124 Finance private session-user parent locks PG16-17
+
+on:
+  pull_request:
+    branches:
+      - test/pr123-dev-finance-rls-phase1-20261117
+    paths:
+      - 'scripts/sql/20261117_dev_finance_parent_locks_phase2*'
+      - 'scripts/tests/pr124-run-private-finance-parent-lock-disposable.sh'
+      - 'scripts/tests/pr124-run-nonsuperuser-owner-transfer-disposable.sh'
+      - '.github/workflows/pr124-finance-private-lock-phase2-disposable.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  private-finance-parent-lock-rollback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: [postgres:16-alpine, postgres:17-alpine]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preserve original review-only stop guards and DEV-only scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'DO \$no_go\$' scripts/sql/20261117_pr107_finance_company_roles_RLS_REVIEW_ONLY.sql
+          grep -q 'DO \$no_go\$' scripts/sql/20261117_pr108_session_bound_vendor_lock_REVIEW_ONLY.sql
+          grep -q 'SECURITY DEFINER SET search_path=pg_catalog,pg_temp' scripts/sql/20261117_dev_finance_parent_locks_phase2.sql
+          grep -q 'session_user' scripts/sql/20261117_dev_finance_parent_locks_phase2.sql
+          grep -q 'REVOKE ALL ON FUNCTION' scripts/sql/20261117_dev_finance_parent_locks_phase2.sql
+          grep -q 'GRANT bizportal_finance_parent_lock_owner_dev TO postgres WITH SET TRUE;' scripts/sql/20261117_dev_finance_parent_locks_phase2.sql
+          grep -q 'REVOKE bizportal_finance_parent_lock_owner_dev FROM postgres GRANTED BY postgres;' scripts/sql/20261117_dev_finance_parent_locks_phase2.sql
+          ! grep -Eq 'ALTER ROLE bizportal_finance_(cst|diva)_login_dev|CREATE ROLE bizportal_finance_(cst|diva)_login_dev' scripts/sql/20261117_dev_finance_parent_locks_phase2.sql
+          echo PR124_ORIGINAL_GUARDS_AND_PRIVATE_FN_SECURITY_PASS
+      - name: Pull pinned PostgreSQL image for no-network disposable test
+        env:
+          PR123_POSTGRES_IMAGE: ${{ matrix.postgres }}
+        run: docker pull "$PR123_POSTGRES_IMAGE"
+      - name: Stage phase 0, 1 and private phase 2; authenticate tenants; rollback all
+        env:
+          PR123_POSTGRES_IMAGE: ${{ matrix.postgres }}
+        run: bash scripts/tests/pr124-run-private-finance-parent-lock-disposable.sh
+      - name: Independently verify non-superuser temporary SET grant and full revocation
+        env:
+          PR124_POSTGRES_IMAGE: ${{ matrix.postgres }}
+        run: bash scripts/tests/pr124-run-nonsuperuser-owner-transfer-disposable.sh
+      - name: No source or reviewed migration modifications
+        run: git diff --exit-code -- scripts/sql scripts/tests
