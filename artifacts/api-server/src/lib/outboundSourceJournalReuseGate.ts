@@ -34,6 +34,8 @@ export type OutboundReuseEvidence = Readonly<{
   payableAccountId: number;
   postedSourceEntryCount: number;
   activeApprovedMutationLinkCount: number;
+  mutationFinalMatchCount: number;
+  sourceFinalAllocationCount: number;
   outstandingInvoiceMinor: number;
   requestedWithholdingMinor: number;
 }>;
@@ -62,7 +64,8 @@ export function assessOutboundSourceJournalReuse(e: OutboundReuseEvidence): Outb
     || e.entrySource !== "manual_payment" || e.entryStatus !== "posted"
     || e.entryCancelled || e.entryVoided) return reject("SOURCE_NOT_POSTED");
   if (e.disbursementInvoiceIds.length !== 1 || e.disbursementInvoiceIds[0] !== e.invoiceId
-    || e.postedSourceEntryCount !== 1 || e.activeApprovedMutationLinkCount !== 0) {
+    || e.postedSourceEntryCount !== 1 || e.activeApprovedMutationLinkCount !== 0
+    || e.mutationFinalMatchCount !== 0 || e.sourceFinalAllocationCount !== 0) {
     return reject("AMBIGUOUS_SOURCE_CUSTODY");
   }
   if (!positive(e.mutationAmountMinor) || !positive(e.disbursementAmountMinor)
