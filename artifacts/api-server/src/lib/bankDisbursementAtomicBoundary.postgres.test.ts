@@ -77,6 +77,26 @@ describe.skipIf(!enabled)("PR95 boundary with real disposable PostgreSQL transac
           journalId: row.journal_id, disbursementId: row.disbursement_id,
         } satisfies CommittedSettlement : null;
       },
+      verifyCommittedReceipt: async (tx, receipt) => {
+        // Disposable facsimile of canonical custody: journal posted, linked
+        // disbursement posted, and one active/final allocation for the invoice.
+        const result=await tx.query(`
+          SELECT j.id
+            FROM pr95_real.journals j
+            JOIN pr95_real.disbursements d ON d.journal_id=j.id
+            JOIN pr95_real.allocations a ON a.disbursement_id=d.id
+           WHERE j.id=$1 AND d.id=$2
+             AND j.company_id=$3 AND d.company_id=$3 AND a.company_id=$3
+             AND j.invoice_id=$4 AND d.invoice_id=$4 AND a.invoice_id=$4
+             AND j.status='posted' AND d.status='posted'
+             AND a.is_active=true AND a.status='final'
+             AND a.gross_minor=$5
+           LIMIT 1`,
+          [receipt.journalId,receipt.disbursementId,receipt.companyId,
+           receipt.invoiceId,receipt.grossMinor],
+        );
+        return result.rowCount===1;
+      },
       postJournal: async (tx, input) => {
         const r = await tx.query(
           `INSERT INTO pr95_real.journals(company_id,invoice_id,idempotency_key,gross_minor,withholding_minor,header_debit,header_credit,status)
@@ -105,11 +125,16 @@ describe.skipIf(!enabled)("PR95 boundary with real disposable PostgreSQL transac
       },
       createDisbursement: async (tx, input, journalId) => {
         const r=await tx.query(
-          `INSERT INTO pr95_real.disbursements(company_id,invoice_id,journal_id)
-           VALUES($1,$2,$3) RETURNING id`,
+          `INSERT INTO pr95_real.disbursements(company_id,invoice_id,journal_id,status)
+           VALUES($1,$2,$3,'posted') RETURNING id`,
           [input.companyId,input.invoiceId,journalId],
         );
         if (failAfter === "disbursement") throw Error("FAIL_AFTER_DISBURSEMENT");
+        await tx.query(`
+          INSERT INTO pr95_real.allocations(company_id,invoice_id,disbursement_id,gross_minor,status,is_active)
+          VALUES($1,$2,$3,$4,'final',true)`,
+          [input.companyId,input.invoiceId,r.rows[0].id,input.grossMinor],
+        );
         return r.rows[0].id as number;
       },
       isJournalBalanced: async (tx, companyId, journalId) => {
@@ -165,7 +190,12 @@ describe.skipIf(!enabled)("PR95 boundary with real disposable PostgreSQL transac
         debit integer NOT NULL,credit integer NOT NULL);
       CREATE TABLE pr95_real.disbursements(
         id serial PRIMARY KEY,company_id integer NOT NULL,invoice_id integer NOT NULL,
-        journal_id integer NOT NULL UNIQUE REFERENCES pr95_real.journals(id));`);
+        journal_id integer NOT NULL UNIQUE REFERENCES pr95_real.journals(id),
+        status text NOT NULL);
+      CREATE TABLE pr95_real.allocations(
+        id serial PRIMARY KEY,company_id integer NOT NULL,invoice_id integer NOT NULL,
+        disbursement_id integer NOT NULL REFERENCES pr95_real.disbursements(id),
+        gross_minor integer NOT NULL,status text NOT NULL,is_active boolean NOT NULL);`);
 
     // Test-only HTTP harness. Never imported by any production router.
     // This verifies the SAME candidate boundary + real PG adapter over HTTP,
@@ -200,7 +230,7 @@ describe.skipIf(!enabled)("PR95 boundary with real disposable PostgreSQL transac
     failAfter=null;
     corruptJournal=false;
     corruptHeader=false;
-    await pool.query("TRUNCATE pr95_real.disbursements,pr95_real.lines,pr95_real.journals,pr95_real.invoices RESTART IDENTITY");
+    await pool.query("TRUNCATE pr95_real.allocations,pr95_real.disbursements,pr95_real.lines,pr95_real.journals,pr95_real.invoices RESTART IDENTITY");
     await pool.query("INSERT INTO pr95_real.invoices(id,company_id,outstanding_minor,status) VALUES(77,1,10000,'posted'),(78,1,10000,'posted'),(88,2,10000,'posted')");
   });
   afterAll(async () => {
@@ -262,6 +292,30 @@ describe.skipIf(!enabled)("PR95 boundary with real disposable PostgreSQL transac
     expect(await counters()).toMatchObject({
       journal_count:0,disbursement_count:0,outstanding:10000,unbalanced:0,
     });
+  });
+
+  it("refuses replay after its canonical allocation was deactivated", async () => {
+    expect((await commitVendorInvoicePaymentAtomic(base,adapter())).outcome).toBe("created");
+    await pool.query("UPDATE pr95_real.allocations SET is_active=false");
+    await expect(commitVendorInvoicePaymentAtomic(base,adapter()))
+      .rejects.toThrow("ATOMIC_SETTLEMENT_UNVERIFIED_REPLAY");
+    expect(await counters()).toMatchObject({
+      journal_count:1,disbursement_count:1,outstanding:4000,unbalanced:0,
+    });
+  });
+
+  it("refuses replay after linked disbursement is voided", async () => {
+    expect((await commitVendorInvoicePaymentAtomic(base,adapter())).outcome).toBe("created");
+    await pool.query("UPDATE pr95_real.disbursements SET status='void'");
+    await expect(commitVendorInvoicePaymentAtomic(base,adapter()))
+      .rejects.toThrow("ATOMIC_SETTLEMENT_UNVERIFIED_REPLAY");
+  });
+
+  it("refuses replay after journal status is voided", async () => {
+    expect((await commitVendorInvoicePaymentAtomic(base,adapter())).outcome).toBe("created");
+    await pool.query("UPDATE pr95_real.journals SET status='void'");
+    await expect(commitVendorInvoicePaymentAtomic(base,adapter()))
+      .rejects.toThrow("ATOMIC_SETTLEMENT_UNVERIFIED_REPLAY");
   });
 
   it("serializes simultaneous same-key requests in real Postgres", async () => {
