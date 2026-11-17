@@ -17,6 +17,7 @@ import { validateMagicBytes } from "../lib/uploadValidation.js";
 import { ObjectStorageService } from "../lib/objectStorage.js";
 import { validateBody } from "../lib/middleware/validateBody.js";
 import { findPoByVendorToken } from "../lib/services/mktVendorPoTokenService.js";
+import { resolveVendorInvoiceToken } from "../lib/services/mktVendorInvoiceTokenResolver.js";
 import {
   createMarketplaceVendorInvoice,
   getMarketplaceVendorInvoice,
@@ -25,6 +26,7 @@ import {
 } from "../lib/services/mktVendorInvoiceService.js";
 import { tokenGetRateLimiter, tokenPostRateLimiter } from "../middlewares/securityRateLimiter.js";
 import { logger } from "../lib/logger.js";
+import { vendorFailureLog } from "../lib/vendorCapabilityLogPrivacy.js";
 
 const router = Router();
 const upload = imagePdfUpload(20);
@@ -80,7 +82,7 @@ function failureStatus(code: string): number {
 }
 
 async function resolveVendorPo(token: string, res: any) {
-  const result = await findPoByVendorToken(token);
+  const result = await resolveVendorInvoiceToken(token);
   if (!result.ok) {
     res.status(tokenStatus(result.code)).json({ ok: false, error: "TOKEN_INVALID", code: result.code });
     return null;
@@ -149,7 +151,7 @@ router.get("/:token/invoices", tokenGetRateLimiter, async (req, res) => {
     if (!views) return res.status(404).json({ ok: false, error: "TOKEN_INVALID" });
     return res.json({ ok: true, data: views });
   } catch (err) {
-    logger.warn({ err }, "[mktVendorInvoice] list invoices error");
+    logger.warn(vendorFailureLog("invoice_list", err), "[mktVendorInvoice] list invoices error");
     return res.status(vendorFinanceUnavailable(err) ? 503 : 500).json({ ok: false, error: "Internal server error" });
   }
 });
@@ -227,7 +229,7 @@ router.post("/:token", tokenPostRateLimiter, upload.single("file"), async (req, 
     }
   } catch (err) {
     if (objectPath) await storage.tryDeletePrivateEntity(objectPath);
-    logger.warn({ err }, "[mktVendorInvoice] create invoice error");
+    logger.warn(vendorFailureLog("invoice_create", err), "[mktVendorInvoice] create invoice error");
     return res.status(vendorFinanceUnavailable(err) ? 503 : 500).json({ ok: false, error: "Internal server error" });
   }
 });
@@ -248,7 +250,7 @@ router.get("/:token/invoices/:invoiceId", tokenGetRateLimiter, async (req, res) 
     }
     return res.json({ ok: true, data: safeMarketplaceVendorInvoiceView(detail.invoice, detail.lines) });
   } catch (err) {
-    logger.warn({ err }, "[mktVendorInvoice] get invoice error");
+    logger.warn(vendorFailureLog("invoice_get", err), "[mktVendorInvoice] get invoice error");
     return res.status(vendorFinanceUnavailable(err) ? 503 : 500).json({ ok: false, error: "Internal server error" });
   }
 });
@@ -282,7 +284,7 @@ router.post("/:token/invoices/:invoiceId/submit", tokenPostRateLimiter, validate
     }
     return res.status(failureStatus(result.code)).json({ ok: false, error: result.code, message: result.message });
   } catch (err) {
-    logger.warn({ err }, "[mktVendorInvoice] submit invoice error");
+    logger.warn(vendorFailureLog("invoice_submit", err), "[mktVendorInvoice] submit invoice error");
     return res.status(vendorFinanceUnavailable(err) ? 503 : 500).json({ ok: false, error: "Internal server error" });
   }
 });

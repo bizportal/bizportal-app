@@ -1,0 +1,52 @@
+name: PR127 Customer Portal Vendor Invoice Token Compatibility
+
+on:
+  pull_request:
+    branches:
+      - fix/invoice-dev-completion-20261117
+    paths:
+      - 'artifacts/api-server/src/lib/services/mktVendorPoTokenService.ts'
+      - 'artifacts/api-server/src/lib/services/mktVendorInvoiceTokenResolver.ts'
+      - 'artifacts/api-server/src/lib/services/mktVendorPoTokenService.dev-compat.test.ts'
+      - 'artifacts/api-server/src/lib/services/mktVendorInvoiceTokenResolver.test.ts'
+      - '.github/workflows/pr127-vendor-token-invoice-compat.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  legacy-48-and-canonical-64-vendor-capability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Install pinned canonical dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Reject token truncation or arbitrary legacy token sizes
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'TOKEN_HEX_RE = /^(?:[0-9a-f]{48}|[0-9a-f]{64})$/i;' artifacts/api-server/src/lib/services/mktVendorPoTokenService.ts
+          grep -Fq '/^(?:[0-9a-f]{48}|[0-9a-f]{64})$/i.test(token)' artifacts/api-server/src/lib/services/mktVendorInvoiceTokenResolver.ts
+          grep -q 'const TOKEN_BYTES = 32' artifacts/api-server/src/lib/services/mktVendorPoTokenService.ts
+          grep -q 'timingSafeEqual(stored, supplied)' artifacts/api-server/src/lib/services/mktVendorPoTokenService.ts
+          echo PR127_TOKEN_COMPAT_SOURCE_SECURITY_PASS
+      - name: Existing vendor HTTP/Finance session and token regression tests
+        run: |
+          pnpm --dir artifacts/api-server exec vitest run \
+            src/lib/services/mktVendorPoTokenService.dev-compat.test.ts \
+            src/lib/services/mktVendorInvoiceTokenResolver.test.ts \
+            src/routes/dev-vendor-finance-session.test.ts \
+            src/lib/services/mktVendorInvoiceParentLock.dev.test.ts
+      - name: Canonical API and DB typecheck
+        run: pnpm --dir artifacts/api-server typecheck
+      - name: No tracked application or lockfile modification
+        run: git diff --exit-code -- artifacts/api-server/src pnpm-lock.yaml

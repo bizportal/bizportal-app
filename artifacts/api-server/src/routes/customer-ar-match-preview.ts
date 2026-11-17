@@ -1,31 +1,16 @@
 import { Router, type IRouter } from "express";
-import { pool } from "@workspace/db";
+import { pool, withMarketplaceFinanceDevReadOnlyTransaction } from "@workspace/db";
+import { sql } from "drizzle-orm";
 import { authenticateAdmin, type AdminRequest } from "./admin-auth";
-import { getProductionSession, isDevelopmentEnvironment, isSignedDevAuthEnabled } from "./dev-auth";
+import {
+  getProductionSession, isDevelopmentEnvironment, isSignedDevAuthEnabled,
+  getFinanceCompanyScope, isApprovedFinanceGlobalSuperAdmin, isApprovedFinanceGlobalCompany,
+} from "./dev-auth";
 import { buildCustomerArMatchPreview, type CustomerArInvoiceEvidence, type IncomingBankMutationEvidence } from "../lib/reconciliation/customerArMatchPreview";
+import { CUSTOMER_AR_INVOICES_SQL } from "../lib/reconciliation/customerArSourceSql";
 
 const router: IRouter = Router();
 router.use(authenticateAdmin);
-
-const INVOICES_SQL = [
-  "select sd.id, sd.company_id, sd.invoice_number, sd.customer_name,",
-  "sd.invoice_status::text as invoice_status, sd.status::text as document_status,",
-  "sd.payment_status::text as payment_status,",
-  "ar.outstanding_amount::text as outstanding_amount,",
-  "coalesce(ar.journal_posted, false) as ar_journal_posted",
-  "from public.sales_documents sd",
-  "left join lateral (",
-  "  select sum(ledger.outstanding_amount)::numeric as outstanding_amount,",
-  "         bool_and(ledger.gl_entry_id is not null and entry.status::text = 'posted') as journal_posted",
-  "  from public.ar_subledger ledger",
-  "  left join public.accounting_entries entry",
-  "    on entry.id = ledger.gl_entry_id and entry.company_id = sd.company_id",
-  "  where ledger.company_id = sd.company_id and ledger.invoice_id = sd.id",
-  ") ar on true",
-  "where sd.company_id = $1 and sd.invoice_status::text = 'invoiced'",
-  "and sd.status::text not in ('cancelled', 'canceled', 'void')",
-  "order by sd.id desc limit 300",
-].join("\n");
 
 const MUTATIONS_SQL = [
   "select id, company_id, direction, status, amount,",
@@ -34,6 +19,26 @@ const MUTATIONS_SQL = [
   "where company_id = $1 and upper(direction) = 'IN' and lower(status) = 'unmatched'",
   "order by created_at desc, id desc limit 300",
 ].join("\n");
+
+type InvoiceRow = {
+  id: number; company_id: number; invoice_number: string | null;
+  customer_name: string | null; invoice_status: string;
+  document_status: string; payment_status: string;
+  outstanding_amount: string | null; ar_journal_posted: boolean | null;
+};
+type MutationRow = {
+  id: number; company_id: number; direction: string; status: string;
+  amount: string; description: string | null; bank_reference: string | null;
+  provider_order_id: string | null;
+};
+
+// Keep the shared SQL parameterized when executed through a scoped Drizzle
+// connection. Both statements contain exactly one company placeholder.
+function scopedStatement(statement: string, companyId: number) {
+  const parts = statement.split("$1");
+  if (parts.length !== 2) throw new Error("CUSTOMER_AR_COMPANY_PARAMETER_INVALID");
+  return sql`${sql.raw(parts[0]!)}${companyId}${sql.raw(parts[1]!)}`;
+}
 
 /** Read-only preview. Never approves a mutation or posts a payment/journal. */
 router.get("/sales/customer-invoices/auto-match-preview", async (request, response): Promise<void> => {
@@ -71,20 +76,53 @@ router.get("/sales/customer-invoices/auto-match-preview", async (request, respon
     return;
   }
 
+  const companyMode = process.env.BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV === "true";
+  if (companyMode) {
+    const session = getProductionSession(request);
+    if (!session) {
+      response.status(403).json({ error: "Sesi Finance terverifikasi diperlukan.", code: "CUSTOMER_AR_SIGNED_SESSION_REQUIRED" });
+      return;
+    }
+    if (![1, 3].includes(companyId)) {
+      response.status(403).json({ error: "Perusahaan belum diaktifkan untuk Customer AR.", code: "CUSTOMER_AR_COMPANY_NOT_ENABLED" });
+      return;
+    }
+    // A query/header never widens a company-bound account. Global Super Admin
+    // uses the existing approved, signed, session-bound Finance selection.
+    const ownsCompany = actor?.companyId === companyId;
+    const approvedGlobal = actor?.companyId == null
+      && actor?.role.toLowerCase() === "super_admin"
+      && isApprovedFinanceGlobalSuperAdmin(actor.email)
+      && isApprovedFinanceGlobalCompany(companyId)
+      && getFinanceCompanyScope(request, session) === companyId;
+    if (!ownsCompany && !approvedGlobal) {
+      response.status(403).json({ error: "Cakupan perusahaan Finance tidak sesuai.", code: "CUSTOMER_AR_SIGNED_COMPANY_SCOPE_REQUIRED" });
+      return;
+    }
+  }
+
   try {
-    const [invoiceRows, mutationRows] = await Promise.all([
-      pool.query<{
-        id: number; company_id: number; invoice_number: string | null;
-        customer_name: string | null; invoice_status: string;
-        document_status: string; payment_status: string;
-        outstanding_amount: string | null; ar_journal_posted: boolean | null;
-      }>(INVOICES_SQL, [companyId]),
-      pool.query<{
-        id: number; company_id: number; direction: string; status: string;
-        amount: string; description: string | null; bank_reference: string | null;
-        provider_order_id: string | null;
-      }>(MUTATIONS_SQL, [companyId]),
-    ]);
+    if (companyMode) {
+      // This is authentication metadata in the existing OTP pool, not a
+      // fallback for financial reads. Recheck a selected company's active state.
+      const active = await pool.query<{ id: number }>(
+        "select id from public.companies where id=$1 and coalesce(is_active,true)=true limit 1", [companyId],
+      );
+      if (active.rows.length !== 1) {
+        response.status(404).json({ error: "Perusahaan tidak tersedia.", code: "CUSTOMER_AR_COMPANY_UNAVAILABLE" });
+        return;
+      }
+    }
+    const [invoiceRows, mutationRows] = companyMode
+      ? await withMarketplaceFinanceDevReadOnlyTransaction(companyId, async (scopedDb) => {
+        const invoices = await scopedDb.execute<InvoiceRow>(scopedStatement(CUSTOMER_AR_INVOICES_SQL, companyId));
+        const mutations = await scopedDb.execute<MutationRow>(scopedStatement(MUTATIONS_SQL, companyId));
+        return [invoices, mutations] as const;
+      })
+      : await Promise.all([
+        pool.query<InvoiceRow>(CUSTOMER_AR_INVOICES_SQL, [companyId]),
+        pool.query<MutationRow>(MUTATIONS_SQL, [companyId]),
+      ]);
 
     const invoices: CustomerArInvoiceEvidence[] = invoiceRows.rows.map((row) => ({
       id: row.id,

@@ -8,9 +8,19 @@ on:
       - test/finance-vendor-invoice-parent-lock-contract-20261117
       - test/pr119-gcp-bootstrap-parity-20261117
       - test/pr120-single-gcp-finance-credentials-20261117
+      - test/pr123-dev-finance-rls-phase1-20261117
       - develop
     paths:
+      - 'artifacts/api-server/src/app.ts'
+      - 'artifacts/api-server/src/lib/vendorCapabilityLogPrivacy*'
+      - 'artifacts/api-server/src/lib/services/mktVendorPoTokenService.ts'
+      - 'artifacts/api-server/src/lib/services/mktVendorPoTokenService.dev-compat.test.ts'
       - 'artifacts/api-server/src/lib/services/mktVendorInvoiceService.ts'
+      - 'artifacts/api-server/src/lib/services/mktVendorInvoiceTokenResolver*'
+      - 'artifacts/api-server/src/routes/mktVendorInvoice.ts'
+      - 'artifacts/api-server/src/lib/services/mktApPreparationService.ts'
+      - 'artifacts/api-server/src/lib/activityLog.ts'
+      - 'artifacts/api-server/src/lib/activityLog.finance-dev.test.ts'
       - 'artifacts/api-server/src/lib/services/mktVendorInvoiceParentLock.dev.test.ts'
       - 'artifacts/api-server/src/lib/gcp-systemd-bootstrap.test.ts'
       - 'artifacts/api-server/src/__tests__/dev-systemd-gcp-bootstrap.test.ts'
@@ -18,10 +28,18 @@ on:
       - 'lib/db/src/marketplace-finance-dev.ts'
       - 'artifacts/api-server/src/routes/dev-finance-company-role-routing.test.ts'
       - 'scripts/tests/pr117-*'
+      - 'scripts/tests/pr125-*'
       - 'scripts/tests/pr121-real-finance-rls-predicates-disposable.sql'
       - 'scripts/sql/20261117_pr107_*'
       - 'scripts/sql/20261117_pr108_*'
       - 'scripts/sql/20261117_pr120_live_company_finance_readonly_preflight.sql'
+      - 'scripts/sql/20261117_dev_finance_*.sql'
+      - 'scripts/tests/pr108-run-session-bound-definer-disposable.sh'
+      - 'scripts/tests/pr123-run-company-rls-phase1-disposable.sh'
+      - 'scripts/tests/finance-phase2-release-disposable.sh'
+      - 'scripts/tests/finance-activity-audit-disposable.sh'
+      - 'artifacts/api-server/src/lib/services/marketplaceFinanceNotifications.dev.test.ts'
+      - 'artifacts/api-server/src/lib/services/marketplaceNotificationQueueService.ts'
       - '.github/workflows/pr117-canonical-vendor-finance-e2e.yml'
   workflow_dispatch:
 
@@ -96,15 +114,40 @@ jobs:
         env:
           PR117_DISPOSABLE_PG_IMAGE: ${{ matrix.postgres }}
         run: bash scripts/tests/pr117-run-real-vendor-finance-pg16.sh
+      - name: Verify parent-lock expiry during a real authenticated lock wait
+        env:
+          PR108_DISPOSABLE_PG_IMAGE: ${{ matrix.postgres }}
+        run: bash scripts/tests/pr108-run-session-bound-definer-disposable.sh
+      - name: Verify phase0 and phase1 rejection and exact rollback
+        env:
+          PR123_POSTGRES_IMAGE: ${{ matrix.postgres }}
+        run: bash scripts/tests/pr123-run-company-rls-phase1-disposable.sh
+      - name: Verify phase2 with exact policy predicates and non-superuser admin
+        env:
+          FINANCE_PHASE2_PG_IMAGE: ${{ matrix.postgres }}
+        run: bash scripts/tests/finance-phase2-release-disposable.sh
+      - name: Verify both company audit roles, restrictive append-only proof, and rollback
+        env:
+          FINANCE_AUDIT_PG_IMAGE: ${{ matrix.postgres }}
+        run: bash scripts/tests/finance-activity-audit-disposable.sh
+      - name: Verify existing Portal and canonical token formats with exact lock rollback
+        env:
+          PR125_POSTGRES_IMAGE: ${{ matrix.postgres }}
+        run: bash scripts/tests/pr125-run-48-64-token-compat-disposable.sh
       - name: Existing Marketplace API and Accounting regressions
         run: |
           pnpm --dir artifacts/api-server exec vitest run \
+            src/lib/vendorCapabilityLogPrivacy.test.ts \
             src/routes/mktVendorInvoice.dev-compat.test.ts \
             src/routes/dev-otp-to-finance-http.test.ts \
             src/routes/dev-finance-company-role-routing.test.ts \
             src/lib/gcp-systemd-bootstrap.test.ts \
             src/__tests__/dev-systemd-gcp-bootstrap.test.ts \
             src/lib/services/mktVendorInvoiceParentLock.dev.test.ts \
+            src/lib/services/mktVendorInvoiceTokenResolver.test.ts \
+            src/lib/services/mktVendorPoTokenService.dev-compat.test.ts \
+            src/lib/services/marketplaceFinanceNotifications.dev.test.ts \
+            src/lib/activityLog.finance-dev.test.ts \
             src/lib/services/mktMarketplaceCompanyScope.test.ts \
             src/routes/dev-marketplace-finance-writer.test.ts \
             src/lib/services/mktAccountingHandoff.test.ts

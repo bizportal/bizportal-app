@@ -2,8 +2,10 @@
  * mktVendorPoTokenService.ts — Phase 2G: Vendor PO confirmation token
  *
  * Design contract:
- * - Token is opaque: crypto.randomBytes(32).toString("hex") — 64 lowercase hex
- *   chars. It carries no encoded meaning (unlike vendorResponseToken.ts's
+ * - New BizPortal tokens: crypto.randomBytes(32).toString("hex"), 64 hex.
+ *   Customer Portal's existing PO tokens: randomBytes(24), 48 hex (192 bits).
+ *   Both formats must pass exact lookup, constant-time byte equality and TTL.
+ *   It carries no encoded meaning (unlike vendorResponseToken.ts's
  *   time-windowed HMAC signature) — it is looked up by exact match against
  *   mkt_purchase_orders.vendor_token, which is a unique-indexed column.
  * - vendor_token_version increments on every rotate — old token strings
@@ -18,10 +20,14 @@ import { randomBytes, timingSafeEqual } from "crypto";
 import { db, mktPurchaseOrdersTable } from "@workspace/db";
 import { eq, sql } from "drizzle-orm";
 import { logger } from "../logger.js";
+import { vendorFailureLog } from "../vendorCapabilityLogPrivacy.js";
 
 const TOKEN_BYTES = 32; // 32 bytes → 64 hex chars
 const TOKEN_TTL_DAYS = 14;
-const TOKEN_HEX_RE = /^[0-9a-f]{64}$/i;
+// Existing Customer Portal issues 24 random bytes -> 48-hex (192-bit) PO links.
+// Keep accepting those exact active links; canonical BizPortal continues issuing
+// 32-byte/64-hex tokens. Never accept a prefix, arbitrary length or non-hex.
+const TOKEN_HEX_RE = /^(?:[0-9a-f]{48}|[0-9a-f]{64})$/i;
 
 export function generateOpaqueToken(): string {
   return randomBytes(TOKEN_BYTES).toString("hex");
@@ -100,7 +106,7 @@ export async function findPoByVendorToken(token: string, scopedDb: typeof db = d
 
     return { ok: true, po };
   } catch (err) {
-    logger.warn({ err }, "[mktVendorPoToken] findPoByVendorToken gagal");
+    logger.warn(vendorFailureLog("po_token_lookup", err), "[mktVendorPoToken] token lookup failed");
     return { ok: false, code: "NOT_FOUND" };
   }
 }
@@ -112,6 +118,6 @@ export async function markVendorTokenUsed(poId: number): Promise<void> {
     .set({ vendorTokenUsedAt: new Date() })
     .where(eq(mktPurchaseOrdersTable.id, poId))
     .catch((err: unknown) => {
-      logger.warn({ err, poId }, "[mktVendorPoToken] markVendorTokenUsed gagal (non-fatal)");
+      logger.warn(vendorFailureLog("po_token_mark_used", err), "[mktVendorPoToken] token use marker failed");
     });
 }

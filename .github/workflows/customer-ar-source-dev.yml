@@ -1,0 +1,51 @@
+name: Customer AR existing source projection DEV
+
+on:
+  push:
+    branches: ['fix/customer-ar-*']
+  pull_request:
+    paths:
+      - 'artifacts/api-server/src/lib/reconciliation/customerAr*'
+      - 'artifacts/api-server/src/routes/customer-ar*'
+      - 'scripts/sql/customer_ar_source_dev_*'
+      - 'scripts/sql/customer_ar_bank_read_dev_*'
+      - 'artifacts/api-server/src/routes/dev-auth.ts'
+      - 'artifacts/api-server/src/routes/dev-finance-company-scope.test.ts'
+      - 'scripts/tests/customer-ar-*'
+      - '.github/workflows/customer-ar-source-dev.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  existing-source-pg17:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Install locked workspace dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Existing issuer, real tenant logins, reversal, replay and concurrency on PG17
+        run: bash scripts/tests/customer-ar-run-source-pg17.sh
+      - name: Customer matching and signed company HTTP regressions
+        run: |
+          pnpm --dir artifacts/api-server exec vitest run \
+            src/__tests__/customer-ar-match-preview.test.ts \
+            src/__tests__/customer-ar-dev-only-gate.test.ts \
+            src/routes/customer-ar-company-scope-http.test.ts \
+            src/routes/dev-finance-company-scope.test.ts \
+            src/routes/dev-finance-dedicated-session.test.ts
+      - name: Canonical API TypeScript
+        run: pnpm --dir artifacts/api-server typecheck
+      - name: No source changes from integration execution
+        run: |
+          git diff --exit-code -- artifacts/api-server/src scripts/sql scripts/tests pnpm-lock.yaml
+          test ! -e artifacts/api-server/.customer-ar-source-e2e.mjs

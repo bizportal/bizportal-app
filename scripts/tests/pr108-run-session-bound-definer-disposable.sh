@@ -14,8 +14,10 @@ for f in "$BASE" "$PR107" "$BACK107" "$PR108" "$BACK108";do test -s "$f";done
 test -z "$(docker ps -a --filter "name=^$NAME$" --format '{{.Names}}')"
 TMP="$(mktemp -d -t pr108-session-ci-XXXXXX)"
 HOLDER_PID=''
+EXPIRY_WAITER_PID=''
 cleanup(){
   if test -n "$HOLDER_PID";then kill "$HOLDER_PID" >/dev/null 2>&1 || :;fi
+  if test -n "$EXPIRY_WAITER_PID";then kill "$EXPIRY_WAITER_PID" >/dev/null 2>&1 || :;fi
   docker rm -f "$NAME" >/dev/null 2>&1 || :
   rm -rf "$TMP"
 }
@@ -161,6 +163,50 @@ SQL
 )"
 test "$(echo "$expired" | tail -n 1)" = f
 echo PR108_EXPIRED_TOKEN_REJECTED_PASS
+
+# A valid token must not remain authorized after waiting for a receipt lock.
+# Hold GR, let the real company function lock PO and block on GR while its
+# token is still valid, then release GR only after the token has expired.
+admin <<'SQL' >/dev/null
+UPDATE public.mkt_purchase_orders
+ SET vendor_token=repeat('a',64),
+     vendor_token_expires_at=(clock_timestamp() AT TIME ZONE 'UTC')+interval '3 seconds'
+ WHERE id=11;
+SQL
+docker exec -i -e PGPASSWORD=synthetic-admin-only -e PGAPPNAME=pr108-expiry-holder "$NAME" \
+ psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d "$DB" -Atq \
+ >"$TMP/expiry-holder.out" 2>&1 <<'SQL' &
+BEGIN;
+SELECT id FROM public.mkt_po_goods_receipts WHERE id=13 FOR UPDATE;
+SELECT pg_sleep(5);
+ROLLBACK;
+SQL
+HOLDER_PID="$!"
+holder_ready=false
+for _ in $(seq 1 40);do
+ if test "$(query "SELECT count(*) FROM pg_stat_activity WHERE application_name='pr108-expiry-holder' AND wait_event='PgSleep';")" = 1;then holder_ready=true;break;fi
+ sleep .05
+done
+test "$holder_ready" = true || { echo PR108_EXPIRY_HOLDER_NOT_READY;exit 17; }
+docker exec -i -e PGPASSWORD=synthetic-cst-db-only -e PGAPPNAME=pr108-expiry-waiter "$NAME" \
+ psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U bizportal_finance_cst_login_dev -d "$DB" -Atq \
+ >"$TMP/expiry-waiter.out" 2>&1 <<'SQL' &
+BEGIN;
+SET LOCAL app.marketplace_company_id='1';
+SELECT 'lock_result='||finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(11,13,10,repeat('a',64))::text;
+ROLLBACK;
+SQL
+EXPIRY_WAITER_PID="$!"
+waiting_before_expiry=false
+for _ in $(seq 1 40);do
+ if test "$(query "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name='pr108-expiry-waiter' AND wait_event_type='Lock') AND (SELECT vendor_token_expires_at > (clock_timestamp() AT TIME ZONE 'UTC') FROM public.mkt_purchase_orders WHERE id=11);")" = t;then waiting_before_expiry=true;break;fi
+ sleep .05
+done
+test "$waiting_before_expiry" = true || { echo PR108_EXPIRY_WAITER_NOT_BLOCKED_WHILE_VALID;exit 18; }
+wait "$HOLDER_PID";HOLDER_PID=''
+wait "$EXPIRY_WAITER_PID";EXPIRY_WAITER_PID=''
+test "$(cat "$TMP/expiry-waiter.out")" = "lock_result=false"
+echo PR108_TOKEN_EXPIRING_DURING_PARENT_LOCK_WAIT_REJECTED_PASS
 
 # Native row locks must also block independent writers. A synthetic
 # CST transaction holds PO->GR->Shipment for a few seconds, while a separate

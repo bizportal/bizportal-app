@@ -6,6 +6,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import router from "./routes";
 import { logger } from "./lib/logger";
+import { serializeHttpRequestForLog } from "./lib/vendorCapabilityLogPrivacy";
 
 const app: Express = express();
 
@@ -13,13 +14,7 @@ app.use(
   pinoHttp({
     logger,
     serializers: {
-      req(req) {
-        return {
-          id: req.id,
-          method: req.method,
-          url: req.url?.split("?")[0],
-        };
-      },
+      req: serializeHttpRequestForLog,
       res(res) {
         return {
           statusCode: res.statusCode,
