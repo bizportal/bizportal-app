@@ -11,6 +11,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, readlinkSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import { rootCertificates } from "node:tls";
 import { SUPABASE_FINANCE_ROOT_2021_PEM } from "../../lib/db/src/supabase-finance-root-2021";
 import type { PoolClient } from "pg";
 
@@ -24,6 +25,8 @@ const PARENT_TABLES = ["suppliers", "mkt_rfqs", "mkt_vendor_quotes", "mkt_purcha
   "mkt_po_goods_receipts", "mkt_po_goods_receipt_items", "vendor_invoices",
   "vendor_invoice_lines", "mkt_ap_preparations", "mkt_accounting_handoffs", "payment_requests"];
 const FLAGS = ["BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV",
+  "BIZPORTAL_MARKETPLACE_VENDOR_INVOICE_ENABLED_DEV",
+  "BIZPORTAL_MARKETPLACE_VENDOR_PARENT_LOCK_ENABLED_DEV",
   "BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV",
   "BIZPORTAL_MARKETPLACE_FINANCE_SINGLE_GCP_SECRET_DEV",
   "BIZPORTAL_MARKETPLACE_ACCOUNTING_HANDOFF_ENABLED_DEV",
@@ -89,15 +92,18 @@ function configureFromVerifiedServices() {
   // option can override host/user/password or weaken TLS in pg's URL parser.
   source.search = ""; source.hash = "";
   source.searchParams.set("sslmode", "verify-full");
-  if (direct) {
-    publicCertificateDirectory = mkdtempSync(join(tmpdir(), "bizportal-qa-public-ca-"));
-    const publicCa = join(publicCertificateDirectory, "supabase-root.pem");
-    writeFileSync(publicCa, SUPABASE_FINANCE_ROOT_2021_PEM, { mode: 0o600 });
-    source.searchParams.set("sslrootcert", publicCa);
-  }
+  publicCertificateDirectory = mkdtempSync(join(tmpdir(), "bizportal-qa-public-ca-"));
+  const publicCa = join(publicCertificateDirectory, "supabase-roots.pem");
+  // The verified DEV pooler also presents the Supabase chain. Retain system
+  // roots plus the pinned public root for either host, always verify-full.
+  writeFileSync(publicCa, [...rootCertificates, SUPABASE_FINANCE_ROOT_2021_PEM].join("\n"), { mode: 0o600 });
+  source.searchParams.set("sslrootcert", publicCa);
   process.env.APP_ENV = "development";
   process.env.NODE_ENV = "production";
   process.env.LOG_LEVEL = "silent";
+  // One retained setup/cleanup connection and one real post-commit audit
+  // connection; never inherit the OTP runtime's single-connection pool size.
+  process.env.DB_POOL_MAX = "2";
   process.env.SUPABASE_DATABASE_URL_DEV = source.toString();
   delete process.env.SUPABASE_DATABASE_URL;
   delete process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV;
