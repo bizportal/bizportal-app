@@ -19,7 +19,9 @@ describe("DEV-only Bank Disbursement historical list contract", () => {
   });
 
   it("requires the authorized company and parameterized bounded read", () => {
-    expect(route).toContain("companyId = requestedCompanyId(req)");
+    expect(route).toContain("companyId = bankDisbursementReadCompanyId(req)");
+    expect(source).toContain("function bankDisbursementReadCompanyId(req: Request)");
+    expect(source).toContain("requested === actorCompany ? actorCompany : null");
     expect(route).toContain("if (companyId === null)");
     expect(route).toContain("limit > 100");
     expect(route).toContain("where company_id = $1");
