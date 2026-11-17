@@ -25,6 +25,12 @@ const COMPANY_MODE_FLAG = "BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_D
 // Separate PostgreSQL LOGIN roles remain mandatory even when GCP stores both URLs in one secret.
 const COMPANY_BUNDLE_MODE_FLAG = "BIZPORTAL_MARKETPLACE_FINANCE_SINGLE_GCP_SECRET_DEV";
 const COMPANY_BUNDLE_SECRET_NAME = "bizportal-marketplace-finance-dev-companies";
+// A deliberate DEV-only bridge for existing company Secret Manager DSNs that
+// point at direct IPv6-only Supabase. The host is pinned from the ALREADY
+// VERIFIED existing CST-DEV Session Pooler, not from user input or an
+// environment value. Do not mutate the GCP version, usernames or passwords.
+const COMPANY_IPV4_POOLER_FLAG = "BIZPORTAL_MARKETPLACE_FINANCE_PINNED_IPV4_SESSION_POOLER_DEV";
+const COMPANY_IPV4_POOLER_HOST = "aws-1-ap-southeast-2.pooler.supabase.com";
 const companyFinancePools = new Map<CompanyFinanceId, {
   url: string; db: FinanceDatabase; pool: pg.Pool
 }>();
@@ -33,7 +39,7 @@ type CompanyFinanceUrls = Record<CompanyFinanceId, string>;
 let companyBundleCache: { value: CompanyFinanceUrls; expiresAt: number } | null = null;
 let companyBundlePending: Promise<CompanyFinanceUrls> | null = null;
 /** A running process cannot change the database role or secret source without restart. */
-let activeFinanceMode: "legacy" | "company-separate" | "company-bundle" | null = null;
+let activeFinanceMode: "legacy" | "company-separate" | "company-bundle" | "company-bundle-ipv4" | null = null;
 
 function companyIdentity(companyId: number) {
   if (!Number.isSafeInteger(companyId) ||
@@ -262,15 +268,34 @@ function secureFinancePoolOptions(raw: string, expectedRole = EXPECTED_ROLE): pg
       cert.fingerprint256.toUpperCase() !== SUPABASE_FINANCE_ROOT_2021_FINGERPRINT256) {
     throw new Error("DEV_FINANCE_PINNED_CA_INVALID");
   }
-  const ca = hostname === directHost
+  const bridge = process.env[COMPANY_IPV4_POOLER_FLAG] === "true";
+  const companyRole = Object.values(COMPANY_FINANCE_IDENTITIES)
+    .some(identity => identity.role === expectedRole);
+  if (bridge && (
+    process.env.APP_ENV?.trim().toLowerCase() !== "development" ||
+    process.env[COMPANY_MODE_FLAG] !== "true" ||
+    process.env[COMPANY_BUNDLE_MODE_FLAG] !== "true" ||
+    !companyRole ||
+    hostname !== directHost || user !== expectedRole ||
+    port !== 5432 || database !== "postgres" ||
+    url.searchParams.get("sslmode") !== "verify-full" ||
+    !url.searchParams.get("sslrootcert")?.startsWith("/")
+  )) {
+    throw new Error("DEV_FINANCE_IPV4_POOLER_BRIDGE_REFUSED");
+  }
+  const poolHost = bridge ? COMPANY_IPV4_POOLER_HOST : hostname;
+  const poolUser = bridge ? `${expectedRole}.${EXPECTED_PROJECT}` : user;
+  // Existing verified public Supabase root + system roots for Session Pooler;
+  // direct connections retain the explicitly pinned Supabase root.
+  const ca = poolHost === directHost
     ? SUPABASE_FINANCE_ROOT_2021_PEM
     : [...rootCertificates, SUPABASE_FINANCE_ROOT_2021_PEM].join("\n");
 
   return {
-    host: hostname, port, user,
+    host: poolHost, port, user: poolUser,
     password: decodeURIComponent(url.password),
     database,
-    ssl: { rejectUnauthorized: true, servername: hostname, ca },
+    ssl: { rejectUnauthorized: true, servername: poolHost, ca },
     max: 1, connectionTimeoutMillis: 8000, idleTimeoutMillis: 5000,
     query_timeout: 20000, application_name: "bizportal-finance-dev",
   };
@@ -326,7 +351,9 @@ export async function withMarketplaceFinanceDevTransaction<T>(
   }
   const companyMode = process.env[COMPANY_MODE_FLAG] === "true";
   const requestedMode = companyMode
-    ? (process.env[COMPANY_BUNDLE_MODE_FLAG] === "true" ? "company-bundle" : "company-separate")
+    ? (process.env[COMPANY_BUNDLE_MODE_FLAG] === "true"
+      ? (process.env[COMPANY_IPV4_POOLER_FLAG] === "true" ? "company-bundle-ipv4" : "company-bundle")
+      : "company-separate")
     : "legacy";
   if (activeFinanceMode && activeFinanceMode !== requestedMode) {
     throw new Error("DEV_FINANCE_CREDENTIAL_MODE_CHANGED_RESTART_REQUIRED");

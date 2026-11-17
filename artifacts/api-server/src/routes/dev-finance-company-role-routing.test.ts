@@ -61,6 +61,7 @@ const KEYS=[
  "BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV",
  "BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV",
  "BIZPORTAL_MARKETPLACE_FINANCE_SINGLE_GCP_SECRET_DEV",
+ "BIZPORTAL_MARKETPLACE_FINANCE_PINNED_IPV4_SESSION_POOLER_DEV",
  "BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV",
  "BIZPORTAL_MARKETPLACE_FINANCE_GCP_SECRET_NAME_DEV",
 ] as const;
@@ -334,6 +335,79 @@ describe("DEV-only company Finance pool routing is fail closed",()=>{
   expect(m.poolOptions.map(p=>p.user).sort()).toEqual([
     ROLE.cst+"."+PROJECT,ROLE.diva+"."+PROJECT,
   ].sort());
+ });
+ it("keeps unchanged one-secret direct DSNs but routes only two verified company roles via pinned IPv4 pooler",async()=>{
+  process.env[BUNDLE_FLAG]="true";
+  process.env.BIZPORTAL_MARKETPLACE_FINANCE_PINNED_IPV4_SESSION_POOLER_DEV="true";
+  const direct=(role:string)=>"postgresql://"+role+":synthetic"+
+    "@db."+PROJECT+".supabase.co:5432/postgres"+
+    "?sslmode=verify-full&sslrootcert=/trusted/ca.pem";
+  m.secret.mockReset().mockResolvedValue(bundle(direct(ROLE.cst),direct(ROLE.diva)));
+  const mod=await load();
+  await expect(mod.withMarketplaceFinanceDevReadOnlyTransaction(1,async()=>true)).resolves.toBe(true);
+  await expect(mod.withMarketplaceFinanceDevReadOnlyTransaction(3,async()=>true)).resolves.toBe(true);
+  expect(m.secret).toHaveBeenCalledTimes(1);
+  expect(m.poolOptions).toHaveLength(2);
+  for (const config of m.poolOptions) {
+    expect(config.host).toBe("aws-1-ap-southeast-2.pooler.supabase.com");
+    expect(config.port).toBe(5432);
+    expect(config.database).toBe("postgres");
+    expect(config.ssl).toMatchObject({
+      rejectUnauthorized:true,
+      servername:"aws-1-ap-southeast-2.pooler.supabase.com",
+    });
+    expect(config.ssl.ca).toContain("-----BEGIN CERTIFICATE-----");
+    expect(config.password).toBe("synthetic");
+    expect(config.max).toBe(1);
+  }
+  expect(m.poolOptions.map(x=>x.user).sort()).toEqual([
+    ROLE.cst+"."+PROJECT,ROLE.diva+"."+PROJECT,
+  ].sort());
+ });
+ it("fails closed if IPv4 bridge used with already-pooler DSN, no network and no generic DB fallback",async()=>{
+  process.env[BUNDLE_FLAG]="true";
+  process.env.BIZPORTAL_MARKETPLACE_FINANCE_PINNED_IPV4_SESSION_POOLER_DEV="true";
+  m.secret.mockReset().mockResolvedValue(bundle());
+  const mod=await load();
+  await expect(mod.withMarketplaceFinanceDevReadOnlyTransaction(1,async()=>true))
+    .rejects.toThrow("DEV_FINANCE_IPV4_POOLER_BRIDGE_REFUSED");
+  expect(m.poolOptions).toHaveLength(0);
+ });
+ it("never bridges a direct DSN to a different Supabase project or privileges",async()=>{
+  process.env[BUNDLE_FLAG]="true";
+  process.env.BIZPORTAL_MARKETPLACE_FINANCE_PINNED_IPV4_SESSION_POOLER_DEV="true";
+  const direct=(role:string,host="db."+PROJECT+".supabase.co")=>
+    "postgresql://"+role+":synthetic@"+host+":5432/postgres"+
+    "?sslmode=verify-full&sslrootcert=/trusted/ca.pem";
+  const mod=await load();
+  for(const invalid of [
+    bundle(direct(ROLE.cst,"db.nzdweipzckfszczzqtuw.supabase.co"),direct(ROLE.diva)),
+    bundle(direct("postgres"),direct(ROLE.diva)),
+    bundle(direct(ROLE.cst).replace(":5432/postgres",":6543/postgres"),direct(ROLE.diva)),
+    bundle(direct(ROLE.cst).replace("sslmode=verify-full","sslmode=disable"),direct(ROLE.diva)),
+  ]){
+    m.secret.mockReset().mockResolvedValueOnce(invalid);
+    await expect(mod.withMarketplaceFinanceDevReadOnlyTransaction(1,async()=>true))
+      .rejects.toThrow();
+    expect(m.poolOptions).toHaveLength(0);
+  }
+ });
+ it("refuses IPv4 bridge when company mode OFF or a non-dev environment is used",async()=>{
+  const direct=(role:string)=>"postgresql://"+role+":synthetic"+
+    "@db."+PROJECT+".supabase.co:5432/postgres"+
+    "?sslmode=verify-full&sslrootcert=/trusted/ca.pem";
+  process.env[BUNDLE_FLAG]="true";
+  process.env.BIZPORTAL_MARKETPLACE_FINANCE_PINNED_IPV4_SESSION_POOLER_DEV="true";
+  m.secret.mockReset().mockResolvedValue(bundle(direct(ROLE.cst),direct(ROLE.diva)));
+  const mod=await load();
+  delete process.env.BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV;
+  await expect(mod.withMarketplaceFinanceDevReadOnlyTransaction(1,async()=>true))
+    .rejects.toThrow();
+  process.env.BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV="true";
+  process.env.APP_ENV="production";
+  await expect(mod.withMarketplaceFinanceDevReadOnlyTransaction(1,async()=>true))
+    .rejects.toThrow("DEV_FINANCE_DISABLED");
+  expect(m.poolOptions).toHaveLength(0);
  });
  it("one GCP secret yields distinct authenticated CST/Diva pools, even concurrently",async()=>{
   process.env[BUNDLE_FLAG]="true";
