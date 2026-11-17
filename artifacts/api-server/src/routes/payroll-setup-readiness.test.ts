@@ -9,9 +9,25 @@ const state = vi.hoisted(() => ({
   companyId: 1,
   actorCompanyId: 1 as number|null,
   ready: true,
+  devReady: true,
   throwDbError: false,
   calls: [] as Array<{companyId:number;sql:string;args:unknown[]}>,
+  devCalls: [] as Array<{companyId:number;sql:string;args:unknown[]}>,
 }));
+vi.mock("./payroll-db", () => ({
+  payrollDedicatedEnabled: () => state.devReady,
+  payrollScopedQuery: async (companyId:number,sql:string,args:unknown[]) => {
+    state.devCalls.push({companyId,sql,args});
+    if (state.throwDbError) throw Error("synthetic-secret-must-never-appear");
+    const n = companyId === 1 ? 17 : companyId === 3 ? 1 : 0;
+    return {rowCount:1,rows:[{
+      employeeCount:n, salaryConfiguredCount:0, missingSalaryCount:n,
+      deductionConfiguredCount:0, missingDeductionCount:n,
+      invalidSalaryCount:0,invalidDeductionCount:0,readyEmployeeCount:0,
+    }]};
+  },
+}));
+
 vi.mock("./payroll-prod-db", () => ({
   payrollReadOnlyReady: () => state.ready,
   payrollScopedQuery: async (companyId:number,sql:string,args:unknown[]) => {
@@ -52,8 +68,8 @@ describe("Payroll setup readiness via authenticated and company-scoped read-only
   beforeEach(()=>{
     vi.stubEnv("APP_ENV","production");
     vi.stubEnv("PAYROLL_CANONICAL_SETUP_READINESS_ENABLED","true");
-    state.role="owner";state.companyId=1;state.actorCompanyId=1;state.ready=true;state.throwDbError=false;
-    state.calls.length=0;
+    state.role="owner";state.companyId=1;state.actorCompanyId=1;state.ready=true;state.devReady=true;state.throwDbError=false;
+    state.calls.length=0;state.devCalls.length=0;
   });
   afterEach(()=>vi.unstubAllEnvs());
   const get=(year="2026",month="11")=>fetch(
@@ -125,9 +141,73 @@ describe("Payroll setup readiness via authenticated and company-scoped read-only
     expect((await get()).status).toBe(503);
     vi.stubEnv("APP_ENV","development");
     state.ready=true;
+    expect((await get()).status).toBe(404);
+    vi.stubEnv("PAYROLL_DEV_SETUP_READINESS_ENABLED","true");
+    state.devReady=false;
     expect((await get()).status).toBe(503);
     expect(state.calls).toHaveLength(0);
+    expect(state.devCalls).toHaveLength(0);
   });
+  it("DEV has a separate opt-in and reads only through the dedicated DEV Payroll role", async()=>{
+    vi.stubEnv("APP_ENV","development");
+    vi.stubEnv("PAYROLL_CANONICAL_SETUP_READINESS_ENABLED","");
+    vi.stubEnv("PAYROLL_DEV_SETUP_READINESS_ENABLED","true");
+    const res=await get();
+    expect(res.status).toBe(200);
+    const data=await res.json() as Record<string,unknown>;
+    expect(data).toMatchObject({
+      companyId:1,year:2026,month:11,employeeCount:17,
+      salaryConfiguredCount:0,deductionConfiguredCount:0,
+      missingSalaryCount:17,missingDeductionCount:17,
+      readyEmployeeCount:0,dataComplete:false,readOnly:true,
+      canCreateDraft:false,canApprove:false,canPay:false,canPostJournal:false,
+    });
+    expect(JSON.stringify(data)).not.toMatch(/baseSalary|password|employeeName/i);
+    expect(state.devCalls).toHaveLength(1);
+    expect(state.devCalls[0]?.args).toEqual([1,"2026-11-30"]);
+    expect(state.devCalls[0]?.sql).not.toMatch(/\b(INSERT|UPDATE|DELETE|ALTER|DROP|CREATE)\b/i);
+    expect(state.calls).toHaveLength(0);
+  });
+
+  it("DEV flag does not enable PROD readiness or any fallback database query",async()=>{
+    vi.stubEnv("APP_ENV","production");
+    vi.stubEnv("PAYROLL_CANONICAL_SETUP_READINESS_ENABLED","");
+    vi.stubEnv("PAYROLL_DEV_SETUP_READINESS_ENABLED","true");
+    expect((await get()).status).toBe(404);
+    expect(state.devCalls).toHaveLength(0);
+    expect(state.calls).toHaveLength(0);
+  });
+
+  it("DEV fails closed on missing dedicated DB connection or foreign Owner",async()=>{
+    vi.stubEnv("APP_ENV","development");
+    vi.stubEnv("PAYROLL_DEV_SETUP_READINESS_ENABLED","true");
+    state.devReady=false;
+    expect((await get()).status).toBe(503);
+    expect(state.devCalls).toHaveLength(0);
+    state.devReady=true;
+    state.companyId=3;
+    state.actorCompanyId=1;
+    expect((await get()).status).toBe(403);
+    expect(state.devCalls).toHaveLength(0);
+    state.role="super_admin";
+    state.actorCompanyId=null;
+    const result=await get();
+    expect(result.status).toBe(200);
+    expect(((await result.json()) as {employeeCount:number}).employeeCount).toBe(1);
+    expect(state.devCalls[0]?.companyId).toBe(3);
+  });
+
+  it("DEV never leaks SQL or credential errors in readiness response",async()=>{
+    vi.stubEnv("APP_ENV","development");
+    vi.stubEnv("PAYROLL_DEV_SETUP_READINESS_ENABLED","true");
+    state.throwDbError=true;
+    const res=await get();
+    expect(res.status).toBe(503);
+    const body=await res.text();
+    expect(body).not.toContain("synthetic-secret-must-never-appear");
+    expect(state.calls).toHaveLength(0);
+  });
+
   it("redacts raw database errors and does not claim readiness",async()=>{
     state.throwDbError=true;
     const res=await get();
