@@ -8,6 +8,8 @@ on:
       - "scripts/tests/pr95_bank_source_journal_guard_disposable.sql"
       - "artifacts/api-server/src/lib/bankDisbursementAtomicBoundary.ts"
       - "artifacts/api-server/src/lib/bankDisbursementAtomicBoundary.postgres.test.ts"
+      - "artifacts/api-server/src/lib/outboundReuseFinalityReader.ts"
+      - "artifacts/api-server/src/__tests__/pr95-outbound-reuse-finality-postgres.test.ts"
       - ".github/workflows/pr95-bank-writer-disposable-gate.yml"
   workflow_dispatch:
 
@@ -50,7 +52,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Run candidate boundary through real isolated PG transactions
-        run: pnpm --filter @workspace/api-server exec vitest run src/lib/bankDisbursementAtomicBoundary.postgres.test.ts --maxWorkers=1 --no-file-parallelism
+        run: pnpm --filter @workspace/api-server exec vitest run src/lib/bankDisbursementAtomicBoundary.postgres.test.ts src/__tests__/pr95-outbound-reuse-finality-postgres.test.ts --maxWorkers=1 --no-file-parallelism
   atomic-contract:
     name: Isolated bank payment invariants (not legacy writer)
     runs-on: ubuntu-latest
