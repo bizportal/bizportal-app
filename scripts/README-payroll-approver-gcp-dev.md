@@ -59,3 +59,10 @@ controlled restart.
 Do not deploy Payroll to PROD until roster reconciliation, verified salary
 components, end-to-end Payroll/Accounting isolation, and final owner
 acceptance gates are independently passed.
+
+## CI / release-source selection
+
+This review branch includes the signed-session DEV-only mount code from PR #110
+so its cumulative test gates can run against official `main`. Neither draft PR
+is authorized for automatic merge or deployment; compare exact commit SHAs
+and retain the current production runtime unchanged.
