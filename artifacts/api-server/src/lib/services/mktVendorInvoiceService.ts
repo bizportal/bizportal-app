@@ -269,40 +269,62 @@ export async function createMarketplaceVendorInvoice(
         };
       }
 
-      const [inserted] = await tx.insert(vendorInvoicesTable).values({
-        invoiceNumber: newInvoiceNumber(),
-        vendorInvoiceRef: invoiceRef,
-        companyId: po.companyId,
-        supplierId: input.supplierId,
-        supplierName: input.supplierName,
-        mktPurchaseOrderId: po.id,
-        mktGoodsReceiptId: gr.id,
-        status: "draft",
-        invoiceDate: input.invoiceDate,
-        currency,
-        totalAmount: input.totalAmount.toFixed(2),
-        taxAmount: input.taxAmount.toFixed(2),
-        grandTotal: input.grandTotal.toFixed(2),
-        threeWayMatchStatus: "unmatched",
-        notes: input.notes ?? null,
-        attachmentObjectPath: input.attachment.objectPath,
-        attachmentFileName: input.attachment.fileName,
-        attachmentContentType: input.attachment.contentType,
-        attachmentSize: input.attachment.size,
-        createdBy: input.createdBy ?? actor.actorId ?? null,
-      }).returning();
+      // The dedicated Finance role has INSERT on exactly 20 permitted Invoice
+      // columns and 9 Invoice Line columns, NOT a blanket table INSERT.
+      // Drizzle's generic insert builder explicitly lists every table column
+      // (including those set to DEFAULT), which requires privileges outside
+      // the reviewed grant list. Use one parameterized SQL writer here instead
+      // of widening permissions or forking the canonical invoice service.
+      const newHeader = await tx.execute(sql`
+        INSERT INTO public.vendor_invoices (
+          invoice_number, vendor_invoice_ref, company_id, supplier_id,
+          supplier_name, mkt_purchase_order_id, mkt_goods_receipt_id,
+          status, invoice_date, currency, total_amount, tax_amount,
+          grand_total, three_way_match_status, notes,
+          attachment_object_path, attachment_file_name,
+          attachment_content_type, attachment_size, created_by
+        ) VALUES (
+          ${newInvoiceNumber()}, ${invoiceRef}, ${po.companyId},
+          ${input.supplierId}, ${input.supplierName}, ${po.id}, ${gr.id},
+          'draft', ${input.invoiceDate}, ${currency},
+          ${input.totalAmount.toFixed(2)}, ${input.taxAmount.toFixed(2)},
+          ${input.grandTotal.toFixed(2)}, 'unmatched',
+          ${input.notes ?? null}, ${input.attachment.objectPath},
+          ${input.attachment.fileName}, ${input.attachment.contentType},
+          ${input.attachment.size}, ${input.createdBy ?? actor.actorId ?? null}
+        ) RETURNING id
+      `);
+      const invoiceId = Number(newHeader.rows[0]?.id);
+      if (!Number.isSafeInteger(invoiceId) || invoiceId <= 0) {
+        throw new Error("CANONICAL_VENDOR_INVOICE_INSERT_RETURNED_NO_ID");
+      }
+      const [inserted] = await tx.select().from(vendorInvoicesTable)
+        .where(eq(vendorInvoicesTable.id, invoiceId)).limit(1);
+      if (!inserted) throw new Error("CANONICAL_VENDOR_INVOICE_INSERT_NOT_VISIBLE");
 
-      const lines = await tx.insert(vendorInvoiceLinesTable).values(input.lines.map((line) => ({
-        invoiceId: inserted.id,
-        mktPurchaseOrderLineId: line.poLineId,
-        name: line.name ?? `PO line ${line.poLineId}`,
-        quantity: line.quantity.toFixed(2),
-        unit: line.unit ?? "pcs",
-        unitCost: line.unitPrice.toFixed(2),
-        subtotal: line.subtotal.toFixed(2),
-        taxAmount: (line.taxAmount ?? 0).toFixed(2),
-        notes: line.notes ?? null,
-      }))).returning();
+      const lines: InvoiceLineRow[] = [];
+      for (const line of input.lines) {
+        const newLine = await tx.execute(sql`
+          INSERT INTO public.vendor_invoice_lines (
+            invoice_id, mkt_purchase_order_line_id, name,
+            quantity, unit, unit_cost, subtotal, tax_amount, notes
+          ) VALUES (
+            ${invoiceId}, ${line.poLineId},
+            ${line.name ?? `PO line ${line.poLineId}`},
+            ${line.quantity.toFixed(2)}, ${line.unit ?? "pcs"},
+            ${line.unitPrice.toFixed(2)}, ${line.subtotal.toFixed(2)},
+            ${(line.taxAmount ?? 0).toFixed(2)}, ${line.notes ?? null}
+          ) RETURNING id
+        `);
+        const lineId = Number(newLine.rows[0]?.id);
+        if (!Number.isSafeInteger(lineId) || lineId <= 0) {
+          throw new Error("CANONICAL_VENDOR_INVOICE_LINE_INSERT_RETURNED_NO_ID");
+        }
+        const [createdLine] = await tx.select().from(vendorInvoiceLinesTable)
+          .where(eq(vendorInvoiceLinesTable.id, lineId)).limit(1);
+        if (!createdLine) throw new Error("CANONICAL_VENDOR_INVOICE_LINE_INSERT_NOT_VISIBLE");
+        lines.push(createdLine);
+      }
       return { ok: true as const, invoice: inserted, lines, alreadyExists: false };
     });
 
