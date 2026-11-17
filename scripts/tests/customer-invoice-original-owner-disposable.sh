@@ -43,6 +43,28 @@ for file in "$GENERATED" \
   docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic \
     -f /tmp/setup.sql > "$WORK/postgres.log"
 done
+# Reuse the already-reviewed AR source trigger, not a fresh AR writer.
+# The existing install SQL targets DEV, so its database-name guard is adapted
+# solely in an ephemeral copy, never in the original source file.
+docker cp "$ROOT/scripts/tests/customer-invoice-original-owner-ar-prerequisites.sql" \
+  "$PG_NAME":/tmp/ar-prerequisites.sql
+docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic \
+  -f /tmp/ar-prerequisites.sql > "$WORK/ar-prerequisites.log"
+ORIGINAL="$ROOT/scripts/sql/customer_ar_source_dev_INSTALL_REVIEW.sql"
+test "$(grep -Fc "('postgres', 'cst_customer_ar_ci')" "$ORIGINAL")" = 1
+sed "s/('postgres', 'cst_customer_ar_ci')/('invoice_synthetic')/" \
+  "$ORIGINAL" > "$WORK/reviewed-ar-disposable.sql"
+grep -Fq "current_database() NOT IN ('invoice_synthetic')" \
+  "$WORK/reviewed-ar-disposable.sql"
+docker cp "$WORK/reviewed-ar-disposable.sql" "$PG_NAME":/tmp/ar-install.sql
+docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic \
+  -f /tmp/ar-install.sql > "$WORK/ar-install.log"
+docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic \
+  -c "UPDATE public.bizportal_customer_ar_source_actors_dev SET enabled=true,
+             source_not_before=clock_timestamp()-interval '1 minute'
+      WHERE role_name='postgres' AND company_id IN (1,3)" > "$WORK/ar-activation.log"
+echo ORIGINAL_REVIEWED_AR_TRIGGER_INSTALLED_ON_DISPOSABLE_PASS
+
 echo ORIGINAL_OWNER_SYNTHETIC_SCHEMA_READY
 
 # Build ONLY the reviewed original owner entrypoint. Reuse its Pino plugin,
