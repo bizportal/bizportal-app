@@ -3,7 +3,7 @@ import { lockOutboundSourceJournalReuseScope } from "../lib/outboundReuseTransac
 import type { OutboundReuseQueryClient } from "../lib/outboundReuseFinalityReader";
 
 const ids = { companyId: 1, mutationId: 90001, invoiceId: 7 };
-function build(overrides: { mutation?: Record<string, unknown> | null; invoice?: boolean; bd?: {id:number;entry_id:number|null}[]; entry?: boolean; counts?: number[]; sourceItems?: Array<{vendor_invoice_id:number|null;amount?:string}>; lineItems?: Array<{debit:string;credit:string}>; amount?: string; header?: string } = {}) {
+function build(overrides: { mutation?: Record<string, unknown> | null; invoice?: boolean; bd?: {id:number;entry_id:number|null}[]; entry?: boolean; counts?: number[]; sourceItems?: Array<{vendor_invoice_id:number|null;amount?:string}>; lineItems?: Array<{debit:string;credit:string}>; amount?: string; header?: string; bankCoaId?: number | null; bankCredit?: string } = {}) {
   const seen: Array<{sql:string;params:readonly (string|number)[]}> = [];
   let n=0;
   const client: OutboundReuseQueryClient = {
@@ -11,12 +11,14 @@ function build(overrides: { mutation?: Record<string, unknown> | null; invoice?:
       seen.push({sql,params});
       const row = sql.includes("pg_advisory_xact_lock") ? [{}]
         : sql.includes("from public.bank_mutations where id=") ?
-          (overrides.mutation === null ? [] : [overrides.mutation ?? {id:90001,company_id:1,direction:"OUT",status:"unmatched",journal_entry_id:null,amount:overrides.amount??"100.00"}])
+          (overrides.mutation === null ? [] : [overrides.mutation ?? {id:90001,company_id:1,direction:"OUT",status:"unmatched",journal_entry_id:null,amount:overrides.amount??"100.00",bank_account_id:"1"}])
         : sql.includes("from public.vendor_invoices") ? (overrides.invoice === false ? [] : [{id:7}])
         : sql.includes("from public.bank_disbursements") ? (overrides.bd ?? [{id:2,entry_id:314}])
         : sql.includes("from public.bank_disbursement_items") ? (overrides.sourceItems ?? [{vendor_invoice_id:7,amount:"100.00"}])
         : sql.includes("from public.accounting_entries") ? (overrides.entry === false ? [] : [{id:314,total_debit:overrides.header??"100.00",total_credit:overrides.header??"100.00"}])
         : sql.includes("from public.accounting_entry_lines") ? (overrides.lineItems ?? [{debit:"100.00",credit:"0.00"},{debit:"0.00",credit:"100.00"}])
+        : sql.includes("from public.company_bank_accounts") ? [{coa_id:overrides.bankCoaId===undefined?1023:overrides.bankCoaId}]
+        : sql.includes("from public.accounting_entry_lines el") ? [{n:"1",credit:overrides.bankCredit??"100.00",debit:"0.00"}]
         : [{n:String((overrides.counts ?? [0,0,0])[n++])}];
       return {rows:row as unknown as T[]};
     },
@@ -46,7 +48,9 @@ describe("PR95 unregistered PostgreSQL lock-scoped outbound reuse preflight", ()
     expect(seen[6].sql).toContain("for update");
     expect(seen[7].sql).toContain("from public.accounting_entry_lines");
     expect(seen[7].sql).toContain("for update");
-    expect(seen.slice(8)).toHaveLength(3);
+    expect(seen[8].sql).toContain("company_bank_accounts");
+    expect(seen[9].sql).toContain("chart_of_accounts");
+    expect(seen.slice(10)).toHaveLength(3);
     expect(seen.every(q=>!/(insert into|update public|delete from)/i.test(q.sql))).toBe(true);
   });
   it("rejects mismatch of mutation, disbursement, and source ledger amounts", async () => {
@@ -59,6 +63,12 @@ describe("PR95 unregistered PostgreSQL lock-scoped outbound reuse preflight", ()
       .rejects.toThrow("PR95_OUTBOUND_LEDGER_MISMATCH");
     await expect(lockOutboundSourceJournalReuseScope(build({amount:"100.001"}).client,ids))
       .rejects.toThrow("PR95_OUTBOUND_AMOUNT_INVALID");
+  });
+  it("rejects missing bank COA map or source credit to the wrong bank",async()=>{
+    await expect(lockOutboundSourceJournalReuseScope(build({bankCoaId:null}).client,ids))
+      .rejects.toThrow("PR95_OUTBOUND_BANK_COA_UNRESOLVED");
+    await expect(lockOutboundSourceJournalReuseScope(build({bankCredit:"99.99"}).client,ids))
+      .rejects.toThrow("PR95_OUTBOUND_BANK_COA_MISMATCH");
   });
   it("rejects missing actual mutation, wrong direction, prelinked journal, and invalid company input", async () => {
     await expect(lockOutboundSourceJournalReuseScope(build().client,{...ids,companyId:0})).rejects.toThrow("PR95_OUTBOUND_LOCK_SCOPE_INVALID");
