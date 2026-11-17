@@ -68,5 +68,14 @@
   assert.equal(unscoped.length,0);await limited.query('ROLLBACK');privilegeOk('transaction scope does not leak into subsequent unscoped query');
  }finally{limited.release();}
  await unchanged();
- console.log('PERMISSION_BOUNDARY_CHECKS_PASS',privilegeChecks,'LIVE_GRANTS_CHANGED',false);
+ const runtimePreflight=await import('./payroll-accounting-runtime-preflight');
+ const originalAppEnv=process.env.APP_ENV;
+ try {
+  process.env.APP_ENV='development';
+  const prepared=await runtimePreflight.verifyPayrollSettlementRuntime(writer!);
+  assert.deepEqual(prepared,{structuralChecksPassed:true,checkedTables:18,readOnly:true,
+   runtimePostingTested:false,policySemanticsVerified:false});
+  await unchanged();privilegeOk('actual restricted PostgreSQL connection passes read-only runtime preflight across 18 tables');
+ } finally { if(originalAppEnv===undefined)delete process.env.APP_ENV;else process.env.APP_ENV=originalAppEnv; }
+ console.log('PERMISSION_BOUNDARY_CHECKS_PASS' ,privilegeChecks,'LIVE_GRANTS_CHANGED',false);
  // Continue ALL 35 original application scenarios with this same limited pool.

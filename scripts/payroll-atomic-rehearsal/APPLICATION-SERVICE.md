@@ -111,3 +111,11 @@ scope and explicit limitations of the blocked additional SQL fault harness.
 The fixture includes three exact ledger trigger functions but uses synthetic
 scoped grants/policy: live ledger RLS currently has no policies and the
 settlement role has no ledger access. No live permission change is implied.
+
+## Await the runtime structural preflight
+
+The trusted `bindDevPayrollAtomicHttpRuntime` export is now asynchronous and must
+be awaited. It checks the supplied direct settlement connection in READ ONLY
+before installing the binding; failure leaves posting unavailable. It does not
+construct or authorize the native writer/credential. See `RUNTIME-PREFLIGHT.md`
+for the 18-table metadata contract, concurrency behavior and important limits.

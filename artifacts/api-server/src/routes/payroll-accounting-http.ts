@@ -1,6 +1,7 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import type { Pool } from "pg";
 import { authorizePayrollCompany } from "./payroll-access";
+import { verifyPayrollSettlementRuntime } from "./payroll-accounting-runtime-preflight";
 import { getProductionSession, getProductionUser, isSignedOtpDevEnabled } from "./dev-auth";
 import { postReviewedPayrollAccrualTransaction, type TransactionBoundPayrollWriter } from "./payroll-accounting-transaction";
 
@@ -15,6 +16,7 @@ export interface PayrollAtomicHttpBinding {
   allowedOrigin: string;
 }
 let runtime: Readonly<PayrollAtomicHttpBinding> | null = null;
+let pendingBinding: { binding: Readonly<PayrollAtomicHttpBinding>; completion: Promise<void> } | null = null;
 const enabled = () => process.env.APP_ENV === "development" &&
   process.env.PAYROLL_DEV_ATOMIC_ROUTE_MOUNT_ENABLED === "true" &&
   process.env.PAYROLL_DEV_ATOMIC_POSTING_ENABLED === "true";
@@ -32,17 +34,34 @@ function validatedOrigin(value: string): string {
 /** Idempotent binding of the SAME objects only; changing a running financial
  * binding requires controlled restart. This export is not exposed as an API.
  */
-export function bindDevPayrollAtomicHttpRuntime(binding: PayrollAtomicHttpBinding): void {
+export async function bindDevPayrollAtomicHttpRuntime(binding: PayrollAtomicHttpBinding): Promise<void> {
   if (!enabled()) throw Error("PAYROLL_HTTP_DEV_DISABLED");
   if (!binding?.pool || typeof binding.pool.connect !== "function" ||
       binding.writer?.transactionalAccrualVersion !== "payroll-accrual-atomic-v1" ||
       typeof binding.writer.postAccrualJournal !== "function")
     throw Error("PAYROLL_HTTP_BINDING_INVALID");
   const origin = validatedOrigin(binding.allowedOrigin);
-  if (runtime && (runtime.pool !== binding.pool || runtime.writer !== binding.writer || runtime.allowedOrigin !== origin))
-    throw Error("PAYROLL_HTTP_REBIND_REQUIRES_RESTART");
-  runtime = Object.freeze({ pool: binding.pool, writer: binding.writer, allowedOrigin: origin });
+  const same = (prior: Readonly<PayrollAtomicHttpBinding>) =>
+    prior.pool === binding.pool && prior.writer === binding.writer && prior.allowedOrigin === origin;
+  if (runtime) {
+    if (!same(runtime)) throw Error("PAYROLL_HTTP_REBIND_REQUIRES_RESTART");
+    return;
+  }
+  if (pendingBinding) {
+    if (!same(pendingBinding.binding)) throw Error("PAYROLL_HTTP_REBIND_REQUIRES_RESTART");
+    return pendingBinding.completion;
+  }
+  const candidate = Object.freeze({ pool: binding.pool, writer: binding.writer, allowedOrigin: origin });
+  const completion = (async () => {
+    await verifyPayrollSettlementRuntime(candidate.pool);
+    if (!enabled()) throw Error("PAYROLL_HTTP_DEV_DISABLED");
+    runtime = candidate;
+  })();
+  pendingBinding = { binding: candidate, completion };
+  try { await completion; }
+  finally { if (pendingBinding?.completion === completion) pendingBinding = null; }
 }
+
 const positive = (value: unknown): number | null => {
   if (typeof value !== "string" || !/^[1-9][0-9]*$/.test(value)) return null;
   const n = Number(value);

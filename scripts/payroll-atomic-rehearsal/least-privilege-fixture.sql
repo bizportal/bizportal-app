@@ -80,4 +80,17 @@ CREATE POLICY ci_payroll_advance_only ON cash_advances AS RESTRICTIVE
 -- There are intentionally NO rights on salary_payments, approval timestamp,
 -- approval receipt notes, employee master salary, item amounts, bank or DDL.
 
+-- Supplement the representative fixture: ancillary evidence tables must also
+-- keep company-scoped RLS. No broad fallback reads for legacy conflict checks.
+ALTER TABLE payroll_cash_advance_allocations ENABLE ROW LEVEL SECURITY;
+CREATE POLICY ci_legacy_allocation_scope ON payroll_cash_advance_allocations FOR SELECT
+ TO bizportal_payroll_settlement_dev USING(EXISTS(
+ SELECT 1 FROM payroll_items i JOIN payroll_runs r ON r.id=i.run_id
+ WHERE i.id=payroll_cash_advance_allocations.payroll_item_id
+ AND r.company_id=NULLIF(current_setting('app.payroll_company_id',true),'')::integer));
+ALTER TABLE cash_advance_installment_schedules ENABLE ROW LEVEL SECURITY;
+CREATE POLICY ci_installment_scope ON cash_advance_installment_schedules FOR SELECT
+ TO bizportal_payroll_settlement_dev USING(EXISTS(
+ SELECT 1 FROM cash_advances a WHERE a.id=cash_advance_installment_schedules.advance_id
+ AND a.company_id=NULLIF(current_setting('app.payroll_company_id',true),'')::integer));
 COMMIT;

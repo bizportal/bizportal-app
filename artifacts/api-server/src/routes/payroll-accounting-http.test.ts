@@ -4,11 +4,19 @@ import { createServer, type Server } from "node:http";
 import { once } from "node:events";
 const state = vi.hoisted(() => ({ signed: true, ready: true,
   actor: { id: "verified-admin", email: "admin@example.test", role: "super_admin", companyId: null as number | null },
-  missingActor: false, error: "", calls: [] as unknown[] }));
+  missingActor: false, preflightError: false, preflightCalls: 0, preflightWait: null as Promise<void> | null, error: "", calls: [] as unknown[] }));
 vi.mock("./dev-auth", () => ({
   isSignedOtpDevEnabled: () => state.ready,
   getProductionSession: () => state.signed ? { id: state.actor.id, email: state.actor.email } : null,
   getProductionUser: async () => state.missingActor ? null : state.actor,
+}));
+vi.mock("./payroll-accounting-runtime-preflight", () => ({
+  verifyPayrollSettlementRuntime: async () => {
+    state.preflightCalls++;
+    if (state.preflightWait) await state.preflightWait;
+    if (state.preflightError) throw Error("PAYROLL_RUNTIME_PREFLIGHT_REJECTED");
+    return { structuralChecksPassed: true, readOnly: true };
+  },
 }));
 vi.mock("./payroll-accounting-transaction", () => ({
   postReviewedPayrollAccrualTransaction: async (_pool: unknown, _writer: unknown, request: unknown) => {
@@ -21,7 +29,7 @@ const origin = "https://payroll-dev.example.test";
 const body = { expectedDigest: "a".repeat(64), postingDate: "2026-11-17" };
 async function start(bind = true) {
   const api = await import("./payroll-accounting-http");
-  if (bind) api.bindDevPayrollAtomicHttpRuntime({ pool: { connect: vi.fn() },
+  if (bind) await api.bindDevPayrollAtomicHttpRuntime({ pool: { connect: vi.fn() },
     writer: { transactionalAccrualVersion: "payroll-accrual-atomic-v1", postAccrualJournal: vi.fn() }, allowedOrigin: origin });
   const app = express();app.use(express.json({ limit: "8kb" }));
   app.use("/api", api.createPayrollAtomicAccountingRouter());
@@ -36,6 +44,7 @@ async function post(value: unknown = body, headers: Record<string, string> = {},
 beforeEach(() => {
   vi.resetModules();vi.stubEnv("APP_ENV", "development");vi.stubEnv("NODE_ENV", "test");
   vi.stubEnv("PAYROLL_DEV_ATOMIC_ROUTE_MOUNT_ENABLED", "true");vi.stubEnv("PAYROLL_DEV_ATOMIC_POSTING_ENABLED", "true");
+  state.preflightError = false;state.preflightCalls = 0;state.preflightWait = null;
   state.signed = true;state.ready = true;state.missingActor = false;state.error = "";state.calls.length = 0;
   state.actor = { id: "verified-admin", email: "admin@example.test", role: "super_admin", companyId: null };
 });
@@ -45,7 +54,7 @@ describe("DEV signed Payroll accounting HTTP boundary", () => {
   it.each(["production", ""])("has no route or binding in APP_ENV=%s", async env => {
     vi.stubEnv("APP_ENV", env);const api = await start(false);
     expect((await post()).status).toBe(404);expect(state.calls).toHaveLength(0);
-    expect(() => api.bindDevPayrollAtomicHttpRuntime({} as never)).toThrow("DEV_DISABLED");
+    await expect(api.bindDevPayrollAtomicHttpRuntime({} as never)).rejects.toThrow("DEV_DISABLED");
   });
   it.each(["PAYROLL_DEV_ATOMIC_ROUTE_MOUNT_ENABLED", "PAYROLL_DEV_ATOMIC_POSTING_ENABLED"])("stays absent when %s is off", async key => {
     vi.stubEnv(key, "");await start(false);expect((await post()).status).toBe(404);expect(state.calls).toHaveLength(0);
@@ -69,6 +78,49 @@ describe("DEV signed Payroll accounting HTTP boundary", () => {
   it("successful replay is still derived from the service result rather than request input", async () => {
     await start();const response = await post({ ...body, reused: true });
     expect(response.status).toBe(400);expect(state.calls).toHaveLength(0);
+  });
+  it("refuses to bind if the direct database structural preflight fails", async () => {
+    const api = await start(false);
+    state.preflightError = true;
+    await expect(api.bindDevPayrollAtomicHttpRuntime({ pool: { connect: vi.fn() },
+      writer: { transactionalAccrualVersion: "payroll-accrual-atomic-v1", postAccrualJournal: vi.fn() },
+      allowedOrigin: origin })).rejects.toThrow("PREFLIGHT_REJECTED");
+    expect((await post()).status).toBe(503);
+    expect(state.calls).toHaveLength(0);expect(state.preflightCalls).toBe(1);
+  });
+  it("keeps posting unavailable during preflight and coalesces the same initialization", async () => {
+    const api = await start(false);let resolve!: () => void;
+    state.preflightWait = new Promise<void>(done => { resolve = done; });
+    const binding = { pool: { connect: vi.fn() }, writer: {
+      transactionalAccrualVersion: "payroll-accrual-atomic-v1" as const, postAccrualJournal: vi.fn() }, allowedOrigin: origin };
+    const one = api.bindDevPayrollAtomicHttpRuntime(binding), two = api.bindDevPayrollAtomicHttpRuntime(binding);
+    expect((await post()).status).toBe(503);expect(state.calls).toHaveLength(0);
+    await expect(api.bindDevPayrollAtomicHttpRuntime({ ...binding, pool: { connect: vi.fn() } }))
+      .rejects.toThrow("REBIND_REQUIRES_RESTART");
+    resolve();await Promise.all([one,two]);expect(state.preflightCalls).toBe(1);
+    await api.bindDevPayrollAtomicHttpRuntime(binding);expect(state.preflightCalls).toBe(1);
+    expect((await post()).status).toBe(200);
+  });
+  it("does not install a binding if a feature gate turns OFF during preflight", async () => {
+    const api = await start(false);let resolve!: () => void;
+    state.preflightWait = new Promise<void>(done => { resolve = done; });
+    const binding = { pool: { connect: vi.fn() }, writer: {
+      transactionalAccrualVersion: "payroll-accrual-atomic-v1" as const, postAccrualJournal: vi.fn() }, allowedOrigin: origin };
+    const preparing = api.bindDevPayrollAtomicHttpRuntime(binding);
+    const rejection = expect(preparing).rejects.toThrow("DEV_DISABLED");
+    vi.stubEnv("PAYROLL_DEV_ATOMIC_POSTING_ENABLED","false");resolve();await rejection;
+    vi.stubEnv("PAYROLL_DEV_ATOMIC_POSTING_ENABLED","true");
+    expect((await post()).status).toBe(503);expect(state.calls).toHaveLength(0);
+  });
+  it("can retry after a failed preflight without retaining an unverified binding", async () => {
+    const api = await start(false);
+    const binding = { pool: { connect: vi.fn() }, writer: {
+      transactionalAccrualVersion: "payroll-accrual-atomic-v1" as const, postAccrualJournal: vi.fn() }, allowedOrigin: origin };
+    state.preflightError = true;
+    await expect(api.bindDevPayrollAtomicHttpRuntime(binding)).rejects.toThrow("PREFLIGHT_REJECTED");
+    expect((await post()).status).toBe(503);
+    state.preflightError = false;await api.bindDevPayrollAtomicHttpRuntime(binding);
+    expect(state.preflightCalls).toBe(2);expect((await post()).status).toBe(200);
   });
   it("does not acquire a fallback writer without server binding", async () => {
     await start(false);expect((await post()).status).toBe(503);expect(state.calls).toHaveLength(0);
@@ -114,8 +166,8 @@ describe("DEV signed Payroll accounting HTTP boundary", () => {
     const api = await start();
     const binding = { pool: { connect: vi.fn() }, writer: { transactionalAccrualVersion: "payroll-accrual-atomic-v1" as const,
       postAccrualJournal: vi.fn() }, allowedOrigin: origin };
-    expect(() => api.bindDevPayrollAtomicHttpRuntime(binding)).toThrow("REBIND_REQUIRES_RESTART");
-    expect(() => api.bindDevPayrollAtomicHttpRuntime({ ...binding, allowedOrigin: "http://unsafe.example.test" })).toThrow("ORIGIN_INVALID");
-    expect(() => api.bindDevPayrollAtomicHttpRuntime({ ...binding, allowedOrigin: origin + "/other" })).toThrow("ORIGIN_INVALID");
+    await expect(api.bindDevPayrollAtomicHttpRuntime(binding)).rejects.toThrow("REBIND_REQUIRES_RESTART");
+    await expect(api.bindDevPayrollAtomicHttpRuntime({ ...binding, allowedOrigin: "http://unsafe.example.test" })).rejects.toThrow("ORIGIN_INVALID");
+    await expect(api.bindDevPayrollAtomicHttpRuntime({ ...binding, allowedOrigin: origin + "/other" })).rejects.toThrow("ORIGIN_INVALID");
   });
 });
