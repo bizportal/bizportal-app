@@ -1,0 +1,129 @@
+PARENT_BASELINE 478659611b908b4a3eee03f35ab718a323675047
+BASELINE_CROSS_PERIOD_REPRODUCED one_payroll_deduction_counted_in_two_totals next_month_preview_rejected true LIVE_DATABASE_USED false
+
+CLOSED_NATIVE_ARTIFACT_BUILT a3f15c81fcd845b42d86b9258762adb7f006589cee3baef78813f9e5acdb562b BYTES 543873 FINANCIAL_MOCKS false
+VERIFIED_PACKAGE_LOADER_USED true HTTP_SESSION_TESTED false
+POSTGRES 16.15 FIXTURE_ONLY true
+LEDGER_TRIGGER_SNAPSHOT_HASHES_MATCH 3 POLICY_AND_GRANTS SYNTHETIC_FIXTURE_ONLY
+PASS PERMISSION direct non-superuser, non-bypass identity retained
+PASS PERMISSION no table-wide UPDATE, DELETE or TRUNCATE remains anywhere in fixture public schema
+PASS PERMISSION approval receipt, salary, loan principal, bank-payment link, payout and schema writes absent
+PASS PERMISSION SELECT FOR SHARE retains actual access without broad write grants
+PASS PERMISSION rewrite approved_at is refused
+PASS PERMISSION rewrite approval receipt is refused
+PASS PERMISSION link salary payment is refused
+PASS PERMISSION change salary amount is refused
+PASS PERMISSION change loan principal is refused
+PASS PERMISSION change prior cash repayments is refused
+PASS PERMISSION change loan receivable account is refused
+PASS PERMISSION change configured COA is refused
+PASS PERMISSION create salary payment is refused
+PASS PERMISSION delete repayment ledger is refused
+PASS PERMISSION truncate payroll is refused
+PASS PERMISSION create schema object is refused
+PASS PERMISSION mutate employee lock-only column is refused
+PASS PERMISSION mutate COA lock-only column is refused
+PASS PERMISSION mutate mapping lock-only column is refused
+PASS PERMISSION mutate period lock-only column is refused
+PASS PERMISSION foreign company payroll cannot be read or locked
+PASS PERMISSION transaction scope does not leak into subsequent unscoped query
+PASS PERMISSION actual restricted PostgreSQL connection passes read-only runtime preflight across 18 tables
+PERMISSION_BOUNDARY_CHECKS_PASS 23 LIVE_GRANTS_CHANGED false
+BASELINE_REPRODUCED journal_rolled_back_but_external_audit_and_outbox_remained
+PASS baseline regression reproduced on actual PostgreSQL
+PASS APPLICATION commits noncash settlement once, preserves cash repayments, and atomically links journal, ledger and run
+PASS APPLICATION replay verifies existing journal lines and exact repayment ledger without another deduction
+PASS APPLICATION rollback on cash_advances failure leaves zero financial and audit residue
+PASS APPLICATION rollback on cash_advance_repayments failure leaves zero financial and audit residue
+PASS APPLICATION rollback on payroll_kasbon_auto_reservations failure leaves zero financial and audit residue
+PASS APPLICATION rollback on payroll_runs failure leaves zero financial and audit residue
+PASS APPLICATION concurrent calls create one journal and one repayment with bounded serialization retry
+PASS APPLICATION RLS rejects foreign company
+PASS APPLICATION closed period refused before writer
+PASS APPLICATION salary snapshot changed after approval is refused
+PASS APPLICATION changed kasbon balance is refused
+PASS APPLICATION financial_outbox_events failure rolls back without global escape
+PASS APPLICATION ledger_events failure rolls back without global escape
+PASS APPLICATION journal_sequences failure rolls back without global escape
+PASS APPLICATION replay rejects non-posted journal
+PASS APPLICATION replay rejects altered account lines even with identical totals
+PASS APPLICATION replay rejects missing repayment without silently recreating it
+PASS APPLICATION replay rejects changed repayment amount
+PASS APPLICATION reads real advance approval metadata rather than fixture constants
+PASS APPLICATION refuses loan belonging to a different employee
+PASS APPLICATION refuses reservation from a different Payroll period
+PASS APPLICATION loads and validates actual five-account mapping
+PASS APPLICATION blocks overlap with pre-existing legacy allocation ledger
+PASS APPLICATION rejects a writer claiming a nonexistent journal
+PASS APPLICATION limited writer is denied account-line mutation before settlement, with full rollback
+PASS APPLICATION fails closed on missing fiscal period
+PASS APPLICATION refuses inconsistent advance totals
+PASS APPLICATION writer stays OFF by default
+PASS APPLICATION preserves PostgreSQL microsecond approval time and records posting time
+PASS APPLICATION blocks loans with pending legacy installment schedules to prevent double settlement
+PASS APPLICATION refuses the unpatched global-posting native service before opening a connection
+PASS APPLICATION full kasbon settlement reaches zero with one repayment and no salary transfer
+PASS APPLICATION zero-kasbon payroll does not create a repayment or alter an unrelated balance
+PASS APPLICATION full 17-person roster posts one balanced accrual using database-loaded values
+PASS OTHER_DEDUCTION actual packaged engine posts exact mapped credit 0.01 with balanced ledger and unchanged approval
+PASS OTHER_DEDUCTION actual packaged engine posts exact mapped credit 1.00 with balanced ledger and unchanged approval
+PASS OTHER_DEDUCTION actual packaged engine posts exact mapped credit 150000.50 with balanced ledger and unchanged approval
+PASS OTHER_DEDUCTION actual packaged engine posts exact mapped credit 4900000.00 with balanced ledger and unchanged approval
+PASS OTHER_DEDUCTION replay creates no additional other-deduction credit or kasbon repayment
+PASS OTHER_DEDUCTION concurrent requests post only once
+PASS OTHER_DEDUCTION missing mapping is denied without zeroing or redirecting the deduction
+PASS OTHER_DEDUCTION foreign-company mapping is invisible and never reused
+PASS OTHER_DEDUCTION foreign-company mapped account is rejected
+PASS OTHER_DEDUCTION unusable mapped COA is_active=false rejected before any posting
+PASS OTHER_DEDUCTION unusable mapped COA is_postable=false rejected before any posting
+PASS OTHER_DEDUCTION unusable mapped COA is_header=true rejected before any posting
+PASS OTHER_DEDUCTION unusable mapped COA status='INACTIVE' rejected before any posting
+PASS OTHER_DEDUCTION unusable mapped COA type='asset' rejected before any posting
+PASS OTHER_DEDUCTION unusable mapped COA account_type='other' rejected before any posting
+PASS OTHER_DEDUCTION missing optional mapping SELECT permission fails closed, no general pool fallback
+PASS OTHER_DEDUCTION mapping change after posting refuses replay rather than reposting
+PASS OTHER_DEDUCTION deduction change after approval is detected by original digest
+PASS OTHER_DEDUCTION settlement identity can lock but cannot alter configured mapping
+PASS OTHER_DEDUCTION nonzero mapped deduction does not bypass closed period
+PASS OTHER_DEDUCTION zero-other Payroll keeps the original six-line journal without a new mapping
+PASS OTHER_DEDUCTION all 17 employees with nonzero other deductions post one balanced accrual and replay once
+MAPPED_OTHER_DEDUCTION_POSTGRES_PASS 22 LIVE_DATABASE_USED false SALARY_PAYMENT_SENT false
+PASS CROSS_PERIOD first noncash deduction preserves cash repayments and conserves principal
+PASS CROSS_PERIOD actual post-first-period balance is accepted by original installment projector
+PASS CROSS_PERIOD same-period confirmed deduction cannot be prepared twice
+PASS CROSS_PERIOD consecutive installment 2026-12 posts once with preserved principal
+PASS CROSS_PERIOD consecutive installment 2027-1 posts once with preserved principal
+PASS CROSS_PERIOD consecutive installment 2027-2 posts once with preserved principal
+PASS CROSS_PERIOD consecutive installment 2027-3 posts once with preserved principal
+PASS CROSS_PERIOD five periods end at zero with five receipts, five journals and no salary transfer
+PASS CROSS_PERIOD all earlier periods can replay after later settlement without a second deduction
+PASS CROSS_PERIOD fully settled loan is not charged in the next period
+PASS CROSS_PERIOD prior cash and prior expense settlement are preserved separately
+PASS CROSS_PERIOD FULL payoff from mixed history reduces only remaining debt, not the original principal again
+PASS CROSS_PERIOD final fractional installment conserves every cent
+PASS CROSS_PERIOD historical double-counted summary fails closed without automatic repair or posting
+PASS CROSS_PERIOD failed receipt restores both prior cash and noncash totals with no partial journal
+PASS CROSS_PERIOD concurrent requests produce exactly one noncash deduction
+KASBON_CROSS_PERIOD_POSTGRES_PASS 16 LIVE_DATABASE_USED false CASH_PAYMENT_CHANGED false
+APPLICATION_REAL_POSTGRES_CHECKS_PASS 35 LIVE_CST_DEV_OR_PROD_USED false BANK_TRANSFER_SENT false
+
+ Test Files  126 passed | 12 skipped (138)
+      Tests  1026 passed | 49 skipped (1075)
+
+REGRESSION_MODE application
+APPLICATION_REAL_POSTGRES_CHECKS_PASS 35 LIVE_CST_DEV_OR_PROD_USED false BANK_TRANSFER_SENT false
+
+REGRESSION_MODE permissions
+PERMISSION_BOUNDARY_CHECKS_PASS 23 LIVE_GRANTS_CHANGED false
+APPLICATION_REAL_POSTGRES_CHECKS_PASS 35 LIVE_CST_DEV_OR_PROD_USED false BANK_TRANSFER_SENT false
+
+REGRESSION_MODE triggers
+SELECTED_DEV_TRIGGER_CHECKS_PASS 20 LIVE_DB_MUTATIONS false FULL_LIVE_SCHEMA_CLONED false
+
+REGRESSION_MODE native
+REAL_POSTGRES_CHECKS_PASS 15 LIVE_CST_DEV_OR_PROD_USED false BANK_TRANSFER_SENT false
+
+REGRESSION_MODE financial-setup
+AUDITED_PERIOD_REGISTRATION_POSTGRES_PASS 25 LIVE_DATABASE_USED false FUNDING_APPROVED false
+
+NATIVE_PACKAGE_BUILD_CHECKS_PASS 13 ARTIFACT_SHA256 a3f15c81fcd845b42d86b9258762adb7f006589cee3baef78813f9e5acdb562b BYTES 543873 LIVE_DATABASE_USED false

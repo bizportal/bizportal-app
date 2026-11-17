@@ -107,3 +107,41 @@ describe("PROD-gated Kasbon FULL / INSTALLMENT — auto preview, NEVER settlemen
     expect(r.canApply).toBe(false);
   });
 });
+
+describe("Kasbon cross-period principal conservation",()=>{
+  it("projects the next installment from a previous noncash Payroll settlement",()=>{
+    const a=advance({amount:"500000.00",paidAmount:"0.00",settledAmount:"100000.00",remainingAmount:"400000.00"});
+    expect(project([a],[plan({installmentAmount:"100000.00"})],
+      [{advanceId:101,period:"2026-11-01",amount:"100000.00",state:"confirmed"}],2026,12).total).toBe("100000.00");
+  });
+  it("preserves preexisting cash repayments separately from noncash settlements",()=>{
+    const a=advance({amount:"500000.00",paidAmount:"100000.00",settledAmount:"150000.00",remainingAmount:"250000.00"});
+    expect(project([a],[plan({installmentAmount:"100000.00"})],[],2026,12).total).toBe("100000.00");
+  });
+  it("refuses historical double-counted summaries rather than guessing a repaired amount",()=>{
+    const a=advance({amount:"500000.00",paidAmount:"100000.00",settledAmount:"100000.00",remainingAmount:"400000.00"});
+    expect(()=>project([a],[plan({installmentAmount:"100000.00"})])).toThrow("KASBON_BALANCE_MISMATCH");
+  });
+  it("never prepares a second deduction in a period already confirmed",()=>{
+    const a=advance({amount:"500000.00",paidAmount:"0.00",settledAmount:"100000.00",remainingAmount:"400000.00"});
+    expect(project([a],[plan({installmentAmount:"100000.00"})],
+      [{advanceId:101,period:"2026-11-01",amount:"100000.00",state:"confirmed"}])).toMatchObject({
+      total:null,canApply:false,rows:[{issue:"POTONGAN_PERIODE_SUDAH_DIKONFIRMASI",existingPreparation:true,proposed:null}]});
+  });
+  it("caps the final installment to the fractional remainder",()=>{
+    const a=advance({amount:"200000.01",paidAmount:"50000.00",settledAmount:"125000.00",remainingAmount:"25000.01"});
+    expect(project([a],[plan({installmentAmount:"100000.00"})]).total).toBe("25000.01");
+  });
+  it("rolls confirmed history into a new year without creating an extra current-period charge",()=>{
+    const a=advance({amount:"500000.00",paidAmount:"0.00",settledAmount:"200000.00",remainingAmount:"300000.00"});
+    expect(project([a],[plan({installmentAmount:"100000.00"})],[
+      {advanceId:101,period:"2026-11-01",amount:"100000.00",state:"confirmed"},
+      {advanceId:101,period:"2026-12-01",amount:"100000.00",state:"confirmed"},
+    ],2027,1).total).toBe("100000.00");
+  });
+  it("does not charge a fully settled mixed-cash/noncash loan again",()=>{
+    expect(project([advance({amount:"500000.00",paidAmount:"100000.00",settledAmount:"400000.00",
+      remainingAmount:"0.00",status:"repaid",lifecycleStatus:"settled"})],[],[],2027,4))
+      .toMatchObject({total:"0.00",canApply:false,canSettle:false,canPay:false});
+  });
+});

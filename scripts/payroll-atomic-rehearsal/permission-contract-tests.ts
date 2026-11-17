@@ -43,6 +43,7 @@
    ['link salary payment',"UPDATE payroll_runs SET payment_entry_id=1 WHERE id=32"],
    ['change salary amount',"UPDATE payroll_items SET base_salary=1 WHERE id=11"],
    ['change loan principal',"UPDATE cash_advances SET amount=1 WHERE id=801"],
+   ['change prior cash repayments',"UPDATE cash_advances SET paid_amount=1 WHERE id=801"],
    ['change loan receivable account',"UPDATE cash_advances SET receivable_account_id=10 WHERE id=801"],
    ['change configured COA',"UPDATE accounting_settings SET salary_expense_account_id=14 WHERE company_id=1"],
    ['create salary payment',"INSERT INTO salary_payments DEFAULT VALUES"],

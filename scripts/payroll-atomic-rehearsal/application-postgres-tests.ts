@@ -198,10 +198,10 @@ try{
  const result=await executeAtomic();assert.equal(result.reused,false);
  const success=await state();assert.deepEqual(success,{entries:1,lines:6,audit:1,outbox:1,balance:'400000.00',reservation:'confirmed',status:'approved',entry_id:result.entryId,payments:0,repayments:1});assert.equal(outsideQueries,0);
  const persisted=(await admin.query("SELECT a.paid_amount::text,a.settled_amount::text,a.status,a.lifecycle_status,c.amount::text,c.entry_id,c.idempotency_key,c.posted_at IS NOT NULL AS posted FROM cash_advances a JOIN cash_advance_repayments c ON c.advance_id=a.id WHERE a.id=801")).rows[0];
- assert.deepEqual(persisted,{paid_amount:'100000.00',settled_amount:'100000.00',status:'partial',lifecycle_status:'partially_settled',amount:'100000.00',entry_id:result.entryId,idempotency_key:'PAYROLL-C1-R32-AUTO-501',posted:true});
+ assert.deepEqual(persisted,{paid_amount:'0.00',settled_amount:'100000.00',status:'partial',lifecycle_status:'partially_settled',amount:'100000.00',entry_id:result.entryId,idempotency_key:'PAYROLL-C1-R32-AUTO-501',posted:true});
  const approval=(await admin.query('SELECT approved_at,notes FROM payroll_runs WHERE id=32')).rows[0];
  assert.equal(new Date(approval.approved_at).toISOString(),new Date(fixtureInput.run.approvedAt!).toISOString());assert.equal(approval.notes,fixtureInput.run.notes);
- ok('APPLICATION service commits native journal, real repayment ledger, balance, confirmation and run link together');
+ ok('APPLICATION commits noncash settlement once, preserves cash repayments, and atomically links journal, ledger and run');
  const replay=await executeAtomic();assert.equal(replay.entryId,result.entryId);assert.equal(replay.reused,true);assert.deepEqual(await state(),success);ok('APPLICATION replay verifies existing journal lines and exact repayment ledger without another deduction');
  for(const [table,timing,event] of [['cash_advances','BEFORE','UPDATE'],['cash_advance_repayments','BEFORE','INSERT'],['payroll_kasbon_auto_reservations','BEFORE','UPDATE'],['payroll_runs','AFTER','UPDATE']]){
   await reset();await injectedFailure(table,timing,event,()=>executeAtomic());ok('APPLICATION rollback on '+table+' failure leaves zero financial and audit residue');

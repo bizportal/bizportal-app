@@ -37,7 +37,7 @@ GRANT UPDATE(status,checksum_hash,previous_entry_id)
  ON accounting_entries TO bizportal_payroll_settlement_dev;
 GRANT UPDATE(status,posting_status,accounting_entry_id,posted_at,posting_error,posting_claimed_at)
  ON payroll_runs TO bizportal_payroll_settlement_dev;
-GRANT UPDATE(paid_amount,settled_amount,remaining_amount,status,lifecycle_status,
+GRANT UPDATE(settled_amount,remaining_amount,status,lifecycle_status,
  repayment_journal_id,repaid_at,updated_at) ON cash_advances TO bizportal_payroll_settlement_dev;
 GRANT UPDATE(state,confirmed_at) ON payroll_kasbon_auto_reservations TO bizportal_payroll_settlement_dev;
 GRANT INSERT(advance_id,amount,payment_method,date,notes,entry_id,idempotency_key,

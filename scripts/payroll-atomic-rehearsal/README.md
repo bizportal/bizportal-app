@@ -127,3 +127,11 @@ The existing `packaged` mode now also executes the 22 new mapped-other-deduction
 PostgreSQL checks in `scripts/payroll-other-deductions/postgres-tests.ts`, after
 all original scenarios, using the same native package and restricted pool. It
 does not create a signed HTTP session or use any live configuration.
+
+## Kasbon cross-period regression
+
+The `packaged` mode also reproduces the actual post-first-period loan state and
+executes five consecutive periods using the real projector and transaction
+service. Payroll is a noncash settlement; cash repayments remain unchanged.
+See `scripts/payroll-kasbon-cross-period/README.md` for the corrected baseline
+assertion, 16 PostgreSQL checks, and the still-blocked legacy schedule boundary.

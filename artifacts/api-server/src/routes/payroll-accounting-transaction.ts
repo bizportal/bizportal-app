@@ -3,7 +3,7 @@ import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { prepareReviewedPayrollAccrual, type PayrollHandoffInput, type PayrollHandoffAccount } from "./payroll-accounting-handoff";
 import { buildPayrollPreview, type PayrollPreviewItem } from "./payroll-preview";
 import { assertPayrollLedgerMirror, type PayrollLedgerRow, type PayrollJournalLine } from "./payroll-accounting-ledger";
-import { centsToMoney, moneyToCents, payrollMonth } from "./payroll-kasbon-automatic";
+import { assertKasbonPrincipalBalance, centsToMoney, moneyToCents, payrollMonth } from "./payroll-kasbon-automatic";
 import { payrollSuperAdminApprovalDigest, readPayrollSuperAdminApprovalReceipt } from "./payroll-super-admin-approval-receipt";
 
 /** DEV application service. HTTP adapter exists behind default-OFF gates;
@@ -261,8 +261,8 @@ async function execute(client: PoolClient, writer: TransactionBoundPayrollWriter
   if (periods.rows[0]!.is_closed && !periods.rows[0]!.override_allowed) fail("POSTING_PERIOD_CLOSED");
   for (const h of holds) {
     const a = byId.get(h.advanceId)!;
-    if (moneyToCents(a.amount) !== moneyToCents(a.settled_amount) + moneyToCents(a.remaining_amount) ||
-        moneyToCents(a.paid_amount) > moneyToCents(a.amount)) fail("ADVANCE_TOTALS_INCONSISTENT");
+    try { assertKasbonPrincipalBalance(a.amount,a.paid_amount,a.settled_amount,a.remaining_amount); }
+    catch { fail("ADVANCE_TOTALS_INCONSISTENT"); }
     const existing = await client.query(`SELECT id FROM public.cash_advance_repayments WHERE idempotency_key=$1`,
       [repaymentKey(companyId, runId, h)]);
     if (existing.rows.length) fail("REPAYMENT_ALREADY_EXISTS_WITHOUT_RUN_LINK");
@@ -273,15 +273,26 @@ async function execute(client: PoolClient, writer: TransactionBoundPayrollWriter
   await verifyPersistedJournal(client, companyId, runId, posted.entryId, items, mapping, holds);
   for (const h of holds) {
     const amount = h.amount as string;
-    const update = await client.query(`UPDATE public.cash_advances SET paid_amount=paid_amount+$1::numeric,
-      settled_amount=settled_amount+$1::numeric,remaining_amount=remaining_amount-$1::numeric,
+    // One noncash Payroll settlement. Preserve historical CASH repayments.
+    const before = byId.get(h.advanceId)!;
+    const update = await client.query<{id:number;paid_amount:string;settled_amount:string;remaining_amount:string}>(
+      `UPDATE public.cash_advances SET settled_amount=settled_amount+$1::numeric,remaining_amount=remaining_amount-$1::numeric,
       status=CASE WHEN remaining_amount-$1::numeric<=0.005 THEN 'repaid' ELSE 'partial' END,
       lifecycle_status=CASE WHEN remaining_amount-$1::numeric<=0.005 THEN 'settled' ELSE 'partially_settled' END,
       repayment_journal_id=$2,repaid_at=CASE WHEN remaining_amount-$1::numeric<=0.005 THEN now() ELSE repaid_at END,
       updated_at=now() WHERE id=$3 AND company_id=$4 AND employee_id=$5 AND type='kasbon'
-      AND remaining_amount=$6::numeric AND remaining_amount>=$1::numeric RETURNING id`,
+      AND remaining_amount=$6::numeric AND remaining_amount>=$1::numeric
+      RETURNING id,paid_amount::text,settled_amount::text,remaining_amount::text`,
       [amount, posted.entryId, h.advanceId, companyId, h.employeeId, h.heldBalance]);
     if (update.rowCount !== 1) fail("ADVANCE_BALANCE_CHANGED");
+    const after = update.rows[0];
+    if (!after || after.id!==h.advanceId || moneyToCents(after.paid_amount)!==moneyToCents(before.paid_amount) ||
+        moneyToCents(after.settled_amount)!==moneyToCents(before.settled_amount)+moneyToCents(amount) ||
+        moneyToCents(after.remaining_amount)!==moneyToCents(before.remaining_amount)-moneyToCents(amount))
+      fail("ADVANCE_SETTLEMENT_TOTALS_NOT_VERIFIED");
+    try { assertKasbonPrincipalBalance(before.amount,after.paid_amount,after.settled_amount,after.remaining_amount); }
+    catch { fail("ADVANCE_SETTLEMENT_TOTALS_NOT_VERIFIED"); }
+
     const ledger = await client.query(`INSERT INTO public.cash_advance_repayments
       (advance_id,amount,payment_method,date,notes,entry_id,idempotency_key,posted_at,created_by,payment_reference)
       VALUES($1,$2::numeric,'payroll',$3::date,$4,$5,$6,now(),$7,$8) RETURNING id`,

@@ -83,3 +83,11 @@ credential custody and authenticated HTTP→SQL assembly remain separate gates.
 This file grants no authority to change them. Full runtime/PROD release remains
 NO-GO until those checks and authorized rollout are completed. Previously blocked
 combined authentication/SQL and extra ledger-fault harnesses are not recreated.
+
+## Cash repayment totals are not Payroll writes
+
+The cross-period correction removes UPDATE(paid_amount) from this fixture's
+settlement role and marks it forbidden in runtime preflight. Payroll increments
+noncash settled_amount only, keeping the existing additive principal identity.
+An additional PostgreSQL negative case verifies cash totals cannot be changed.
+No live role permission is changed by this fixture update.
