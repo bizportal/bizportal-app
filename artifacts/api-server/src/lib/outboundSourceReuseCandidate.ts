@@ -40,7 +40,7 @@ export async function finalizeOutboundSourceReuseCandidate(
   // PostgreSQL NUMERIC is a decimal string. Compare exact minor units
   // without binary-float multiplication or rounding a partial cent.
   const rawGross=String(original?.grand_total??"");
-  const validGross=/^(?:0|[1-9]\\d*)(?:\\.\\d{1,2})?$/.test(rawGross);
+  const validGross=/^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/.test(rawGross);
   const [whole="",fraction=""] = rawGross.split(".");
   const grossMinor=validGross
     ? Number(whole)*100+Number(fraction.padEnd(2,"0"))
