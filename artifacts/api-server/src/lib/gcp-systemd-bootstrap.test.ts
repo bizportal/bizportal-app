@@ -29,7 +29,7 @@ let directory = "";
 let network: ReturnType<typeof vi.fn>;
 
 function mountedFile(value = fakeBootstrap) {
-  writeFileSync(join(directory, bootstrapName), value, { mode: 0o400 });
+  writeFileSync(join(directory, bootstrapName), value, { mode: 0o600 });
 }
 function enableDevMount() {
   process.env.APP_ENV = "development";
