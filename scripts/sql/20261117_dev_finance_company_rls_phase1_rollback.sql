@@ -22,11 +22,11 @@ BEGIN
  SELECT count(*) INTO n FROM pg_policies WHERE schemaname='public'
    AND policyname='pr107_company_role_restrictive_all'
    AND permissive='RESTRICTIVE'
-   AND roles=ARRAY['bizportal_finance_cst_login_dev','bizportal_finance_diva_login_dev']::name[];
+   AND cardinality(roles)=2 AND roles @> ARRAY['bizportal_finance_cst_login_dev','bizportal_finance_diva_login_dev']::name[];
  IF n<>11 THEN RAISE EXCEPTION 'DEV_FINANCE_PHASE1_ROLLBACK_RLS_DRIFT'; END IF;
  SELECT count(*) INTO n FROM pg_policies WHERE schemaname='public'
    AND policyname LIKE 'pr50_finance_dev_%'
-   AND roles=ARRAY['bizportal_marketplace_finance_login_dev',
+   AND cardinality(roles)=3 AND roles @> ARRAY['bizportal_marketplace_finance_login_dev',
       'bizportal_finance_cst_login_dev','bizportal_finance_diva_login_dev']::name[];
  IF n<>18 THEN RAISE EXCEPTION 'DEV_FINANCE_PHASE1_ROLLBACK_TARGET_DRIFT'; END IF;
 END
