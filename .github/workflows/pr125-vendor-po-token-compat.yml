@@ -1,0 +1,65 @@
+name: PR125 Vendor PO 48-64 Hex Token Compatibility
+
+on:
+  pull_request:
+    branches:
+      - test/pr124-dev-finance-parent-lock-phase2-20261117
+    paths:
+      - 'artifacts/api-server/src/lib/services/mktVendorPoTokenService.ts'
+      - 'artifacts/api-server/src/lib/services/mktVendorPoTokenService.dev-compat.test.ts'
+      - 'scripts/sql/20261117_dev_finance_po_vendor_token_48_64_compat*'
+      - 'scripts/tests/pr125-*'
+      - '.github/workflows/pr125-vendor-po-token-compat.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  portal-bizportal-token-compat-disposable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: [postgres:16-alpine, postgres:17-alpine]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Original PR107/PR108 review-only guards must remain intact
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'DO \$no_go\$' scripts/sql/20261117_pr107_finance_company_roles_RLS_REVIEW_ONLY.sql
+          grep -q 'DO \$no_go\$' scripts/sql/20261117_pr108_session_bound_vendor_lock_REVIEW_ONLY.sql
+          grep -q 'RETURN FOUND;' scripts/sql/20261117_dev_finance_po_vendor_token_48_64_compat.sql
+          grep -q 'session_user' scripts/sql/20261117_dev_finance_po_vendor_token_48_64_compat.sql
+          grep -q 'f74ae1995c4ec52505b06624c6010950' scripts/sql/20261117_dev_finance_po_vendor_token_48_64_compat.sql
+          ! grep -Eq 'ALTER ROLE bizportal_finance_(cst|diva)_login_dev|GRANT .* ON public.mkt_purchase_orders TO' scripts/sql/20261117_dev_finance_po_vendor_token_48_64_compat.sql
+          echo PR125_SOURCE_SECURITY_GUARDS_PASS
+      - name: Pull approved PostgreSQL image
+        env:
+          PR123_POSTGRES_IMAGE: ${{ matrix.postgres }}
+        run: docker pull "$PR123_POSTGRES_IMAGE"
+      - name: Real session_user parent lock with 48/64 tokens and exact rollback
+        env:
+          PR123_POSTGRES_IMAGE: ${{ matrix.postgres }}
+        run: bash scripts/tests/pr125-run-48-64-token-compat-disposable.sh
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Frozen dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Keep canonical token generator and secure vendor route behavior
+        run: |
+          pnpm --dir artifacts/api-server exec vitest run \
+            src/lib/services/mktVendorPoTokenService.dev-compat.test.ts \
+            src/routes/dev-vendor-finance-session.test.ts \
+            src/lib/services/mktVendorInvoiceParentLock.dev.test.ts
+      - name: Canonical API and database TypeScript
+        run: pnpm --dir artifacts/api-server typecheck
+      - name: No tracked source/SQL mutation during test
+        run: git diff --exit-code -- artifacts/api-server/src lib/db/src scripts/sql scripts/tests pnpm-lock.yaml
