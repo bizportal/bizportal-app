@@ -1,5 +1,6 @@
 "use strict";
 // BUILD ONLY. Does not connect, execute cleanup, or change any runtime.
+// Output is cleanup-only; it does not test company connectivity or Finance readiness.
 // --check must pass before --recover-reviewed with the exact marker flag.
 const { readFileSync } = require("node:fs");
 const { createHash } = require("node:crypto");
@@ -17,7 +18,17 @@ const finalizerStart = source.indexOf("main().catch(error => {");
 if (mainStart < 0 || finalizerStart <= mainStart) throw new Error("RECOVERY_ENTRY_BOUNDARY_CHANGED");
 const markerDeclaration = 'const marker = `QA-DEV-INVACCEPT-${Date.now()}-${randomBytes(4).toString("hex")}`;';
 if (source.split(markerDeclaration).length !== 2) throw new Error("RECOVERY_MARKER_BOUNDARY_CHANGED");
-let prefix = source.slice(0, mainStart).replace(markerDeclaration,
+// Physically exclude business preflight, seeding and vendor/API exercises.
+// Preserve the reviewed configuration, PDF proof and cleanup implementations.
+const boundaries = ["async function preflight() {", "function invoicePdf(reference: string): Buffer {",
+  "async function vendorRequest(", "async function cleanup() {"];
+if (boundaries.some(value => source.split(value).length !== 2)) throw new Error("RECOVERY_CLEANUP_ONLY_BOUNDARY_CHANGED");
+const [preflightStart, pdfStart, vendorStart, cleanupStart] = boundaries.map(value => source.indexOf(value));
+if (!(preflightStart < pdfStart && pdfStart < vendorStart && vendorStart < cleanupStart && cleanupStart < mainStart)) {
+  throw new Error("RECOVERY_CLEANUP_ONLY_ORDER_CHANGED");
+}
+let prefix = (source.slice(0, preflightStart) + source.slice(pdfStart, vendorStart) +
+  source.slice(cleanupStart, mainStart)).replace(markerDeclaration,
   'const marker = "QA-DEV-INVACCEPT-1794925669984-3279c776";');
 // Strengthen only this recovery artifact: recheck and lock the exact reviewed
 // graph inside each existing cleanup transaction, immediately before deletion.
@@ -29,8 +40,9 @@ if (prefix.split(deletionStage).length !== 2) throw new Error("RECOVERY_STORAGE_
 prefix = prefix.replace(deletionStage,
   '        requireThat(path === recoveryFixtures.find(row => row.companyId === f.companyId)?.objectPath, "RECOVERY_EXACT_PRIVATE_OBJECT_PATH");\n' + deletionStage);
 const recovery = readFileSync(path.join(__dirname, "recover-dev-vendor-3279c776.ts"), "utf8");
+const cleanupPreflight = readFileSync(path.join(__dirname, "recovery-dev-admin-preflight-3279c776.ts"), "utf8");
 load("esbuild").build({
-  stdin: { contents: prefix + recovery + "\n" + source.slice(finalizerStart),
+  stdin: { contents: prefix + cleanupPreflight + recovery + "\n" + source.slice(finalizerStart),
     resolveDir: __dirname, sourcefile: "reviewed-dev-vendor-recovery-3279c776.ts", loader: "ts" },
   outfile: path.join(root, "artifacts/api-server/.dev-vendor-recovery-3279c776.mjs"),
   bundle: true, platform: "node", format: "esm", target: "node22", packages: "bundle", logLevel: "warning",
