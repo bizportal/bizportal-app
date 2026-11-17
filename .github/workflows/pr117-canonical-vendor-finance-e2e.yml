@@ -19,6 +19,7 @@ on:
       - 'scripts/tests/pr117-*'
       - 'scripts/sql/20261117_pr107_*'
       - 'scripts/sql/20261117_pr108_*'
+      - 'scripts/sql/20261117_pr120_live_company_finance_readonly_preflight.sql'
       - '.github/workflows/pr117-canonical-vendor-finance-e2e.yml'
   workflow_dispatch:
 
@@ -55,6 +56,23 @@ jobs:
             scripts/sql/20261117_pr108_session_bound_vendor_lock_ROLLBACK_REVIEW_ONLY.sql; do
             grep -q 'DO \$no_go\$' "$proposal"
           done
+      - name: Finance live-readiness preflight remains strictly read-only
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          source=Path('scripts/sql/20261117_pr120_live_company_finance_readonly_preflight.sql').read_text()
+          stripped=re.sub(r'--[^\\n]*','',source)
+          assert stripped.count(';')==1, 'preflight must be one SELECT statement'
+          assert re.match(r'(?is)^\\s*WITH\\b',stripped), 'preflight must start with CTE'
+          assert re.search(r'(?is)\\bSELECT\\s+secured_table_count',stripped), 'preflight must return details'
+          forbidden=r'(?im)^\\s*(?:CREATE|ALTER|DROP|GRANT|REVOKE|INSERT|UPDATE|DELETE|TRUNCATE|DO|CALL|COPY|BEGIN|COMMIT|SET)\\b'
+          assert not re.search(forbidden,stripped), 'preflight must not mutate DB or role'
+          assert 'f69295cc7f66f8bc4645a6fc02e2f36e' in stripped, 'baseline fingerprint missing'
+          assert 'AS preflight_pass' in stripped, 'final pass predicate missing'
+          print('PR120_READONLY_LIVE_PREFLIGHT_SOURCE_GUARD_PASS')
+          PY
       - name: Build original canonical Vendor Invoice and AP/Accounting services for isolated PG
         run: node scripts/tests/pr117-build-vendor-service.cjs
       - name: Test real source services with original PR107/108 RLS and native parent row locks
