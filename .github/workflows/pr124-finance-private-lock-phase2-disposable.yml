@@ -7,6 +7,7 @@ on:
     paths:
       - 'scripts/sql/20261117_dev_finance_parent_locks_phase2*'
       - 'scripts/tests/pr124-run-private-finance-parent-lock-disposable.sh'
+      - 'scripts/tests/pr124-run-nonsuperuser-owner-transfer-disposable.sh'
       - '.github/workflows/pr124-finance-private-lock-phase2-disposable.yml'
   workflow_dispatch:
 
@@ -32,6 +33,8 @@ jobs:
           grep -q 'SECURITY DEFINER SET search_path=pg_catalog,pg_temp' scripts/sql/20261117_dev_finance_parent_locks_phase2.sql
           grep -q 'session_user' scripts/sql/20261117_dev_finance_parent_locks_phase2.sql
           grep -q 'REVOKE ALL ON FUNCTION' scripts/sql/20261117_dev_finance_parent_locks_phase2.sql
+          grep -q 'GRANT bizportal_finance_parent_lock_owner_dev TO postgres WITH SET TRUE;' scripts/sql/20261117_dev_finance_parent_locks_phase2.sql
+          grep -q 'REVOKE bizportal_finance_parent_lock_owner_dev FROM postgres GRANTED BY postgres;' scripts/sql/20261117_dev_finance_parent_locks_phase2.sql
           ! grep -Eq 'ALTER ROLE bizportal_finance_(cst|diva)_login_dev|CREATE ROLE bizportal_finance_(cst|diva)_login_dev' scripts/sql/20261117_dev_finance_parent_locks_phase2.sql
           echo PR124_ORIGINAL_GUARDS_AND_PRIVATE_FN_SECURITY_PASS
       - name: Pull pinned PostgreSQL image for no-network disposable test
@@ -42,5 +45,9 @@ jobs:
         env:
           PR123_POSTGRES_IMAGE: ${{ matrix.postgres }}
         run: bash scripts/tests/pr124-run-private-finance-parent-lock-disposable.sh
+      - name: Independently verify non-superuser temporary SET grant and full revocation
+        env:
+          PR124_POSTGRES_IMAGE: ${{ matrix.postgres }}
+        run: bash scripts/tests/pr124-run-nonsuperuser-owner-transfer-disposable.sh
       - name: No source or reviewed migration modifications
         run: git diff --exit-code -- scripts/sql scripts/tests
