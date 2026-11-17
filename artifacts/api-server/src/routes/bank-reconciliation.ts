@@ -8469,6 +8469,38 @@ router.post("/bank-reconciliation/:mutationId/vendor-invoice-payment-batch", asy
       throw new ApprovalError("Satu atau lebih invoice vendor tidak ditemukan dalam perusahaan aktif", 404, "INVOICE_NOT_FOUND");
     }
 
+    // PR95 fail-closed source-journal custody: do not produce a second bank
+    // debit from a mutation for an invoice already linked to a posted
+    // Bank Disbursement journal. A future source-journal reuse flow must
+    // verify ownership and bank COA before lifting this block.
+    const postedSourceDisbursement = await client.query<{
+      vendor_invoice_id: number; disbursement_id: number; entry_id: number;
+    }>(
+      `select bdi.vendor_invoice_id, bd.id as disbursement_id, bd.entry_id
+         from public.bank_disbursement_items bdi
+         join public.bank_disbursements bd on bd.id = bdi.disbursement_id
+         join public.accounting_entries ae on ae.id = bd.entry_id
+          and ae.company_id = bd.company_id
+        where bdi.vendor_invoice_id = any($1::bigint[])
+          and bd.company_id = $2
+          and bd.status = 'posted'
+          and bd.void_entry_id is null
+          and ae.status = 'posted'
+          and ae.cancelled_at is null
+        order by bd.id
+        limit 1
+        for update of bd`,
+      [vendorInvoiceIds, companyId],
+    );
+    if (postedSourceDisbursement.rows[0]) {
+      throw new ApprovalError(
+        "Invoice vendor sudah memiliki jurnal Bank Disbursement posted. " +
+        "Rekonsiliasi harus memakai jurnal sumber yang terverifikasi, bukan membuat debit bank kedua.",
+        409,
+        "VENDOR_INVOICE_SOURCE_JOURNAL_REUSE_REQUIRED",
+      );
+    }
+
     const taxResult = await client.query<{
       invoice_id: number;
       tax_type: string;
