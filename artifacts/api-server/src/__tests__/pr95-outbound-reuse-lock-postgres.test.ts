@@ -77,6 +77,15 @@ suite("PR95 locked outbound source journal preflight on disposable PostgreSQL 16
     const recheck=await client.query("select count(*)::int as n from public.bank_reconciliation_matches");
     expect(recheck.rows[0].n).toBe(0);
   });
+  it("rejects a shared posted disbursement containing a second invoice, then rolls back",async()=>{
+    await client.query("BEGIN");
+    try {
+      await client.query("insert into public.bank_disbursement_items values(99,2,8)");
+      await expect(lock()).rejects.toThrow("PR95_OUTBOUND_SOURCE_MULTI_INVOICE");
+    } finally { await client.query("ROLLBACK"); }
+    const r=await client.query("select count(*)::int as n from public.bank_disbursement_items where disbursement_id=2");
+    expect(r.rows[0].n).toBe(1);
+  });
   it("rejects bank direction mismatch and voided source journal atomically",async()=>{
     await client.query("BEGIN");
     try{
