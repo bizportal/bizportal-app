@@ -7,6 +7,9 @@ on:
     paths:
       - 'artifacts/api-server/src/lib/posting-engine/customer-portal-sales-invoice-owner-dev.ts'
       - 'artifacts/api-server/src/lib/logger.ts'
+      - 'artifacts/api-server/src/routes/dev-auth.ts'
+      - 'artifacts/api-server/src/routes/local-production-auth.ts'
+      - 'artifacts/api-server/src/routes/dev-superadmin-password-http.test.ts'
       - 'artifacts/api-server/src/lib/accounting/outboxProcessor.ts'
       - 'artifacts/api-server/src/index.ts'
       - 'artifacts/api-server/src/lib/accounting/outboxProcessor.customer-portal-dev.test.ts'
@@ -53,6 +56,13 @@ jobs:
           TZ: Asia/Jakarta
         run: |
           pnpm --dir artifacts/api-server exec vitest run             src/lib/__tests__/legacy-posting-owner-transactions.test.ts             src/lib/posting-engine/customer-portal-sales-invoice-owner-dev.test.ts             src/lib/accounting/outboxProcessor.customer-portal-dev.test.ts
+      - name: Signed BizPortal Super Admin DEV password role/revocation regression
+        env:
+          APP_ENV: development
+          NODE_ENV: test
+          TZ: Asia/Jakarta
+        run: |
+          pnpm --dir artifacts/api-server exec vitest run src/routes/dev-superadmin-password-http.test.ts
       - name: Protect existing worker; keep new strict consumer default OFF
         shell: bash
         run: |
