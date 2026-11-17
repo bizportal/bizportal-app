@@ -59,6 +59,7 @@ jobs:
         run: |
           pnpm --dir artifacts/api-server exec vitest run \
             src/routes/mktVendorInvoice.dev-compat.test.ts \
+            src/routes/dev-otp-to-finance-http.test.ts \
             src/lib/services/mktVendorInvoiceParentLock.dev.test.ts \
             src/lib/services/mktMarketplaceCompanyScope.test.ts \
             src/routes/dev-marketplace-finance-writer.test.ts \
