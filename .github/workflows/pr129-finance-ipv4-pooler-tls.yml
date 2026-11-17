@@ -43,7 +43,22 @@ jobs:
           pnpm --dir artifacts/api-server exec vitest run \
             src/routes/dev-finance-company-role-routing.test.ts \
             src/lib/gcp-systemd-bootstrap.test.ts
+      - name: Full credential-free API regression suite
+        env:
+          APP_ENV: development
+          NODE_ENV: test
+          TZ: Asia/Jakarta
+        run: pnpm --dir artifacts/api-server exec vitest run --maxWorkers=2
       - name: Canonical API and database TypeScript
         run: pnpm --dir artifacts/api-server typecheck
+      - name: Production source bundles (without runtime credentials)
+        env:
+          NODE_ENV: production
+          BIZPORTAL_SIGNED_PASSWORD_ENABLED_DEV: 'true'
+          BIZPORTAL_SIGNED_OTP_ENABLED_DEV: 'false'
+        run: |
+          pnpm --filter @workspace/api-server run build
+          pnpm --filter @workspace/bizportal run build
+          node scripts/prepare-hostinger.mjs
       - name: Source remains clean
         run: git diff --exit-code -- lib/db/src artifacts/api-server/src pnpm-lock.yaml
