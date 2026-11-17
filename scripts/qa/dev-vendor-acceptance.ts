@@ -131,9 +131,11 @@ async function po14Fingerprint() {
     'handoffs',(select count(*) from public.mkt_accounting_handoffs where mkt_purchase_order_id=14)) as state`)).rows[0].state;
 }
 async function preflight() {
-  stage = "runtime_preflight"; configureFromVerifiedServices();
+  stage = "runtime_preflight_configuration"; configureFromVerifiedServices();
+  stage = "runtime_preflight_connect_admin";
   app = await import("../../lib/db/src/index");
   admin = await app.pool.connect();
+  stage = "runtime_preflight_admin_tls";
   const identity = (await admin.query(`select current_user::text usr,session_user::text login,
     current_database() db,(select ssl from pg_stat_ssl where pid=pg_backend_pid()) tls`)).rows[0];
   const clientTls = (admin as PoolClient & {
@@ -147,20 +149,25 @@ async function preflight() {
   passed("ADMIN_IDENTITY_AND_CLIENT_TLS_VERIFIED", {
     connection: adminConnectsDirectly ? "direct" : "pooler", backendTls: identity.tls === true,
   });
+  stage = "runtime_preflight_parent_lock";
   const lock = (await admin.query(`select md5(prosrc) fingerprint,prosecdef from pg_proc
     where oid=to_regprocedure('finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text)')`)).rows[0];
   requireThat(lock?.fingerprint === "f74ae1995c4ec52505b06624c6010950" && lock.prosecdef === true, "LOCK_FUNCTION_DRIFT");
+  stage = "runtime_preflight_triggers";
   const triggers = await admin.query(`select count(*)::int n from pg_trigger t
     join pg_class c on c.oid=t.tgrelid join pg_namespace n on n.oid=c.relnamespace
     where n.nspname='public' and not t.tgisinternal and c.relname=any($1::text[])`, [PARENT_TABLES]);
   requireThat(triggers.rows[0].n === 0, "NEW_PARENT_OR_FINANCE_TRIGGER_REQUIRES_REVIEW");
+  stage = "runtime_preflight_private_storage";
   const bucket = (await admin.query("select public from storage.buckets where id='private-uploads'")).rows[0];
   requireThat(bucket?.public === false, "PRIVATE_STORAGE_BUCKET");
+  stage = "runtime_preflight_protected_po";
   baselinePo14 = await po14Fingerprint();
   const baseline = baselinePo14 as { invoices: number; ap: number; handoffs: number };
   requireThat(baseline.invoices === 0 && baseline.ap === 0 && baseline.handoffs === 0, "PO14_BASELINE_NOT_ZERO");
   const { sql } = await import("drizzle-orm");
   for (const companyId of COMPANY_IDS) {
+    stage = `runtime_preflight_company_${companyId}_read_only`;
     await app.withMarketplaceFinanceDevReadOnlyTransaction(companyId, async tx => {
       const expected = companyId === 1 ? "bizportal_finance_cst_login_dev" : "bizportal_finance_diva_login_dev";
       const result = await tx.execute(sql`select current_user::text usr,session_user::text login,
