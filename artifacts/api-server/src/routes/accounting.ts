@@ -119,6 +119,20 @@ function requestedCompanyId(req: Request): number | null {
   return companyId;
 }
 
+/** Strict company scope for DEV-only Bank Disbursement readers.
+ * A company passed in the URL cannot itself grant tenant access.
+ * Do not change the legacy multi-company Accounting endpoints here.
+ */
+function bankDisbursementReadCompanyId(req: Request): number | null {
+  const actorCompany = (req as AccountingRequest).accountingUser?.companyId;
+  if (typeof actorCompany !== "number" ||
+      !Number.isSafeInteger(actorCompany) || actorCompany <= 0) {
+    return null;
+  }
+  const requested = requestedCompanyId(req);
+  return requested === actorCompany ? actorCompany : null;
+}
+
 function companyFilter(req: Request, values: QueryValue[], column = "gl.company_id"): string {
   const companyId = requestedCompanyId(req);
   if (companyId === null) return "";
@@ -1551,7 +1565,7 @@ router.get("/accounting/bank-disbursements", async (req, res): Promise<void> => 
   res.setHeader("Cache-Control", "private, no-store");
   let companyId: number | null;
   try {
-    companyId = requestedCompanyId(req);
+    companyId = bankDisbursementReadCompanyId(req);
   } catch {
     res.status(400).json({ error: "Invalid company" });
     return;
@@ -1623,7 +1637,7 @@ router.get("/accounting/bank-disbursements/:id", async (req, res): Promise<void>
   }
   let companyId: number | null;
   try {
-    companyId = requestedCompanyId(req);
+    companyId = bankDisbursementReadCompanyId(req);
   } catch {
     res.status(400).json({ error: "Invalid company" });
     return;
@@ -1718,7 +1732,7 @@ router.get("/accounting/bank-disbursements/vendor-invoices/outstanding", async (
   res.setHeader("Cache-Control", "private, no-store");
   let companyId: number | null;
   try {
-    companyId = requestedCompanyId(req);
+    companyId = bankDisbursementReadCompanyId(req);
   } catch {
     res.status(400).json({ error: "Invalid company" });
     return;
