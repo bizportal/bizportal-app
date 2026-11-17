@@ -12,6 +12,20 @@
  // This source-only candidate does not grant anything on live CST-DEV.
  await admin.query((await import('node:fs')).readFileSync(
    '__ROOT__/scripts/payroll-calculate/cst-dev-settlement-18table-readiness.sql','utf8'));
+ // Real email OTP handler creates and consumes records on this fixture DB,
+ // not CST-DEV. The only stub is the external SMTP send; it captures the
+ // actual randomly generated OTP for a subsequent real HTTP verification.
+ await admin.query(`CREATE TABLE public.bizportal_email_otp_codes(
+  id bigserial PRIMARY KEY,email text NOT NULL,request_ip text NOT NULL,
+  purpose text NOT NULL,code_hash text,attempts integer NOT NULL DEFAULT 0,
+  expires_at timestamptz NOT NULL,verified_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+ )`);
+ // The actual DEV environment has an inactive legacy admin sharing the
+ // pinned Super Admin email. Prove this sign-in selects the exact user ID.
+ await admin.query("ALTER TABLE public.users DROP CONSTRAINT users_email_key");
+ await admin.query(`INSERT INTO public.users(id,email,role,company_id,status,is_active)
+ VALUES('synthetic-inactive-admin','admin@example.test','admin',NULL,'inactive',false)`);
  const calcUrl=new URL(process.env.PAYROLL_PG_E2E_URL!);
  calcUrl.username='bizportal_payroll_dev';calcUrl.password='fixture-calc-only-2026';
  const approveUrl=new URL(process.env.PAYROLL_PG_E2E_URL!);
@@ -21,6 +35,7 @@
  (globalThis as any).__payrollIntegrated={admin,calculate:calcPool,approve:approvePool};
  const previousEnvKeys=['APP_ENV','NODE_ENV','SESSION_SECRET','BIZPORTAL_SESSION_SECRET',
  'BIZPORTAL_SIGNED_OTP_ENABLED_DEV','BIZPORTAL_SIGNED_PASSWORD_ENABLED_DEV',
+ 'BIZPORTAL_SIGNED_OTP_ACCOUNT_EMAIL_DEV','BIZPORTAL_SIGNED_OTP_ACCOUNT_ID_DEV',
  'PAYROLL_DEV_CALCULATE_ENABLED','PAYROLL_DEV_CALCULATE_ALLOWED_ORIGIN',
  'PAYROLL_DEV_SUPER_ADMIN_APPROVAL_ENABLED','PAYROLL_DEV_ATOMIC_POSTING_ENABLED',
  'PAYROLL_DEV_ATOMIC_ROUTE_MOUNT_ENABLED'] as const;
@@ -30,6 +45,8 @@
  delete process.env.BIZPORTAL_SESSION_SECRET;
  process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV='true';
  delete process.env.BIZPORTAL_SIGNED_PASSWORD_ENABLED_DEV;
+ process.env.BIZPORTAL_SIGNED_OTP_ACCOUNT_EMAIL_DEV='admin@example.test';
+ process.env.BIZPORTAL_SIGNED_OTP_ACCOUNT_ID_DEV='synthetic-super-admin';
  process.env.PAYROLL_DEV_CALCULATE_ENABLED='true';
  process.env.PAYROLL_DEV_CALCULATE_ALLOWED_ORIGIN='http://127.0.0.1:19002';
  process.env.PAYROLL_DEV_SUPER_ADMIN_APPROVAL_ENABLED='true';
@@ -44,6 +61,7 @@
  const calcRoute=await import('__ROOT__/artifacts/api-server/src/routes/payroll-calculate-http.ts');
  const approvalRoute=await import('__ROOT__/artifacts/api-server/src/routes/payroll-super-admin-approval.ts');
  const postingRoute=await import('__ROOT__/artifacts/api-server/src/routes/payroll-accounting-http.ts');
+ const otpRouter=(await import('__ROOT__/artifacts/api-server/src/routes/local-production-auth.ts')).default;
  // This is the actual production-source server binder and its real restricted
  // PostgreSQL read-only catalog preflight. No substitution is permitted here.
  const verifiedPostingGate=await postingRoute.bindDevPayrollAtomicHttpRuntime({
@@ -56,6 +74,7 @@
  app.use((req:any,res:any,next:any)=>{
    req.log={error(){},warn(){}};next();
  });
+ app.use('/api',otpRouter);
  app.use('/api',calcRoute.createDevPayrollCalculateRouter());
  app.use('/api',postingRoute.createPayrollAtomicAccountingRouter());
  const scoped=Router();
@@ -83,7 +102,7 @@
   });
   return raw.split(';')[0];
  };
- const signedCookie=makeCookie();
+ let signedCookie='';
  const request=async(path:string,method='GET',body?:unknown,cookie=signedCookie)=>{
   const headers:Record<string,string>={Origin:'http://127.0.0.1:19002',cookie};
   if(method==='POST')headers['content-type']='application/json';
@@ -124,12 +143,63 @@
    expectedDigest:digest,postingDate:'2026-11-17'
  });
  try{
+  // The *real* email OTP send handler generates a random 6-digit code and
+  // writes its bcrypt hash to disposable PostgreSQL. Only the actual SMTP
+  // network send is replaced by an in-memory test mailbox.
+  const otpSend=await request('/api/auth/email-otp/send','POST',{email:'admin@example.test'},'');
+  assert.equal(otpSend.status,202,'Original OTP send handler must accept pinned Super Admin');
+  const syntheticMail=(globalThis as any).__payrollIntegrated;
+  assert.equal(syntheticMail.otpSendCount,1);
+  const deliveredCode=syntheticMail.otpCode;
+  assert.match(deliveredCode,/^[1-9][0-9]{5}$/);
+  const storedOtp=await admin.query(`SELECT code_hash,verified_at,attempts
+    FROM public.bizportal_email_otp_codes WHERE email='admin@example.test'`);
+  assert.equal(storedOtp.rows.length,1);
+  assert.ok(storedOtp.rows[0].code_hash);
+  assert.equal(storedOtp.rows[0].verified_at,null);
+  assert.equal(storedOtp.rows[0].attempts,0);
+  assert.equal(JSON.stringify(storedOtp.rows).includes(deliveredCode),false);
+  pass('real DEV email OTP send stores bcrypt hash; test SMTP captures code without external delivery');
+
+  const wrong=await request('/api/auth/email-otp/verify','POST',{
+   email:'admin@example.test',code:'000000'
+  },'');
+  assert.equal(wrong.status,400,'Incorrect actual OTP must be rejected');
+  const verified=await request('/api/auth/email-otp/verify','POST',{
+   email:'admin@example.test',code:deliveredCode
+  },'');
+  assert.equal(verified.status,200,'Original OTP verification must issue signed session');
+  const verifiedBody=await verified.json();
+  assert.equal(verifiedBody?.user?.id,'synthetic-super-admin');
+  assert.equal(verifiedBody?.user?.role,'super_admin');
+  const setCookie=verified.headers.get('set-cookie')??'';
+  assert.match(setCookie,/bizportal_supabase_session=/);
+  assert.match(setCookie,/HttpOnly/);
+  assert.match(setCookie,/Secure/);
+  signedCookie=setCookie.split(';')[0];
+  const replayVerify=await request('/api/auth/email-otp/verify','POST',{
+   email:'admin@example.test',code:deliveredCode
+  },'');
+  assert.equal(replayVerify.status,400,'Consumed one-time OTP must not be accepted again');
+  const otpAfter=await admin.query(`SELECT verified_at IS NOT NULL AS consumed, attempts
+   FROM public.bizportal_email_otp_codes WHERE email='admin@example.test'`);
+  assert.equal(otpAfter.rows[0].consumed,true);
+  assert.equal(otpAfter.rows[0].attempts,1);
+  delete syntheticMail.otpCode;
+  pass('wrong OTP denied; real verify creates pinned signed session and consumed OTP cannot replay');
+
   const digest=await prepare();
   const before=await state();
   assert.deepEqual(before,{entries:0,lines:0,audit:0,outbox:0,
    balance:'500000.00',reservation:'prepared',status:'reviewed',
    entry_id:null,payments:0,repayments:0});
   pass('one signed HTTP Calculate and approval persist a clean Reviewed run and prepared hold');
+  await admin.query("UPDATE public.users SET is_active=false,status='inactive' WHERE id='synthetic-super-admin'");
+  const revokedPost=await post(digest);
+  assert.equal(revokedPost.status,403,'revoked OTP actor must be refused on every financial request');
+  assert.deepEqual(await state(),before);
+  await admin.query("UPDATE public.users SET is_active=true,status='active' WHERE id='synthetic-super-admin'");
+  pass('original OTP cookie cannot post after Super Admin deactivation or change approved data');
   const postingPath='/api/payroll/runs/32/post-accounting?companyId=1';
   const postingBody={expectedDigest:digest,postingDate:'2026-11-17'};
   assert.equal((await request(postingPath,'POST',postingBody,'')).status,401);
@@ -248,7 +318,7 @@
   assert.equal(recovered.payments,0);
   pass('original signed-approved run can recover once after a fully rolled-back failure');
   console.log('PAYROLL_SIGNED_CALCULATE_APPROVAL_NATIVE_HTTP_LEDGER_POSTGRES_PASS',integratedPass,
-   'SIGNED_COOKIE_ISSUED_BY_SYNTHETIC_FIXTURE',true,'REAL_EMAIL_OTP_SENT',false,
+   'SIGNED_COOKIE_ISSUED_BY_REAL_OTP_HANDLER',true,'SMTP_NETWORK_DELIVERY_USED',false,
    'LIVE_CST_DEV_OR_PROD_USED',false,'SALARY_TRANSFER_SENT',false);
  }finally{
    await new Promise<void>(resolve=>server.close(()=>resolve()));

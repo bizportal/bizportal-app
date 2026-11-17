@@ -39,8 +39,14 @@ function integratedBoundaryPlugin(){
  const payroll="const state=()=>{if(!globalThis.__payrollIntegrated)throw Error('INTEGRATED_DB_NOT_READY');return globalThis.__payrollIntegrated;}; export const payrollDedicatedEnabled=()=>!!state().calculate; export const getPayrollPool=()=>state().calculate; export async function setPayrollCompanyScope(c,id){await c.query(\"SELECT set_config('app.payroll_company_id',$1,true)\",[String(id)]);} export async function payrollScopedQuery(company,sql,args){const client=await state().calculate.connect();try{await client.query('BEGIN READ ONLY');await setPayrollCompanyScope(client,company);const result=await client.query(sql,args);await client.query('COMMIT');return result;}catch(error){await client.query('ROLLBACK').catch(()=>undefined);throw error;}finally{client.release();}}";
  const approver="const state=()=>{if(!globalThis.__payrollIntegrated)throw Error('INTEGRATED_DB_NOT_READY');return globalThis.__payrollIntegrated;}; export const devApprovalDedicatedEnabled=()=>!!state().approve;export const getDevApprovalPool=()=>state().approve;export async function setDevApprovalCompanyScope(c,id){await c.query(\"SELECT set_config('app.payroll_company_id',$1,true)\",[String(id)]);}";
  const prod="export const payrollProdDedicatedRequired=()=>false;export const payrollReadOnlyReady=()=>false;export const payrollProdSharedReadOnlyEnabled=()=>false;export const payrollDedicatedEnabled=()=>false;export const getPayrollPool=()=>{throw Error('PROD_POOL_FORBIDDEN');};export async function payrollScopedQuery(){throw Error('PROD_POOL_FORBIDDEN');}export async function setPayrollCompanyScope(){throw Error('PROD_POOL_FORBIDDEN');}";
- const map={db,payroll,approver,prod};
+ const smtp="export async function sendAdminLoginOtpEmail(email,code){const fixture=globalThis.__payrollIntegrated;if(!fixture||email!=='admin@example.test'||!/^[0-9]{6}$/.test(code))throw Error('DISPOSABLE_SMTP_BOUNDARY_INVALID');fixture.otpCode=code;fixture.otpSendCount=(fixture.otpSendCount||0)+1;}";
+ const map={db,payroll,approver,prod,smtp};
  return {name:'payroll-integrated-disposable-only',setup(build){
+  // Only the original email-auth SMTP call is captured for this test.
+  // Its OTP generation, database hashing, verification and session stay real.
+  build.onResolve({filter:/^\.\.\/lib\/smtp$/},args=>
+    args.importer.endsWith('/routes/local-production-auth.ts')
+      ? {path:'smtp',namespace:'payroll-integrated'}:null);
   build.onResolve({filter:/^@workspace\/db$/},()=>({path:'db',namespace:'payroll-integrated'}));
   build.onResolve({filter:/^\.\/payroll-db$/},()=>({path:'payroll',namespace:'payroll-integrated'}));
   build.onResolve({filter:/^\.\/payroll-dev-approval-db$/},()=>({path:'approver',namespace:'payroll-integrated'}));
