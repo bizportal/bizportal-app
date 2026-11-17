@@ -132,7 +132,7 @@ async function preflight() {
     identity.db === "postgres" && identity.tls === true, "ADMIN_SESSION_IDENTITY_OR_TLS");
   const lock = (await admin.query(`select md5(prosrc) fingerprint,prosecdef from pg_proc
     where oid=to_regprocedure('finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text)')`)).rows[0];
-  requireThat(lock?.fingerprint === "06d261a1ec4908c31b681d7a0f1f26cd" && lock.prosecdef === true, "LOCK_FUNCTION_DRIFT");
+  requireThat(lock?.fingerprint === "f74ae1995c4ec52505b06624c6010950" && lock.prosecdef === true, "LOCK_FUNCTION_DRIFT");
   const triggers = await admin.query(`select count(*)::int n from pg_trigger t
     join pg_class c on c.oid=t.tgrelid join pg_namespace n on n.oid=c.relnamespace
     where n.nspname='public' and not t.tgisinternal and c.relname=any($1::text[])`, [PARENT_TABLES]);
