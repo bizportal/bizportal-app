@@ -32,6 +32,20 @@ def require(ok: bool, code: str) -> None:
         raise RuntimeError(code)
 
 
+def release_target(target: Path, commit: str) -> Path:
+    require(re.fullmatch(r"[0-9a-f]{40}", commit) is not None, "FULL_COMMIT_SHA_REQUIRED")
+    allowed = {TARGET, Path(str(TARGET) + "-" + commit[:12])}
+    require(target in allowed, "TARGET_SOURCE_SUFFIX_MISMATCH")
+    require(not target.is_symlink(), "TARGET_SYMLINK_NOT_ALLOWED")
+    return target
+
+
+def separate_source_target(source: Path, target: Path) -> None:
+    source_path, target_path = source.resolve(), target.resolve()
+    require(not source_path.is_relative_to(target_path)
+            and not target_path.is_relative_to(source_path), "SOURCE_TARGET_OVERLAP")
+
+
 def digest(path: Path) -> str:
     result = hashlib.sha256()
     with path.open("rb") as stream:
@@ -143,11 +157,12 @@ def publish(artifact: Path, target: Path) -> None:
         raise OSError(ctypes.get_errno(), "ATOMIC_ARTIFACT_PUBLISH_REFUSED")
 
 
-def build(source: Path, commit: str, *, offline: bool) -> None:
-    require(re.fullmatch(r"[0-9a-f]{40}", commit) is not None, "FULL_COMMIT_SHA_REQUIRED")
+def build(source: Path, commit: str, *, offline: bool, target: Path = TARGET) -> None:
+    target = release_target(target, commit)
     require(platform.system() == "Linux" and platform.machine() == "x86_64", "LINUX_X64_REQUIRED")
-    require(not TARGET.exists() and not TARGET.is_symlink(), "TARGET_ALREADY_EXISTS")
+    require(not target.exists(), "TARGET_ALREADY_EXISTS")
     source = source.resolve(strict=True)
+    separate_source_target(source, target)
     env = build_env(offline=offline)
     require(run(["git", "config", "--get", "remote.origin.url"], source, env, capture=True) == ORIGIN,
             "OFFICIAL_SOURCE_ORIGIN_REQUIRED")
@@ -157,8 +172,8 @@ def build(source: Path, commit: str, *, offline: bool) -> None:
     require(node.startswith("v22."), "NODE_22_REQUIRED")
     pnpm = run(["pnpm", "--version"], source, env, capture=True)
     require(pnpm == PNPM_VERSION, "PNPM_10_33_0_REQUIRED")
-    require(TARGET.parent.is_dir(), "TARGET_PARENT_MISSING")
-    with tempfile.TemporaryDirectory(prefix=".bizportal-invoice-build-", dir=TARGET.parent) as temporary:
+    require(target.parent.is_dir(), "TARGET_PARENT_MISSING")
+    with tempfile.TemporaryDirectory(prefix=".bizportal-invoice-build-", dir=target.parent) as temporary:
         workspace = Path(temporary)
         checkout = workspace / "source"
         checkout.mkdir()
@@ -196,7 +211,7 @@ def build(source: Path, commit: str, *, offline: bool) -> None:
              "for(const n of ['sharp','bcryptjs','pdfkit'])r(n);"
              "console.log('runtime dependency load: PASS');"], artifact, env)
         manifest(artifact, {
-            "source_origin": ORIGIN, "source_commit": commit,
+            "source_origin": ORIGIN, "source_commit": commit, "artifact_target": str(target),
             "build_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
             "node": node, "pnpm": pnpm, "platform": "linux-x64",
             "lockfile_sha256": lock_sha, "offline_install": offline,
@@ -205,20 +220,22 @@ def build(source: Path, commit: str, *, offline: bool) -> None:
             "runtime_envfiles_loaded": False,
             "activation_performed": False,
         })
-        publish(artifact, TARGET)
-    print(json.dumps({"status": "BUILT_AND_STAGED_NOT_ACTIVE", "path": str(TARGET),
-                      "source_commit": commit, "bundle_sha256": digest(TARGET / "dist/index.mjs")}))
+        publish(artifact, target)
+    print(json.dumps({"status": "BUILT_AND_STAGED_NOT_ACTIVE", "path": str(target),
+                      "source_commit": commit, "bundle_sha256": digest(target / "dist/index.mjs")}))
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True, type=Path, help="Existing official Git checkout")
     parser.add_argument("--expected-commit", required=True, help="Exact integrated source SHA, 40 hex")
+    parser.add_argument("--target", type=Path, default=TARGET,
+                        help="Existing fixed target or /opt/bizportal-invoice-completion-20261117-<first12SHA>")
     parser.add_argument("--allow-registry", action="store_true",
                         help="Permit frozen-lockfile registry fetch if the existing pnpm store is incomplete")
     args = parser.parse_args()
     try:
-        build(args.source, args.expected_commit, offline=not args.allow_registry)
+        build(args.source, args.expected_commit, offline=not args.allow_registry, target=args.target)
     except (OSError, RuntimeError, ValueError, tarfile.TarError) as error:
         # No environment or credential-bearing subprocess output is included.
         print(json.dumps({"status": "BUILD_FAILED", "error": str(error)}))

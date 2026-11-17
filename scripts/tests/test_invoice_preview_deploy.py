@@ -18,6 +18,27 @@ spec.loader.exec_module(deploy)
 
 
 class DeployBoundaries(unittest.TestCase):
+    def test_release_target_binds_full_expected_source_and_dropin_path(self):
+        commit = "a" * 40
+        target = Path(str(deploy.DEFAULT_TARGET) + "-" + commit[:12])
+        self.assertEqual(deploy.release_target(target, commit), target)
+        for wrong in [Path(str(deploy.DEFAULT_TARGET) + "-" + "b" * 12),
+                      Path("/tmp") / target.name]:
+            with self.assertRaisesRegex(RuntimeError, "TARGET_SOURCE_SUFFIX_MISMATCH"):
+                deploy.release_target(wrong, commit)
+        with patch.object(deploy, "TARGET", target):
+            self.assertIn(f"WorkingDirectory={target}\n", deploy.drop_content("writer"))
+            self.assertIn(f"{target}/dist/index.mjs\n", deploy.drop_content("writer"))
+
+    def test_another_active_release_is_never_treated_as_our_baseline(self):
+        target = Path(str(deploy.DEFAULT_TARGET) + "-" + "a" * 12)
+        another = Path(str(deploy.DEFAULT_TARGET) + "-" + "b" * 12)
+        values = {"ActiveState": "active", "User": "bizpr81preview", "WorkingDirectory": str(another)}
+        with patch.object(deploy, "TARGET", target), \
+             patch.object(deploy, "property_of", side_effect=lambda _unit, name: values[name]):
+            with self.assertRaisesRegex(RuntimeError, "PREVIEW_SOURCE_CHANGED"):
+                deploy.current_baseline("a" * 40)
+
     def test_reload_transition_waits_for_401_and_never_accepts_old_404(self):
         # readiness, auth, old worker 404, new worker 401, then remaining gates
         replies = [200, 401, 404, 401, 401, 401, 404, 404]
@@ -82,12 +103,20 @@ class DeployBoundaries(unittest.TestCase):
         self.assertTrue(admitted("/api/mkt/admin/vendor-invoices/12/match"))
         self.assertTrue(admitted("/api/mkt/admin/ap-preparations/12/accounting-handoff"))
         self.assertTrue(admitted("/api/mkt/vendor-invoice/" + "a" * 64))
+        self.assertTrue(admitted("/api/mkt/vendor-invoice/" + "a" * 48))
+        for length in [48, 64]:
+            self.assertTrue(admitted("/api/mkt/vendor-invoice/" + "a" * length + "/invoices/12/submit"))
+        self.assertEqual(deploy.nginx_block().count("access_log off;"), 3)
         for path in [
             "/api/mkt/admin/vendor-invoices/12/settle",
             "/api/mkt/admin/ap-preparations/12/payment",
             "/api/mkt/admin/vendor-invoices/12/match/extra",
             "/api/mkt/admin/vendor-invoices/00/match",
             "/api/mkt/vendor-invoice/" + "a" * 63,
+            "/api/mkt/vendor-invoice/" + "a" * 47,
+            "/api/mkt/vendor-invoice/" + "a" * 49,
+            "/api/mkt/vendor-invoice/" + "a" * 65,
+            "/api/mkt/vendor-invoice/" + "g" * 48,
             "/api/mkt/vendor-invoice/" + "g" * 64,
             "/api/accounting/entries/12/post",
         ]:
@@ -152,6 +181,7 @@ class DeployBoundaries(unittest.TestCase):
             target = Path(temporary)
             commit = "a" * 40
             (target / "source-commit.txt").write_text(commit)
+            (target / "release-metadata.json").write_text(json.dumps({"source_commit": commit, "artifact_target": str(target)}))
             (target / "RELEASE_SHA256SUMS.txt").write_text("0" * 64 + "  ../outside\n")
             with patch.object(deploy, "TARGET", target):
                 with self.assertRaisesRegex(RuntimeError, "ARTIFACT_PATH_INVALID"):

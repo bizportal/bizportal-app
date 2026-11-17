@@ -132,7 +132,8 @@ async function preflight() {
     identity.db === "postgres" && identity.tls === true, "ADMIN_SESSION_IDENTITY_OR_TLS");
   const lock = (await admin.query(`select md5(prosrc) fingerprint,prosecdef from pg_proc
     where oid=to_regprocedure('finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text)')`)).rows[0];
-  requireThat(lock?.fingerprint === "06d261a1ec4908c31b681d7a0f1f26cd" && lock.prosecdef === true, "LOCK_FUNCTION_DRIFT");
+  // Reviewed PR126 changes only the token syntax to exact 48/64 hex lengths.
+  requireThat(lock?.fingerprint === "f74ae1995c4ec52505b06624c6010950" && lock.prosecdef === true, "LOCK_FUNCTION_DRIFT");
   const triggers = await admin.query(`select count(*)::int n from pg_trigger t
     join pg_class c on c.oid=t.tgrelid join pg_namespace n on n.oid=c.relnamespace
     where n.nspname='public' and not t.tgisinternal and c.relname=any($1::text[])`, [PARENT_TABLES]);
@@ -172,7 +173,8 @@ async function seed() {
         values($1,$2,$1,'qa-vendor-acceptance@example.invalid','draft',$3) returning id`, [label, companyId, marker]);
       const quoteId = await insertId(`insert into public.mkt_vendor_quotes(rfq_id,vendor_id,token,status,notes)
         values($1,$2,$3,'selected',$4) returning id`, [rfqId, supplierId, randomBytes(32).toString("hex"), marker]);
-      const token = randomBytes(32).toString("hex");
+      // Exercise existing Portal 48-hex links and canonical BizPortal 64-hex links.
+      const token = randomBytes(companyId === 1 ? 24 : 32).toString("hex");
       const poId = await insertId(`insert into public.mkt_purchase_orders
         (po_number,rfq_id,quote_id,company_id,vendor_id,status,total_amount,tax_amount,grand_total,
          vendor_name_snapshot,currency_snapshot,vendor_token,vendor_token_expires_at,created_by)
@@ -202,7 +204,7 @@ async function seed() {
   } catch (error) { await admin!.query("ROLLBACK"); throw error; }
   // Identifiers let the operator recover cleanup after process interruption.
   // No vendor capability, database URL or storage credential is logged.
-  passed("SYNTHETIC_PARENTS_COMMITTED", { marker, fixtures: fixtures.map(({ token, ...f }) => f) });
+  passed("SYNTHETIC_PARENTS_COMMITTED", { marker, fixtures: fixtures.map(({ token, ...f }) => ({ ...f, tokenHexChars: token.length })) });
 }
 function invoicePdf(reference: string): Buffer {
   const stream = `BT /F1 12 Tf 50 750 Td (SYNTHETIC DEV QA - NOT PAYABLE) Tj 0 -24 Td (${reference}) Tj ET`;

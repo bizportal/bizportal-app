@@ -25,7 +25,8 @@ import urllib.request
 UNIT = "cst-bizportal-pr81-preview.service"
 LEGACY_UNIT = "cst-bizportal-gmail-dev.service"
 BASE = Path("/opt/cst-bizportal-pr81-e177-finance-ui-readonly-stage-20261116")
-TARGET = Path("/opt/bizportal-invoice-completion-20261117")
+DEFAULT_TARGET = Path("/opt/bizportal-invoice-completion-20261117")
+TARGET = DEFAULT_TARGET
 NODE = "/opt/actions-runner/_work/_tool/node/22.23.3/x64/bin/node"
 DROP = Path("/etc/systemd/system/cst-bizportal-pr81-preview.service.d/zz-invoice-completion-dev.conf")
 NGINX = Path("/etc/nginx/sites-available/finance-pr81.72.61.210.205.sslip.io")
@@ -46,6 +47,14 @@ END = "    # END INVOICE FINANCE DEV ROUTES\n"
 def require(ok: bool, code: str) -> None:
     if not ok:
         raise RuntimeError(code)
+
+
+def release_target(target: Path, commit: str) -> Path:
+    require(re.fullmatch(r"[0-9a-f]{40}", commit) is not None, "FULL_COMMIT_SHA_REQUIRED")
+    allowed = {DEFAULT_TARGET, Path(str(DEFAULT_TARGET) + "-" + commit[:12])}
+    require(target in allowed, "TARGET_SOURCE_SUFFIX_MISMATCH")
+    require(not target.is_symlink(), "TARGET_SYMLINK_NOT_ALLOWED")
+    return target
 
 
 def sha_bytes(value: bytes) -> str:
@@ -126,7 +135,7 @@ def route(pattern: str, methods: str, body_limit: str, *, token: bool = False, e
 
 def nginx_block() -> str:
     ident = "[1-9][0-9]{0,9}"
-    token = "[0-9A-Fa-f]{64}"
+    token = "(?:[0-9A-Fa-f]{48}|[0-9A-Fa-f]{64})"
     return BEGIN + (
         route("/api/sales/customer-invoices/auto-match-preview", "GET", "1024", exact=True) +
         route(f"^/api/mkt/admin/vendor-invoices/{ident}/(match|ap-preparation)$", "POST", "1024") +
@@ -278,6 +287,10 @@ def check_artifact(expected_sha: str) -> None:
     require(re.fullmatch(r"[0-9a-f]{40}", expected_sha) is not None, "FULL_COMMIT_SHA_REQUIRED")
     require(TARGET.is_dir() and not TARGET.is_symlink(), "TARGET_DIRECTORY_INVALID")
     require((TARGET / "source-commit.txt").read_text().strip() == expected_sha, "SOURCE_SHA_MISMATCH")
+    if TARGET != DEFAULT_TARGET:
+        metadata = json.loads((TARGET / "release-metadata.json").read_text())
+        require(metadata.get("source_commit") == expected_sha
+                and metadata.get("artifact_target") == str(TARGET), "RELEASE_TARGET_METADATA_MISMATCH")
     manifest = TARGET / "RELEASE_SHA256SUMS.txt"
     require(manifest.is_file(), "ARTIFACT_CHECKSUMS_MISSING")
     checked: set[str] = set()
@@ -341,6 +354,7 @@ def restore(directory: Path, *, verify_current: bool) -> None:
 
 
 def apply(mode: str, expected_sha: str) -> None:
+    release_target(TARGET, expected_sha)
     check_artifact(expected_sha)
     current_baseline(expected_sha)
     if mode == "writer":
@@ -356,7 +370,7 @@ def apply(mode: str, expected_sha: str) -> None:
     directory = STATE_ROOT / (stamp + "-" + mode + "-" + expected_sha[:12])
     directory.mkdir(mode=0o700)
     metadata = {
-        "source": expected_sha, "mode": mode,
+        "source": expected_sha, "mode": mode, "target": str(TARGET),
         "old_directory": property_of(UNIT, "WorkingDirectory"),
         "old_drop_exists": DROP.exists(), "new_drop_sha": sha_bytes(new_drop),
         "new_nginx_sha": sha_bytes(new_nginx), "legacy_nginx_sha": legacy_hash,
@@ -386,12 +400,18 @@ def apply(mode: str, expected_sha: str) -> None:
 
 
 def main() -> None:
+    global TARGET
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["render", "apply", "rollback"])
     parser.add_argument("--mode", choices=["stage", "writer"], default="stage")
     parser.add_argument("--expected-commit", default="")
+    parser.add_argument("--target", type=Path,
+                        help="Fixed target or /opt/bizportal-invoice-completion-20261117-<first12SHA>; requires full --expected-commit")
     parser.add_argument("--state-dir", type=Path)
     args = parser.parse_args()
+    if args.target is not None:
+        require(args.action != "rollback", "ROLLBACK_USES_RECORDED_TARGET")
+        TARGET = release_target(args.target, args.expected_commit)
     if args.action == "render":
         print(drop_content(args.mode))
         if args.mode == "writer":

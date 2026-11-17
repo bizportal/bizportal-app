@@ -14,6 +14,21 @@ SPEC.loader.exec_module(BUILD)
 
 
 class ArtifactBuildTests(unittest.TestCase):
+    def test_release_target_requires_exact_source_prefix_and_no_overlap(self):
+        commit = "a" * 40
+        target = Path(str(BUILD.TARGET) + "-" + commit[:12])
+        self.assertEqual(BUILD.release_target(target, commit), target)
+        self.assertEqual(BUILD.release_target(BUILD.TARGET, commit), BUILD.TARGET)
+        for wrong in [Path(str(BUILD.TARGET) + "-" + "b" * 12),
+                      Path("/tmp") / target.name, Path(str(target) + "/../other")]:
+            with self.assertRaisesRegex(RuntimeError, "TARGET_SOURCE_SUFFIX_MISMATCH"):
+                BUILD.release_target(wrong, commit)
+        with self.assertRaisesRegex(RuntimeError, "SOURCE_TARGET_OVERLAP"):
+            BUILD.separate_source_target(target, target)
+        with self.assertRaisesRegex(RuntimeError, "SOURCE_TARGET_OVERLAP"):
+            BUILD.separate_source_target(target / "source", target)
+        BUILD.separate_source_target(Path("/opt/source-checkout"), target)
+
     def test_build_environment_does_not_inherit_runtime_or_public_secrets(self):
         with patch.dict(os.environ, {
             "SESSION_SECRET": "unit-test-sensitive", "SUPABASE_SERVICE_ROLE_KEY_DEV": "unit-test-key",

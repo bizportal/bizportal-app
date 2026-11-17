@@ -47,7 +47,7 @@ session and GCP bootstrap rather than generating authentication cookies.
    no external message or payment is emitted. The application review must prove
    this; the deploy script keeps existing messaging/scheduler flags false.
 6. Build a self-contained artifact at
-   `/opt/bizportal-invoice-completion-20261117`, containing `dist/index.mjs`, the
+   `/opt/bizportal-invoice-completion-20261117-<first12SHA>`, containing `dist/index.mjs`, the
    frontend at `dist/public`, dependencies, `source-commit.txt` and a complete
    `RELEASE_SHA256SUMS.txt`. Pin the full source SHA when invoking the deployer.
 
@@ -72,7 +72,7 @@ On `srv1792369`, build the final integrated commit from an existing official
 Git checkout. The verified host has Node 22.23.3, pnpm 10.33.0 and Python 3.12.3:
 
 ```bash
-python3 scripts/build-invoice-finance-preview-dev.py --source /opt/INTEGRATED_OFFICIAL_CHECKOUT --expected-commit FULL_SOURCE_SHA
+python3 scripts/build-invoice-finance-preview-dev.py --source /opt/INTEGRATED_OFFICIAL_CHECKOUT --expected-commit FULL_SOURCE_SHA --target /opt/bizportal-invoice-completion-20261117-FIRST12_SOURCE_SHA
 ```
 
 The builder exports that exact commit with `git archive` into a disposable
@@ -84,8 +84,12 @@ builder verifies that exact `@workspace/api-server` link and rebases it to the
 artifact root. Any other escaping dependency link still fails validation.
 It verifies the Node syntax, native/runtime dependency loading,
 and that every symlink stays inside the artifact. Only then does it atomically
-publish `/opt/bizportal-invoice-completion-20261117`; an existing target is always
-refused. No service is started or reconfigured by this command.
+publish the requested artifact; an existing target is always refused. The
+release suffix must equal the first 12 characters of the full expected commit,
+and release metadata plus `source-commit.txt` retain the complete 40-character
+SHA. Source/target overlap and symlink targets are refused. The original fixed
+target remains supported for older procedures but is not touched when an
+isolated target is selected. No service is started or reconfigured by this command.
 
 If the existing store lacks a locked dependency, retry with `--allow-registry`.
 That permits the normal registry fetch while retaining the exact lockfile,
@@ -103,20 +107,20 @@ packaging is not a replacement for those tests or signed HTTP acceptance.
 Render the exact non-secret drop-in and allowlist first, without server writes:
 
 ```bash
-python3 scripts/deploy-invoice-finance-preview-dev.py render --mode writer
+python3 scripts/deploy-invoice-finance-preview-dev.py render --mode writer --expected-commit FULL_SOURCE_SHA --target /opt/bizportal-invoice-completion-20261117-FIRST12_SOURCE_SHA
 ```
 
 After the artifact and gates are verified, first install its source with Writer
 off, preserving existing reader behavior and the private Nginx allowlist:
 
 ```bash
-python3 scripts/deploy-invoice-finance-preview-dev.py apply --mode stage --expected-commit FULL_SOURCE_SHA
+python3 scripts/deploy-invoice-finance-preview-dev.py apply --mode stage --expected-commit FULL_SOURCE_SHA --target /opt/bizportal-invoice-completion-20261117-FIRST12_SOURCE_SHA
 ```
 
 Then activate the same certified artifact for the authorized DEV business test:
 
 ```bash
-python3 scripts/deploy-invoice-finance-preview-dev.py apply --mode writer --expected-commit FULL_SOURCE_SHA
+python3 scripts/deploy-invoice-finance-preview-dev.py apply --mode writer --expected-commit FULL_SOURCE_SHA --target /opt/bizportal-invoice-completion-20261117-FIRST12_SOURCE_SHA
 ```
 
 Each application uses the pre-existing rollout lock. It stores only the prior
@@ -126,6 +130,9 @@ baseline, atomically installs a separate `zz-invoice-completion-dev.conf`, tests
 Nginx, restarts only the private preview and checks local/HTTPS readiness plus
 unauthenticated denial. Failure restores the previous state automatically.
 The generic `/api/` denial and all existing login routes remain in place.
+The active service must still point to the verified e177 baseline or the exact
+requested target. Another release's working directory is never accepted as a
+baseline. Rollback uses its recorded snapshot and needs no target argument.
 The existing shared Nginx rate limit remains 10 requests/minute. Smoke checks
 retry only HTTP 429, at most three attempts, with a 6.2-second minimum delay and
 `Retry-After` bounded to 30 seconds. Other HTTP/transport failures are not retried.
@@ -193,8 +200,9 @@ session, or an anonymous 401 is not the positive end-to-end proof.
 | `/api/mkt/vendor-invoice/:token/invoices/:id` | GET |
 | `/api/mkt/vendor-invoice/:token/invoices/:id/submit` | POST |
 
-IDs are 1–10 decimal digits without a leading zero. Tokens are exactly 64 hex
-characters, matching the existing token service; token paths disable Nginx
+IDs are 1–10 decimal digits without a leading zero. Tokens are exactly 48 or 64
+hex characters, matching existing Portal links and canonical BizPortal tokens;
+prefixes and all other lengths remain invalid. Token paths disable Nginx
 access logging and retain no-store/no-referrer response headers. The app still
 authenticates and authorizes every operation. Customer scope is AR preview and
 matching for already issued canonical invoices. No customer issuance, POD, GL,
@@ -209,14 +217,15 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p 'test
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p 'test_invoice_preview_build.py' -v
 ```
 
-Fourteen checks cover rejected payment/unrecognized paths, preserved authentication,
+Sixteen checks cover rejected payment/unrecognized paths, preserved authentication,
 stale Nginx baseline refusal, artifact manifest path traversal, concurrent-change
 rollback refusal, restoration after an injected Nginx validation failure and the
 exact Customer AR route/anonymous denial in each mode, plus bounded 429-only
 retries without retrying a failed connection or accepting anonymous access.
 Reload-specific checks cover 404-to-401 transition, persistent 404 diagnostics,
-and immediate failure on an unexpected anonymous 200.
+and immediate failure on an unexpected anonymous 200. Release-target checks
+reject a mismatched SHA suffix and another active candidate.
 These checks never invoke a real service or replace the signed DEV business test.
-Seven additional build-tool checks cover secret/environment isolation, portable
+Eight additional build-tool checks cover secret/environment isolation, portable
 symlinks, narrow pnpm self-link rebasing, complete checksum generation and atomic
-no-overwrite publication.
+no-overwrite publication, release target validation and source/target separation.

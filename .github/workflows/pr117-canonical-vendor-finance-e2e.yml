@@ -14,6 +14,7 @@ on:
       - 'artifacts/api-server/src/app.ts'
       - 'artifacts/api-server/src/lib/vendorCapabilityLogPrivacy*'
       - 'artifacts/api-server/src/lib/services/mktVendorPoTokenService.ts'
+      - 'artifacts/api-server/src/lib/services/mktVendorPoTokenService.dev-compat.test.ts'
       - 'artifacts/api-server/src/lib/services/mktVendorInvoiceService.ts'
       - 'artifacts/api-server/src/lib/services/mktVendorInvoiceTokenResolver*'
       - 'artifacts/api-server/src/routes/mktVendorInvoice.ts'
@@ -27,6 +28,7 @@ on:
       - 'lib/db/src/marketplace-finance-dev.ts'
       - 'artifacts/api-server/src/routes/dev-finance-company-role-routing.test.ts'
       - 'scripts/tests/pr117-*'
+      - 'scripts/tests/pr125-*'
       - 'scripts/tests/pr121-real-finance-rls-predicates-disposable.sql'
       - 'scripts/sql/20261117_pr107_*'
       - 'scripts/sql/20261117_pr108_*'
@@ -128,6 +130,10 @@ jobs:
         env:
           FINANCE_AUDIT_PG_IMAGE: ${{ matrix.postgres }}
         run: bash scripts/tests/finance-activity-audit-disposable.sh
+      - name: Verify existing Portal and canonical token formats with exact lock rollback
+        env:
+          PR125_POSTGRES_IMAGE: ${{ matrix.postgres }}
+        run: bash scripts/tests/pr125-run-48-64-token-compat-disposable.sh
       - name: Existing Marketplace API and Accounting regressions
         run: |
           pnpm --dir artifacts/api-server exec vitest run \
@@ -139,6 +145,7 @@ jobs:
             src/__tests__/dev-systemd-gcp-bootstrap.test.ts \
             src/lib/services/mktVendorInvoiceParentLock.dev.test.ts \
             src/lib/services/mktVendorInvoiceTokenResolver.test.ts \
+            src/lib/services/mktVendorPoTokenService.dev-compat.test.ts \
             src/lib/services/marketplaceFinanceNotifications.dev.test.ts \
             src/lib/activityLog.finance-dev.test.ts \
             src/lib/services/mktMarketplaceCompanyScope.test.ts \
