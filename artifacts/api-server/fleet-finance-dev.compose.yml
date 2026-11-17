@@ -1,0 +1,41 @@
+name: fleet-finance-dev
+
+services:
+  fleet-finance-dev:
+    image: node@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402
+    container_name: fleet-finance-dev
+    init: true
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    mem_limit: 192m
+    cpus: "0.50"
+    env_file: /etc/fleet-finance-dev/runtime.env
+    environment:
+      NODE_ENV: production
+      FLEET_FINANCE_DEV_HOST: 0.0.0.0
+      FLEET_FINANCE_DEV_PORT: "19888"
+    command: ["node", "/app/fleet-finance-dev.cjs"]
+    volumes:
+      - ./dist/fleet-finance-dev.cjs:/app/fleet-finance-dev.cjs:ro
+    networks:
+      fleet-dev:
+        aliases: [fleet-finance-dev]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:19888/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    stop_grace_period: 15s
+    labels:
+      com.cst.source-repository: bizportal/bizportal-app
+      com.cst.runtime: fleet-finance-dev
+
+networks:
+  fleet-dev:
+    external: true
+    name: fleet-integration-stage_fleet-dev
