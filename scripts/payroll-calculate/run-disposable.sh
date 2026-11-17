@@ -9,13 +9,30 @@ if ss -ltn "( sport = :${PORT} )" | grep -q "127.0.0.1:${PORT}"; then
 fi
 cleanup(){ docker rm -f "$NAME" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
-docker run --rm -d --name "$NAME" -p "127.0.0.1:${PORT}:5432" \
+docker run --pull=never --rm -d --name "$NAME" --memory=256m \
+  --tmpfs /var/lib/postgresql/data:rw -p "127.0.0.1:${PORT}:5432" \
   -e POSTGRES_PASSWORD="payroll_container_fixture_only_2026" postgres:16-alpine >/dev/null
+# A single pg_isready observation can race container startup/shutdown on CI.
+# Require two successful real SQL probes across separate checks, with bounded
+# retries. On failure, preserve diagnostics only; no sensitive credentials.
+ready=false
 for n in $(seq 1 45); do
-  if docker exec "$NAME" pg_isready -U postgres -d postgres >/dev/null 2>&1; then break; fi
+  if docker exec "$NAME" pg_isready -U postgres -d postgres >/dev/null 2>&1 &&
+     docker exec "$NAME" psql -U postgres -d postgres -Atqc 'SELECT 1' 2>/dev/null | grep -qx 1; then
+    sleep 1
+    if docker exec "$NAME" pg_isready -U postgres -d postgres >/dev/null 2>&1 &&
+       docker exec "$NAME" psql -U postgres -d postgres -Atqc 'SELECT 1' 2>/dev/null | grep -qx 1; then
+      ready=true
+      break
+    fi
+  fi
   sleep 1
 done
-docker exec "$NAME" pg_isready -U postgres -d postgres
+if [ "$ready" != true ]; then
+  echo 'DISPOSABLE_POSTGRES_STABLE_SQL_READINESS_FAILED' >&2
+  docker logs --tail 45 "$NAME" >&2 || true
+  exit 3
+fi
 cd "$ROOT"
 export PAYROLL_CALC_PG_ADMIN_URL="postgresql://postgres:payroll_container_fixture_only_2026@127.0.0.1:${PORT}/postgres"
 export PAYROLL_CALC_PG_RESTRICTED_URL="postgresql://bizportal_payroll_dev:payroll_fixture_only_2026@127.0.0.1:${PORT}/postgres"
