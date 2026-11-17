@@ -52,6 +52,11 @@ export interface AtomicSettlementAdapter<Tx> {
   postJournal(tx: Tx, input: InvoiceSettlementInput): Promise<number>;
   /** Existing disbursement service, passed the same transaction context. */
   createDisbursement(tx: Tx, input: InvoiceSettlementInput, journalId: number): Promise<number>;
+  /** Verify posted ledger lines from the SAME transaction context.
+   * Require at least two lines, positive equal debit/credit totals, and the
+   * matching company/journal. Never trust claimed totals from the HTTP body.
+   */
+  isJournalBalanced(tx: Tx, companyId: number, journalId: number): Promise<boolean>;
   /** Performs a company-scoped conditional/CAS balance update, returning success. */
   updateInvoiceBalance(tx: Tx, input: InvoiceSettlementInput): Promise<boolean>;
 }
@@ -117,6 +122,9 @@ export async function commitVendorInvoicePaymentAtomic<Tx>(
     const disbursementId = await adapter.createDisbursement(tx, input, journalId);
     if (!Number.isSafeInteger(disbursementId) || disbursementId <= 0) {
       throw new Error("ATOMIC_SETTLEMENT_INVALID_DISBURSEMENT_ID");
+    }
+    if (!(await adapter.isJournalBalanced(tx, input.companyId, journalId))) {
+      throw new Error("ATOMIC_SETTLEMENT_UNBALANCED_JOURNAL");
     }
     if (!(await adapter.updateInvoiceBalance(tx, input))) {
       // Thrown error forces a rollback; never return a rejected status after writes.
