@@ -40,6 +40,10 @@ describe("bank reconciliation post contract", () => {
     expect(route).toContain("actor.companyId != null && Number(mutation.company_id) !== actor.companyId");
     expect(route).toContain("id=$1 and company_id=$2 and status='posted'");
     expect(route).toContain("cancelled_at is null and voided_at is null");
+    expect(route).toContain("source::text as source,source_id");
+    expect(route).toContain('linkedEntry.source === "bank_reconciliation"');
+    expect(route).toContain("Number(linkedEntry.source_id) !== mutationId");
+    expect(route).toContain("POSTED_JOURNAL_SOURCE_MISMATCH");
   });
 
   it("allows governed direct-bank posting when the rule does not require a candidate", () => {
