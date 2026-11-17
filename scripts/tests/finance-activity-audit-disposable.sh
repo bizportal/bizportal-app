@@ -11,11 +11,19 @@ docker run -d --rm --name "$PG" --network none --memory 300m \
   --tmpfs /var/lib/postgresql/data:rw,nosuid,size=128m \
   -e POSTGRES_PASSWORD=synthetic-admin-only -e POSTGRES_HOST_AUTH_METHOD=scram-sha-256 \
   "$IMAGE" >/dev/null
+admin() { docker exec -i -e PGPASSWORD=synthetic-admin-only "$PG" psql -X -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d postgres "$@"; }
+# The entrypoint's temporary initialization server exposes only a Unix socket.
+# An authenticated TCP query waits for the final server used by the test.
+ready=0
 for _ in $(seq 1 80); do
-  if docker exec "$PG" pg_isready -q -U postgres; then break; fi
+  if admin -tAc 'SELECT 1' >/dev/null 2>&1; then ready=1; break; fi
   sleep 0.25
 done
-admin() { docker exec -i "$PG" psql -X -q -v ON_ERROR_STOP=1 -U postgres -d postgres "$@"; }
+if [[ "$ready" != 1 ]]; then
+  echo 'FINANCE_ACTIVITY_POSTGRES_STARTUP_TIMEOUT' >&2
+  docker logs "$PG" >&2
+  exit 5
+fi
 company() { docker exec -i -e PGPASSWORD=synthetic-company-only "$PG" psql -X -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -U "$1" -d postgres; }
 admin <<'SQL'
 CREATE ROLE aicore_dev_runtime NOLOGIN;
