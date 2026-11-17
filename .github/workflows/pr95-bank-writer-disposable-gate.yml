@@ -5,6 +5,7 @@ on:
     branches: [main, develop]
     paths:
       - "scripts/tests/pr95_bank_payment_atomic_contract.sql"
+      - "scripts/tests/pr95_bank_source_journal_guard_disposable.sql"
       - "artifacts/api-server/src/lib/bankDisbursementAtomicBoundary.ts"
       - "artifacts/api-server/src/lib/bankDisbursementAtomicBoundary.postgres.test.ts"
       - ".github/workflows/pr95-bank-writer-disposable-gate.yml"
@@ -76,6 +77,11 @@ jobs:
           docker exec -i pr95-finance-disposable \
             psql -v ON_ERROR_STOP=1 -U postgres -d postgres \
             < scripts/tests/pr95_bank_payment_atomic_contract.sql
+      - name: Verify source-journal duplicate hold on disposable PostgreSQL
+        run: |
+          docker exec -i pr95-finance-disposable \
+            psql -v ON_ERROR_STOP=1 -U postgres -d postgres \
+            < scripts/tests/pr95_bank_source_journal_guard_disposable.sql
       - name: Concurrent overpayment guard and one-journal invariant
         shell: bash
         run: |
