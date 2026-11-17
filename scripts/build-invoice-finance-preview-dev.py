@@ -65,6 +65,8 @@ def build_env(*, offline: bool) -> dict[str, str]:
         "BASE_PATH": "/", "PORT": "18442",
         "VITE_SUPABASE_URL": "", "VITE_SUPABASE_ANON_KEY": "",
         "GOOGLE_MAPS_API_KEY": "",
+        "VITE_BIZPORTAL_DEV_PASSWORD_ONLY": "true",
+        "VITE_BIZPORTAL_OTP_ONLY_PREVIEW": "false",
         "VITE_BIZPORTAL_FINANCE_GLOBAL_SCOPE_UI_DEV": "true",
         "VITE_BIZPORTAL_FINANCE_READONLY_PREVIEW_DEV": "false",
         "npm_config_userconfig": "/dev/null",
@@ -216,7 +218,10 @@ def build(source: Path, commit: str, *, offline: bool, target: Path = TARGET) ->
             "node": node, "pnpm": pnpm, "platform": "linux-x64",
             "lockfile_sha256": lock_sha, "offline_install": offline,
             "pnpm_self_link_rebased": self_link_rebased,
-            "frontend_flags": {"finance_global_scope": True, "finance_readonly_preview": False},
+            "frontend_flags": {
+                "dev_password_only": True, "otp_only_preview": False,
+                "finance_global_scope": True, "finance_readonly_preview": False,
+            },
             "runtime_envfiles_loaded": False,
             "activation_performed": False,
         })

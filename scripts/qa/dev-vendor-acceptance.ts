@@ -348,7 +348,7 @@ async function cleanup() {
       const owner = (await admin!.query(`select po_number,company_id,vendor_id from public.mkt_purchase_orders where id=$1 for update`, [f.poId])).rows[0];
       requireThat(owner?.po_number === f.reference && owner.company_id === f.companyId && owner.vendor_id === f.supplierId && f.poId !== 14, "CLEANUP_OWNERSHIP");
       const invoices = (await admin!.query(`select id,vendor_invoice_ref,company_id,supplier_id,status::text,
-        paid_amount,journal_entry_id,attachment_object_path
+        amount_paid as paid_amount,journal_entry_id,attachment_object_path
         from public.vendor_invoices where mkt_purchase_order_id=$1 for update`, [f.poId])).rows;
       requireThat(invoices.every(row => row.vendor_invoice_ref === f.reference && row.company_id === f.companyId &&
         row.supplier_id === f.supplierId && Number(row.paid_amount) === 0 && row.journal_entry_id == null &&

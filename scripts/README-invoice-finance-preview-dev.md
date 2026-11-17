@@ -98,9 +98,12 @@ It does not upgrade dependencies. A failed build leaves no final target.
 
 Build subprocesses inherit a small operating-system environment allowlist and
 never read runtime envfiles. The Finance selector compiles enabled, the readonly
-UI switch compiles disabled, and public Supabase/maps values compile empty for
-the existing same-origin signed-password flow. Manifests include all regular
-artifact files, internal symlinks, source commit, lock hash and tool versions.
+UI switch compiles disabled, and the login UI compiles with
+`VITE_BIZPORTAL_DEV_PASSWORD_ONLY=true` and `VITE_BIZPORTAL_OTP_ONLY_PREVIEW=false`.
+Public Supabase/maps values compile empty for the existing same-origin
+signed-password flow. Release metadata records these frontend flags. Manifests
+include all regular artifact files, internal symlinks, source commit, lock hash
+and tool versions.
 The candidate must still pass the integrated application regression gates;
 packaging is not a replacement for those tests or signed HTTP acceptance.
 
