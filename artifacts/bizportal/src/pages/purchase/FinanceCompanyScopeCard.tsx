@@ -11,7 +11,10 @@ import {
  * not authorization; only a deliberate server-confirmed selection can
  * produce the separate signed Finance-company cookie.
  */
-export function FinanceCompanyScopeCard() {
+export function FinanceCompanyScopeCard({ onVerificationStart, onVerified }: {
+  onVerificationStart?: () => void;
+  onVerified?: (companyId: number) => void;
+} = {}) {
   const { activeCompany, activeCompanyId, isConsolidated, isLoading } = useCompany();
   const [busy, setBusy] = useState(false);
   const [confirmedCompanyId, setConfirmedCompanyId] = useState<number | null>(null);
@@ -35,9 +38,13 @@ export function FinanceCompanyScopeCard() {
     setBusy(true);
     setConfirmedCompanyId(null);
     setError(null);
+    onVerificationStart?.();
     try {
       await requestFinanceCompanyScope(selected);
-      if (latestCompanyId.current === selected) setConfirmedCompanyId(selected);
+      if (latestCompanyId.current === selected) {
+        setConfirmedCompanyId(selected);
+        onVerified?.(selected);
+      }
     } catch (cause) {
       if (latestCompanyId.current === selected) {
         setError(cause instanceof Error ? cause.message : "Verifikasi perusahaan Finance gagal.");

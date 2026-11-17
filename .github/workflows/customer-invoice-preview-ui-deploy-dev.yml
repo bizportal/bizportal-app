@@ -1,0 +1,27 @@
+name: DEV Customer Invoice UI Deployment Guard
+
+on:
+  pull_request:
+    branches:
+      - test/pr131-dev-finance-pinned-ipv4-pooler-20261117
+    paths:
+      - 'scripts/deploy-customer-invoice-preview-ui-dev.py'
+      - 'scripts/tests/test_customer_invoice_preview_ui_deploy.py'
+      - '.github/workflows/customer-invoice-preview-ui-deploy-dev.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exact-ui-only-transition:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exact source, unchanged API, protected configuration and rollback
+        run: python3 scripts/tests/test_customer_invoice_preview_ui_deploy.py
+      - name: Original deployment guards remain valid
+        run: python3 scripts/tests/test_invoice_preview_deploy.py
+      - name: Source remains unchanged
+        run: git diff --exit-code -- scripts

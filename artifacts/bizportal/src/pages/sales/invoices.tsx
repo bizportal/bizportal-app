@@ -41,6 +41,7 @@ import { useToast } from "@/hooks/use-toast";
 import { ArrowLeft, CreditCard, MessageSquare, ShoppingCart, Send, Clock, AlertCircle, CheckCircle2, Banknote } from "lucide-react";
 import { CorrespondenceTab } from "@/components/CorrespondenceTab";
 import { useLanguage } from "@/contexts/LanguageContext";
+import { CustomerArPreviewPage } from "./CustomerArPreviewPage";
 
 const idr = (n: number) =>
   new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 }).format(n);
@@ -76,6 +77,15 @@ type InvoiceFilter = "all" | "to_invoice" | "invoiced";
 type PayFilter = "all" | "unpaid" | "partial" | "paid" | "overdue";
 
 export default function SalesInvoicesPage() {
+  const privateFinancePreview = import.meta.env.VITE_BIZPORTAL_DEV_PASSWORD_ONLY === "true"
+    && import.meta.env.VITE_BIZPORTAL_FINANCE_GLOBAL_SCOPE_UI_DEV === "true"
+    && import.meta.env.VITE_BIZPORTAL_OTP_ONLY_PREVIEW !== "true";
+  // The private preview exposes the scoped AR reader, not the legacy Sales
+  // list/payment APIs. Keep the legacy component (and its hooks) unmounted.
+  return privateFinancePreview ? <CustomerArPreviewPage /> : <LegacySalesInvoicesPage />;
+}
+
+function LegacySalesInvoicesPage() {
   const qc = useQueryClient();
   const { toast } = useToast();
   const { t } = useLanguage();
