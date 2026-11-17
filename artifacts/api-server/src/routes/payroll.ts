@@ -187,6 +187,11 @@ router.get("/payroll/capabilities", (req: PayrollRequest, res) => {
     canEditItems: isDevelopmentEnvironment()
       && process.env.PAYROLL_DEV_ITEM_EDIT_ENABLED === "true"
       && ["admin", "owner", "super_admin"].includes(req.payrollActor?.role.toLowerCase() ?? ""),
+    canPreview: isDevelopmentEnvironment()
+      && process.env.PAYROLL_DEV_CALC_PREVIEW_ENABLED === "true"
+      && payrollDedicatedEnabled()
+      && ["owner", "super_admin"].includes(req.payrollActor?.role.toLowerCase() ?? "")
+      && (req.payrollActor?.role.toLowerCase() !== "owner" || req.payrollActor.companyId === req.payrollCompanyId),
     canCalculate: false,
     canApprove: false,
     canPay: false,
@@ -473,6 +478,11 @@ router.get("/payroll/runs/:id/calculation-preview", async (req: PayrollRequest, 
   }
   if (!["owner", "super_admin"].includes(req.payrollActor?.role.toLowerCase() ?? "")) {
     res.status(403).json({ message: "Pratinjau komponen gaji memerlukan Super Admin." });
+    return;
+  }
+  if (req.payrollActor?.role.toLowerCase() === "owner" &&
+      req.payrollActor.companyId !== req.payrollCompanyId) {
+    res.status(403).json({ message: "Akses pratinjau perusahaan ini ditolak." });
     return;
   }
   if (!payrollDedicatedEnabled()) {

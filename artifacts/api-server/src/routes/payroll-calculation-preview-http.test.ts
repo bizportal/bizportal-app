@@ -50,6 +50,19 @@ describe("DEV calculation-preview: restricted pure payroll arithmetic",()=>{
  });
  afterEach(()=>{delete process.env.PAYROLL_DEV_CALC_PREVIEW_ENABLED;});
  const get=(url=root)=>fetch(url);
+ it("exposes canPreview only for dedicated, explicitly gated Super Admin", async () => {
+  const url=root.replace("/runs/32/calculation-preview","/capabilities");
+  expect(((await (await fetch(url)).json()) as {canPreview:boolean}).canPreview).toBe(false);
+  process.env.PAYROLL_DEV_CALC_PREVIEW_ENABLED="true";
+  expect(((await (await fetch(url)).json()) as {canPreview:boolean}).canPreview).toBe(true);
+  state.dedicated=false;
+  expect(((await (await fetch(url)).json()) as {canPreview:boolean}).canPreview).toBe(false);
+  state.dedicated=true;state.role="finance";state.companyId=1;
+  expect(((await (await fetch(url)).json()) as {canPreview:boolean}).canPreview).toBe(false);
+  state.role="owner";state.companyId=2;
+  expect(((await (await fetch(url)).json()) as {canPreview:boolean}).canPreview).toBe(false);
+  expect(state.calls).toHaveLength(0);
+ });
  it("is default OFF without consulting any DB",async()=>{
   expect((await get()).status).toBe(404);expect(state.calls).toHaveLength(0);
  });
@@ -63,6 +76,8 @@ describe("DEV calculation-preview: restricted pure payroll arithmetic",()=>{
   state.role="admin";state.companyId=1;expect((await get()).status).toBe(403);
   state.role="super_admin";state.companyId=null;
   expect((await get(root.replace("companyId=1","companyId=all"))).status).toBe(403);
+  state.role="owner";state.companyId=2;
+  expect((await get()).status).toBe(403);
   expect(state.calls).toHaveLength(0);
  });
  it("reuses saved amounts with integer cents and never writes data",async()=>{
