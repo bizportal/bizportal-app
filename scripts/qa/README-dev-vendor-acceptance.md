@@ -46,6 +46,10 @@ resolver and the preview service's systemd credential mount. The temporary
 administrative connection comes only from the already verified live DEV issuer
 service (`cst-bizportal-gmail-dev.service`), read in process memory. Its host,
 project and postgres identity are pinned, and TLS verification is mandatory.
+The actual client socket must be encrypted with an authorized certificate for
+both direct and pooled connections. Direct database connections additionally
+require `pg_stat_ssl.ssl=true`; through a pooler that field describes its
+separate internal database connection and does not attest the client TLS leg.
 The only temporary credential-related file is a **public** Supabase root CA;
 database passwords, service keys and vendor capabilities are never persisted.
 

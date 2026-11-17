@@ -35,6 +35,7 @@ const mode = process.argv[2];
 const marker = `QA-DEV-INVACCEPT-${Date.now()}-${randomBytes(4).toString("hex")}`;
 let stage = "arguments";
 let publicCertificateDirectory: string | undefined;
+let adminConnectsDirectly = true;
 let seeded = false;
 let baselinePo14: unknown;
 let app: typeof import("../../lib/db/src/index") | undefined;
@@ -88,6 +89,7 @@ function configureFromVerifiedServices() {
     (user === `postgres.${PROJECT}` || (direct && user === "postgres")) &&
     source.pathname === "/postgres" && source.password &&
     ["", "5432", "6543"].includes(source.port), "ADMIN_PROJECT_OR_ROLE");
+  adminConnectsDirectly = direct;
   // Reconstruct the URL from validated authority fields. No unvalidated query
   // option can override host/user/password or weaken TLS in pg's URL parser.
   source.search = ""; source.hash = "";
@@ -128,8 +130,17 @@ async function preflight() {
   admin = await app.pool.connect();
   const identity = (await admin.query(`select current_user::text usr,session_user::text login,
     current_database() db,(select ssl from pg_stat_ssl where pid=pg_backend_pid()) tls`)).rows[0];
+  const clientTls = (admin as PoolClient & {
+    connection?: { stream?: { encrypted?: boolean; authorized?: boolean } };
+  }).connection?.stream;
+  // pg_stat_ssl describes the pooler's internal DB connection when pooling is
+  // used. Always verify our actual client TLS; direct DB also needs backend TLS.
   requireThat(identity.usr === "postgres" && identity.login === "postgres" &&
-    identity.db === "postgres" && identity.tls === true, "ADMIN_SESSION_IDENTITY_OR_TLS");
+    identity.db === "postgres" && clientTls?.encrypted === true && clientTls.authorized === true &&
+    (!adminConnectsDirectly || identity.tls === true), "ADMIN_SESSION_IDENTITY_OR_TLS");
+  passed("ADMIN_IDENTITY_AND_CLIENT_TLS_VERIFIED", {
+    connection: adminConnectsDirectly ? "direct" : "pooler", backendTls: identity.tls === true,
+  });
   const lock = (await admin.query(`select md5(prosrc) fingerprint,prosecdef from pg_proc
     where oid=to_regprocedure('finance_ops_private.mkt_finance_lock_vendor_invoice_parents_dev(integer,integer,integer,text)')`)).rows[0];
   // Reviewed PR126 changes only the token syntax to exact 48/64 hex lengths.
