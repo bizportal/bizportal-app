@@ -126,7 +126,7 @@ jobs:
         run: |
           set -euo pipefail
           NODE_OPTIONS=--throw-deprecation bash scripts/payroll-atomic-rehearsal/run-disposable.sh "$RUNNER_TEMP/payroll-pinned-source" integrated | tee "$RUNNER_TEMP/payroll-integrated.log"
-          grep -Eq '^PAYROLL_SIGNED_CALCULATE_APPROVAL_NATIVE_HTTP_LEDGER_POSTGRES_PASS [1-9][0-9]* ' "$RUNNER_TEMP/payroll-integrated.log"
+          grep -Eq '^PAYROLL_SIGNED_CALCULATE_APPROVAL_NATIVE_HTTP_LEDGER_POSTGRES_PASS 13 ' "$RUNNER_TEMP/payroll-integrated.log"
       - name: Original transaction, permission, trigger, native and period regressions
         run: |
           set -euo pipefail

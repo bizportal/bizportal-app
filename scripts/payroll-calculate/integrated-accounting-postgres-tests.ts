@@ -178,6 +178,50 @@
   assert.equal(other.rows[0].status,'reviewed');
   pass('post-approval Calculate/approval replay and foreign company are rejected');
 
+  // A valid Super Admin cannot use a different company selection to post the
+  // previously approved company's run. Authorization never overrides SQL RLS.
+  const foreignScope=await request('/api/payroll/runs/32/post-accounting?companyId=2','POST',{
+   expectedDigest:digest,postingDate:'2026-11-17'
+  });
+  assert.equal(foreignScope.status,404,'cross-company posting must be invisible');
+  assert.deepEqual(await state(),after);
+  pass('posting HTTP refuses a wrong-company selection without any journal or kasbon change');
+
+  // Failed post should preserve the single, signed approval receipt and hold
+  // (rather than silently overriding a closed accounting period).
+  const closedDigest=await prepare();
+  const closedBefore=await state();
+  await admin.query('UPDATE financial_periods SET is_closed=true WHERE company_id=1');
+  const closedResponse=await post(closedDigest);
+  assert.equal(closedResponse.status,409,'closed financial period must fail safely');
+  assert.equal((await closedResponse.json()).code,'PAYROLL_INTEGRITY_BLOCKED');
+  assert.deepEqual(await state(),closedBefore);
+  pass('posting HTTP refuses closed financial period and leaves approved data intact');
+
+  // Even a legitimate signed approval cannot be reused after a salary edit.
+  const changedDigest=await prepare();
+  await admin.query('UPDATE payroll_items SET base_salary=5000001,gross_salary=5200001,net_salary=4900001 WHERE id=11');
+  const changedBefore=await state();
+  const changedResponse=await post(changedDigest);
+  assert.equal(changedResponse.status,409,'salary drift after approval must fail');
+  assert.equal((await changedResponse.json()).code,'PAYROLL_INTEGRITY_BLOCKED');
+  assert.deepEqual(await state(),changedBefore);
+  pass('posting HTTP rejects changed salary snapshot after signed approval');
+
+  // Two signed requests arriving together must create one accrual, repayment,
+  // audit, and outbox row. The second response may be a verified replay only.
+  const parallelDigest=await prepare();
+  const parallelResponse=await Promise.all([post(parallelDigest),post(parallelDigest)]);
+  assert.deepEqual(parallelResponse.map(x=>x.status),[200,200]);
+  const parallelData=await Promise.all(parallelResponse.map(x=>x.json()));
+  assert.deepEqual(parallelData.map(x=>x.reused).sort(),[false,true]);
+  assert.equal(parallelData[0].entryId,parallelData[1].entryId);
+  const parallelState=await state();
+  assert.deepEqual(parallelState,{entries:1,lines:6,audit:1,outbox:1,
+   balance:'400000.00',reservation:'confirmed',status:'approved',
+   entry_id:parallelData[0].entryId,payments:0,repayments:1});
+  pass('two simultaneous signed posting HTTP requests settle once with verified replay');
+
   const rollbackDigest=await prepare();
   await admin.query(`CREATE FUNCTION ci_integrated_repayment_fault() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'SYNTHETIC_REPAYMENT_FAILURE'; END $$;
    CREATE TRIGGER ci_integrated_repayment_fault BEFORE INSERT ON cash_advance_repayments
