@@ -104,6 +104,21 @@ suite("PR95 unregistered source-owned OUT reuse transition on disposable Postgre
       (select journal_entry_id from public.bank_mutations where id=90001) journal_id`);
     return r.rows[0];
   }
+  it("enforces the canonical matching-group status check, not a permissive test-only status",async()=>{
+    await client.query("BEGIN");
+    try {
+      await client.query("SAVEPOINT invalid_group");
+      await expect(client.query(
+        "INSERT INTO public.payment_matching_groups(company_id,group_type,matching_type,status) VALUES(1,'MULTI_INVOICE','MULTI_INVOICE','final')",
+      )).rejects.toMatchObject({code:"23514"});
+      await client.query("ROLLBACK TO SAVEPOINT invalid_group");
+      await expect(client.query(
+        "INSERT INTO public.payment_matching_groups(company_id,group_type,matching_type,status) VALUES(1,'MULTI_INVOICE','MULTI_INVOICE','active') RETURNING id",
+      )).resolves.toMatchObject({rowCount:1});
+    }finally{
+      await client.query("ROLLBACK");
+    }
+  });
   it("reuses posted source journal atomically without any second accounting entry",async()=>{
     await client.query("BEGIN");
     try{
