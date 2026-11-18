@@ -6,6 +6,7 @@ PG_NAME="cst-original-owner-post-$$"
 cleanup() {
   docker rm -f "$PG_NAME" >/dev/null 2>&1 || true
   rm -f "$ROOT/artifacts/api-server/.qa-billing-handler-bundle.mjs"
+  rm -f "$ROOT/artifacts/api-server/.qa-invoice-issuer-bundle.mjs"
   rm -rf -- "$WORK"
 }
 trap cleanup EXIT
@@ -131,6 +132,8 @@ echo ORIGINAL_OWNER_DISPOSABLE_JOURNAL_ACCEPTANCE_PASS
 # Portal source is an exact SHA-pinned separate checkout in CI. Its runtime
 # DB/storage/notifications are substituted ONLY in the QA bundle, never DEV.
 test -f "$ROOT/vendor/customer-portal/server/billing-operations.mjs"
+test -f "$ROOT/vendor/bizportal-otp/artifacts/api-server/src/routes/dev-customer-invoice-attestation.ts"
+(cd "$ROOT/artifacts/api-server" && node "$ROOT/scripts/tests/customer-invoice-bizportal-otp-issuer-disposable-bundle.mjs")
 node "$ROOT/scripts/tests/customer-invoice-portal-handler-disposable-bundle.mjs"
 docker cp "$ROOT/scripts/tests/customer-invoice-portal-handler-disposable-extra.sql" \
   "$PG_NAME":/tmp/portal-qa.sql
