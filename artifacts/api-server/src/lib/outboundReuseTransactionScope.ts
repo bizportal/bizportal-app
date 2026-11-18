@@ -48,8 +48,10 @@ export async function lockOutboundSourceJournalReuseScope(
     [`pr95:bank-mutation:${ids.companyId}:${ids.mutationId}`]);
   await tx.query("select pg_advisory_xact_lock(hashtextextended($1::text,0))",
     [`pr95:vendor-invoice:${ids.companyId}:${ids.invoiceId}`]);
-  const mutation = await tx.query<{ id: number; company_id: number; direction: string; status: string; journal_entry_id: number | null; amount: string }>(
-    `select id,company_id,direction,status,journal_entry_id,amount::text as amount
+  const mutation = await tx.query<{ id: number; company_id: number; direction: string; status: string; journal_entry_id: number | null; amount: string; credit_amount: string; debit_amount: string }>(
+    `select id,company_id,direction,status,journal_entry_id,
+            amount::text as amount,credit_amount::text as credit_amount,
+            debit_amount::text as debit_amount
        from public.bank_mutations where id=$1 and company_id=$2 for update`,
     [ids.mutationId, ids.companyId],
   );
@@ -101,6 +103,12 @@ export async function lockOutboundSourceJournalReuseScope(
   // Exact persisted money evidence. Do not trust request-body amounts and do
   // not round numeric values to the nearest cent.
   const mutationMinor = minor(m.amount);
+  // CST-DEV canonical bank import stores OUT cash in credit_amount,
+  // despite the accounting journal itself CREDITing the bank COA. Never
+  // infer debit/credit direction from generic accounting conventions.
+  if(!/^0(?:\\.0{1,2})?$/.test(String(m.debit_amount??""))
+    || minor(m.credit_amount)!==mutationMinor)
+    throw new Error("PR95_OUTBOUND_BANK_DIRECTION_AMOUNTS_MISMATCH");
   const itemMinor = minor(sourceItems.rows[0].amount);
   const headerDebitMinor = minor(entry.rows[0].total_debit);
   const headerCreditMinor = minor(entry.rows[0].total_credit);
