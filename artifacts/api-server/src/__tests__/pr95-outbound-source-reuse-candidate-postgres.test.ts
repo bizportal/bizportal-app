@@ -256,6 +256,27 @@ suite("PR95 unregistered source-owned OUT reuse transition on disposable Postgre
     }finally{await client.query("ROLLBACK");}
     expect(await counts()).toMatchObject({journals:1,allocations:0,matches:0,audits:0});
   });
+  it("blocks an existing active allocation even when its mutation is not posted",async()=>{
+    await client.query("BEGIN");
+    try{
+      const group=await client.query(
+        `INSERT INTO public.payment_matching_groups
+          (company_id,group_type,matching_type,total_mutation_amount,total_invoice_amount,
+           total_allocated,remaining_amount,confidence,algorithm_used,status,created_by)
+         VALUES(1,'MULTI_INVOICE','MULTI_INVOICE',100,100,100,0,100,'old_pending','active','test')
+         RETURNING id`,
+      );
+      await client.query(
+        `INSERT INTO public.payment_allocations
+          (group_id,company_id,invoice_id,mutation_id,allocated_amount,remaining_amount,
+           allocation_sequence,strategy,is_active)
+         VALUES($1,1,7,90001,100,0,1,'MANUAL',true)`,
+        [group.rows[0].id],
+      );
+      await expect(execute()).rejects.toThrow("PR95_OUTBOUND_FINALIZED_CUSTODY_EXISTS");
+    }finally{await client.query("ROLLBACK");}
+    expect(await counts()).toMatchObject({journals:1,allocations:0,matches:0,audits:0});
+  });
   it("rejects invalid AP debit account before financial writes",async()=>{
     await client.query("BEGIN");
     try{
