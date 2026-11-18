@@ -9,10 +9,22 @@ import type { OutboundReuseQueryClient } from "../lib/outboundReuseFinalityReade
 // Real signed-cookie validation, DB user lookup, locks and finance writer run.
 const shared=vi.hoisted(()=>({authClient:null as null | pg.Client}));
 vi.mock("@workspace/db",()=>({
-  pool:{query:async(sql:string,args?:unknown[])=>{
-    if(!shared.authClient) throw Error("PR95_HTTP_PG_UNAVAILABLE");
-    return shared.authClient.query(sql,args);
-  }},
+  pool:{
+    query:async(sql:string,args?:unknown[])=>{
+      if(!shared.authClient) throw Error("PR95_HTTP_PG_UNAVAILABLE");
+      return shared.authClient.query(sql,args);
+    },
+    connect:async()=>{
+      const u=process.env.PR95_ATOMIC_PG_URL;
+      if(!u)throw Error("PR95_HTTP_PG_UNAVAILABLE");
+      const conn=new pg.Client({connectionString:u});
+      await conn.connect();
+      return {
+        query:conn.query.bind(conn),
+        release:()=>{void conn.end();},
+      };
+    },
+  },
   getRuntimeDatabaseUrl:async()=>{throw Error("PR95_NO_EXTERNAL_DB");},
 }));
 import { setProductionSessionCookie } from "../routes/dev-auth";
@@ -50,6 +62,17 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
       body:JSON.stringify(payload),
     });
     return {status:res.status,body:await res.json() as Record<string,unknown>};
+  };
+  const sendCanonical=async(body:Record<string,unknown>={
+    vendor_invoice_ids:[7],source_journal_reuse:true,
+  },companyId=1,session=cookie)=>{
+    const response=await fetch(origin+
+      "/api/bank-reconciliation/90001/vendor-invoice-payment-batch?company="+companyId,{
+      method:"POST",
+      headers:{"content-type":"application/json",...(session?{cookie:session}:{})},
+      body:JSON.stringify(body),
+    });
+    return {status:response.status,body:await response.json() as Record<string,unknown>};
   };
   const counters=async()=>{
     const q=await auth.query(`SELECT
@@ -151,6 +174,12 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
     `);
     const app=express();
     app.use(express.json({limit:"4kb"}));
+    app.use((req,_res,next)=>{
+      req.log={warn:()=>undefined,error:()=>undefined} as never;
+      next();
+    });
+    const {default:canonicalBankReconciliation}=await import("../routes/bank-reconciliation");
+    app.use("/api",canonicalBankReconciliation);
     // Test ONLY. No registration in production/API routers.
     app.post("/__isolated__/vendor-out-reuse",async(req,res)=>{
       const body=req.body as Record<string,unknown>;
@@ -216,6 +245,27 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
       BIZPORTAL_SIGNED_OTP_ENABLED_DEV:previous.otp,
       PR95_OUTBOUND_SOURCE_REUSE_ENABLED_DEV:previous.feature,
     })){if(v===undefined) delete process.env[k];else process.env[k]=v;}
+  });
+  it("uses the actual canonical vendor batch route with signed DEV Super Admin and no second journal",async()=>{
+    const result=await sendCanonical();
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({
+      ok:true,status:"posted",source_journal_reused:true,
+      journal_entry_id:314,mutation_id:90001,
+    });
+    expect(await counters()).toMatchObject({
+      journals:1,allocations:1,matches:1,audits:1,mutation_status:"posted",
+      matching_group_id:expect.any(Number),
+    });
+    const replay=await sendCanonical();
+    expect(replay.status).toBe(409);
+    expect(await counters()).toMatchObject({journals:1,allocations:1,matches:1,audits:1});
+  });
+  it("canonical route rejects signed cross-company and unsupported multi-invoice reuse before writes",async()=>{
+    expect((await sendCanonical(undefined,2)).status).toBe(409);
+    expect((await sendCanonical({source_journal_reuse:true,vendor_invoice_ids:[7,8]})).status).toBe(422);
+    expect((await sendCanonical({source_journal_reuse:true,vendor_invoice_ids:[7],allocations:[{invoice_id:7,amount:100}]})).status).toBe(422);
+    expect(await counters()).toMatchObject({journals:1,allocations:0,matches:0,audits:0});
   });
   it("authenticates signed super_admin and executes real writer with one source journal",async()=>{
     const reply=await send();
