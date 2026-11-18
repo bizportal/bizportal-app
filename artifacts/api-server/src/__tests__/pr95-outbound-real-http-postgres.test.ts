@@ -111,6 +111,13 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
         id integer primary key,company_id integer,status text,
         cancelled_at timestamptz,grand_total numeric
       );
+      CREATE TABLE public.vendor_invoice_lines(
+        id integer primary key,invoice_id integer not null
+      );
+      CREATE TABLE public.vendor_invoice_line_taxes(
+        id integer primary key,invoice_line_id integer not null,
+        company_id integer not null,tax_amount numeric not null
+      );
       CREATE TABLE public.bank_disbursements(
         id integer primary key,company_id integer,entry_id integer,
         status text,void_entry_id integer
@@ -235,7 +242,8 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
           public.payment_matching_groups,public.chart_of_accounts,
           public.company_bank_accounts,public.accounting_entry_lines,
           public.accounting_entries,public.bank_disbursement_items,
-          public.bank_disbursements,public.vendor_invoices,public.bank_mutations;
+          public.bank_disbursements,public.vendor_invoice_line_taxes,public.vendor_invoice_lines,
+      public.vendor_invoices,public.bank_mutations;
       `);
       await auth.end();
     }
@@ -343,6 +351,19 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
     expect(Number(result.rows[0].canonical_paid)).toBe(100);
     const journal=await auth.query("select count(*)::int as n from public.accounting_entries");
     expect(journal.rows[0].n).toBe(1);
+  });
+  it("canonical HTTP rejects invoice with persisted positive tax lines and no writes",async()=>{
+    await auth.query("INSERT INTO public.vendor_invoice_lines VALUES(88,7)");
+    await auth.query("INSERT INTO public.vendor_invoice_line_taxes VALUES(99,88,1,10.00)");
+    try{
+      const response=await sendCanonical();
+      expect(response.status).toBe(409);
+      expect(response.body.code).toBe("PR95_SOURCE_REUSE_TAX_LINES_UNSUPPORTED");
+      expect(await counters()).toMatchObject({journals:1,allocations:0,matches:0,audits:0});
+    }finally{
+      await auth.query("DELETE FROM public.vendor_invoice_line_taxes WHERE id=99");
+      await auth.query("DELETE FROM public.vendor_invoice_lines WHERE id=88");
+    }
   });
   it("rejects simultaneous HTTP requests for same source with one allocation only",async()=>{
     const responses=await Promise.all([send(),send()]);
