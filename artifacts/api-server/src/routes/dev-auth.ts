@@ -540,6 +540,7 @@ export async function getProductionUser(session: ProductionSession): Promise<Dev
   // every protected request rather than trusting the original signed cookie.
   if (isSignedPasswordDevEnabled() && (
     role !== "super_admin"
+    || userData.system_role !== "super_admin"
     || accountStatus !== "active"
     || userData.is_active !== true
     || parsedCompanyId !== null

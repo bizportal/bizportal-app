@@ -1,0 +1,216 @@
+name: PR136 DEV — original Accounting owner same PostgreSQL client
+
+on:
+  pull_request:
+    branches:
+      - test/pr134-existing-posting-source-review-20261117
+    paths:
+      - 'artifacts/api-server/src/lib/posting-engine/customer-portal-sales-invoice-owner-dev.ts'
+      - 'artifacts/api-server/src/lib/posting-engine/CanonicalPostingEngine.ts'
+      - 'artifacts/api-server/src/lib/posting-engine/types.ts'
+      - 'artifacts/api-server/src/lib/posting-engine/CanonicalPostingEngine.customer-portal-ppn.test.ts'
+      - 'artifacts/api-server/src/lib/posting-engine/customer-portal-sales-invoice-owner-dev.ppn.test.ts'
+      - 'artifacts/api-server/src/lib/logger.ts'
+      - 'artifacts/api-server/src/routes/dev-auth.ts'
+      - 'artifacts/api-server/src/routes/local-production-auth.ts'
+      - 'artifacts/api-server/src/routes/dev-superadmin-password-http.test.ts'
+      - 'artifacts/api-server/src/routes/dev-customer-invoice-attestation.ts'
+      - 'artifacts/api-server/src/routes/dev-customer-invoice-attestation.test.ts'
+      - 'artifacts/api-server/src/routes/index.ts'
+      - 'artifacts/api-server/src/lib/accounting/outboxProcessor.ts'
+      - 'artifacts/api-server/src/index.ts'
+      - 'artifacts/api-server/src/lib/accounting/outboxProcessor.customer-portal-dev.test.ts'
+      - 'artifacts/api-server/src/lib/posting-engine/customer-portal-sales-invoice-owner-dev.test.ts'
+      - 'artifacts/api-server/src/lib/posting-engine/customer-portal-sales-tax-readiness-dev.ts'
+      - 'artifacts/api-server/src/lib/posting-engine/customer-portal-sales-tax-readiness-dev.test.ts'
+      - 'docs/dev-customer-invoice-original-posting-owner-transaction-bridge.md'
+      - 'deploy/bizportal-dev-customer-invoice-attestation.nginx.conf'
+      - '.github/workflows/pr136-customer-invoice-existing-owner-adapter.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  original-owner-inprocess-adapter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Install exact pinned dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Validate the original posting engine is reused and NOT mounted
+        shell: bash
+        run: |
+          set -euo pipefail
+          f=artifacts/api-server/src/lib/posting-engine/customer-portal-sales-invoice-owner-dev.ts
+          grep -Fq 'getPostingEngine().post(' "$f"
+          grep -Fq 'drizzle(client)' "$f"
+          grep -Fq 'for update' "$f"
+          grep -Fq 'DEV_SALES_POSTING_TAX_NOT_READY' "$f"
+          grep -Fq 'CUSTOMER_PORTAL_ATOMIC_ACCOUNTING_POST_DEV' "$f"
+          ! grep -Eq 'new Pool|createPool|insert into public.accounting_entries' "$f"
+          ! grep -Fq 'customer-portal-sales-invoice-owner-dev' artifacts/api-server/src/index.ts
+          echo ORIGINAL_ACCOUNTING_OWNER_REUSE_ONLY_NO_LIVE_MOUNT_PASS
+      - name: Existing owner and same-client adapter focused tests
+        env:
+          APP_ENV: development
+          NODE_ENV: test
+          TZ: Asia/Jakarta
+        run: |
+          pnpm --dir artifacts/api-server exec vitest run             src/lib/__tests__/legacy-posting-owner-transactions.test.ts             src/lib/posting-engine/customer-portal-sales-invoice-owner-dev.test.ts             src/lib/posting-engine/customer-portal-sales-invoice-owner-dev.ppn.test.ts             src/lib/posting-engine/CanonicalPostingEngine.customer-portal-ppn.test.ts             src/lib/posting-engine/customer-portal-sales-tax-readiness-dev.test.ts             src/lib/accounting/outboxProcessor.customer-portal-dev.test.ts
+      - name: Signed BizPortal Super Admin DEV password role/revocation regression
+        env:
+          APP_ENV: development
+          NODE_ENV: test
+          TZ: Asia/Jakarta
+        run: |
+          pnpm --dir artifacts/api-server exec vitest run src/routes/dev-superadmin-password-http.test.ts
+      - name: Independently signed BizPortal attestation route and Ed25519 proof gates
+        env:
+          APP_ENV: development
+          NODE_ENV: test
+        run: |
+          pnpm --dir artifacts/api-server exec vitest run src/routes/dev-customer-invoice-attestation.test.ts
+          grep -Fq 'devCustomerInvoiceAttestationRouter' artifacts/api-server/src/routes/index.ts
+          grep -Fq 'getProductionSession' artifacts/api-server/src/routes/dev-customer-invoice-attestation.ts
+          grep -Fq 'getProductionUser' artifacts/api-server/src/routes/dev-customer-invoice-attestation.ts
+          grep -Fq 'BIZPORTAL_CUSTOMER_INVOICE_ATTEST_DEV' artifacts/api-server/src/routes/dev-customer-invoice-attestation.ts
+      - name: Protect exact DEV BizPortal issuer Nginx allowlist (source-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          f=deploy/bizportal-dev-customer-invoice-attestation.nginx.conf
+          grep -Fq 'location = /api/auth/dev/customer-invoice-attestation {' "$f"
+          grep -Fq 'proxy_pass http://127.0.0.1:19981;' "$f"
+          grep -Fq 'limit_except GET { deny all; }' "$f"
+          grep -Fq 'proxy_no_cache 1;' "$f"
+          grep -Fq 'Cache-Control "no-store, private" always;' "$f"
+          grep -Fq 'Referrer-Policy "no-referrer" always;' "$f"
+          ! grep -Eq 'Access-Control-Allow-Origin|location /api/auth/|location \^~ /api/' "$f"
+          echo EXACT_DEV_SIGNED_AUTH_PROXY_STAGED_NOT_DEPLOYED_PASS
+      - name: Keep gated original CanonicalPostingEngine PPN extension DEV-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          e=artifacts/api-server/src/lib/posting-engine/CanonicalPostingEngine.ts
+          a=artifacts/api-server/src/lib/posting-engine/customer-portal-sales-invoice-owner-dev.ts
+          # ORIGINAL financial writer must remain byte-identical; its
+          # universal v1 request.taxes rejection is NOT weakened.
+          grep -Fq 'if (request.taxes && request.taxes.length > 0)' "$e"
+          grep -Fq 'postEntryWithClient(client' "$e"
+          ! grep -Fq 'CUSTOMER_PORTAL_TAX_ATOMIC_POST_DEV' "$e"
+          ! grep -Fq 'insert into public.gl_tax_lines' "$e"
+          # Only the existing caller-owned adapter may append tax metadata
+          # to the SAME PostgreSQL client before the Portal COMMIT.
+          grep -Fq 'getPostingEngine().post(' "$a"
+          grep -Fq 'CUSTOMER_PORTAL_TAX_ATOMIC_POST_DEV' "$a"
+          grep -Fq 'insert into public.gl_tax_lines' "$a"
+          grep -Fq 'DEV_SALES_POSTING_TAX_METADATA_MISMATCH' "$a"
+          grep -Fq 'tax_rate_id,tax_treatment' "$a"
+          grep -Fq 'DEV_SALES_POSTING_TAX_SETTINGS_NOT_READY' "$a"
+          ! grep -Fq 'startCustomerPortalSalesTaxDevScheduler' artifacts/api-server/src/index.ts
+          echo DEV_PPN_GATED_SINGLE_OWNER_ONLY_PASS
+      - name: Prove PPN preflight is read-only and cross-company fail-closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          f=artifacts/api-server/src/lib/posting-engine/customer-portal-sales-tax-readiness-dev.ts
+          grep -Fq 'DEFAULT_SALES_TAX_COMPANY_MISMATCH' "$f"
+          grep -Fq 'CANONICAL_TAX_POSTING_NOT_READY' "$f"
+          grep -Fq 'SameTransactionRead' "$f"
+          ! grep -Eiq 'insert[[:space:]]+into[[:space:]]+public\.|update[[:space:]]+public\.|delete[[:space:]]+from[[:space:]]+public\.' "$f"
+          ! grep -Fq 'customer-portal-sales-tax-readiness-dev' artifacts/api-server/src/index.ts
+          echo SALES_PPN_PREFLIGHT_SOURCE_ONLY_PASS
+      - name: Protect existing worker; keep new strict consumer default OFF
+        shell: bash
+        run: |
+          set -euo pipefail
+          f=artifacts/api-server/src/lib/accounting/outboxProcessor.ts
+          grep -Fq 'processCustomerPortalSalesInvoiceOutboxDevOnce' "$f"
+          grep -Fq 'CUSTOMER_PORTAL_OUTBOX_SAFE_CONSUME_DEV' "$f"
+          grep -Fq 'FOR UPDATE SKIP LOCKED' "$f"
+          grep -Fq 'db.transaction' "$f"
+          grep -Fq 'DEV_OUTBOX_PREEXISTING_FINANCIAL_EVENT' "$f"
+          grep -Fq 'startCustomerPortalSalesInvoiceOutboxDevProcessor' artifacts/api-server/src/index.ts
+          grep -Fq 'stopCustomerInvoiceOutboxDevProcessor?.()' artifacts/api-server/src/index.ts
+          ! grep -Fq 'startOutboxProcessor()' artifacts/api-server/src/index.ts
+          echo STRICT_CUSTOMER_INVOICE_OUTBOX_SOURCE_ONLY_PASS
+      - name: Build and import deterministic isolated owner package without deployment
+        shell: bash
+        env:
+          NODE_ENV: development
+          CST_ACCOUNTING_OWNER_JSON_LOG_DEV: 'true'
+        run: |
+          set -euo pipefail
+          tmpdir="$(mktemp -d)"
+          trap 'rm -rf "$tmpdir"' EXIT
+          build_owner() {
+            pnpm --dir artifacts/api-server exec esbuild \
+              src/lib/posting-engine/customer-portal-sales-invoice-owner-dev.ts \
+              --bundle --platform=node --format=esm --target=node22 \
+              --alias:@workspace/db=../../lib/db/src/index.ts \
+              --external:pg-native --external:'*.node' --external:sharp \
+              --external:'@google-cloud/*' \
+              '--banner:js=import { createRequire } from "node:module"; const require=createRequire(import.meta.url);' \
+              --outfile="$1"
+          }
+          build_owner "$tmpdir/owner.mjs"
+          build_owner "$tmpdir/owner-repeat.mjs"
+          cmp "$tmpdir/owner.mjs" "$tmpdir/owner-repeat.mjs"
+          test -s "$tmpdir/owner.mjs"
+          grep -Fq 'postCustomerPortalSalesInvoiceWithExistingOwner' "$tmpdir/owner.mjs"
+          grep -Fq 'DEV_SALES_POSTING_TAX_NOT_READY' "$tmpdir/owner.mjs"
+          grep -Fq 'CanonicalPostingEngine' "$tmpdir/owner.mjs"
+          sha256sum "$tmpdir/owner.mjs"
+          # Module is imported from /tmp, outside any pnpm workspace and without
+          # node_modules. This must not need an independent database connection.
+          node --input-type=module - "$tmpdir/owner.mjs" <<'NODE'
+          import assert from "node:assert/strict";
+          import { pathToFileURL } from "node:url";
+          const { postCustomerPortalSalesInvoiceWithExistingOwner: post } =
+            await import(pathToFileURL(process.argv[2]).href);
+          assert.equal(typeof post, "function");
+          process.env.APP_ENV = "development";
+          process.env.CUSTOMER_PORTAL_ATOMIC_ACCOUNTING_POST_DEV = "false";
+          process.env.CUSTOMER_PORTAL_REQUIRE_POSTED_AR_EVIDENCE_DEV = "false";
+          await assert.rejects(post({}), /DEV_SALES_POSTING_NOT_ENABLED/);
+          process.env.APP_ENV = "production";
+          process.env.CUSTOMER_PORTAL_ATOMIC_ACCOUNTING_POST_DEV = "true";
+          process.env.CUSTOMER_PORTAL_REQUIRE_POSTED_AR_EVIDENCE_DEV = "true";
+          await assert.rejects(post({}), /DEV_SALES_POSTING_NOT_ENABLED/);
+          process.env.APP_ENV = "development";
+          await assert.rejects(
+            post({ companyId: 2, source: "sales_invoice", sourceId: 5,
+              invoice: { id: 5, company_id: 2 },
+              transactionClient: { query() { throw Error("UNEXPECTED_DATABASE_ACCESS"); } } }),
+            /DEV_SALES_POSTING_INVOICE_SCOPE_INVALID/,
+          );
+          console.log("ISOLATED_OWNER_IMPORT_AND_FENCES_PASS_NO_DATABASE");
+          NODE
+      - name: Canonical API TypeScript and credential-free full regression
+        env:
+          APP_ENV: development
+          NODE_ENV: test
+          TZ: Asia/Jakarta
+        run: |
+          pnpm --dir artifacts/api-server typecheck
+          pnpm --dir artifacts/api-server exec vitest run --maxWorkers=2
+      - name: Build API/frontend but never deploy
+        env:
+          NODE_ENV: production
+          BIZPORTAL_SIGNED_PASSWORD_ENABLED_DEV: 'true'
+          BIZPORTAL_SIGNED_OTP_ENABLED_DEV: 'false'
+        run: |
+          pnpm --filter @workspace/api-server run build
+          pnpm --filter @workspace/bizportal run build
+          node scripts/prepare-hostinger.mjs
+      - name: No tracked source mutation
+        run: git diff --exit-code -- artifacts/api-server/src lib/db/src docs pnpm-lock.yaml

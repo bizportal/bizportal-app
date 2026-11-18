@@ -9,6 +9,7 @@ import accountingRouter from "./accounting";
 import purchaseWorkflowRouter from "./purchase-workflow";
 import businessDashboardRouter from "./business-dashboard";
 import localProductionAuthRouter from "./local-production-auth";
+import devCustomerInvoiceAttestationRouter from "./dev-customer-invoice-attestation";
 import salesCoreRouter from "./sales-core";
 import adminRealtimeRouter from "./admin-realtime";
 import driverGeofenceRouter from "./driver-geofence";
@@ -42,6 +43,9 @@ router.use(createDevAuthRouter());
 // Production auth is local to this deployment and is mounted before the
 // remaining API-owned routes.
 router.use(localProductionAuthRouter);
+
+// Authenticated, independently signed BizPortal assertion (DEV only, OFF by default).
+router.use(devCustomerInvoiceAttestationRouter);
 
 // Canonical DEV-only document-template API, imported from verified legacy implementation.
 // OFF by default; do not activate before signed-session and A4 PDF E2E verification.
