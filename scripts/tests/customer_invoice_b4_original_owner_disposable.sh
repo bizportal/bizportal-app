@@ -162,6 +162,13 @@ APP_ENV=development NODE_ENV=development \
  CUSTOMER_INVOICE_DISPOSABLE_OWNER_PATH="$WORK/bundle/portalInvoiceAdapter.mjs" \
  node "$ROOT/scripts/tests/customer_invoice_b4_owner_session_qa.mjs"
 echo B4_ORIGINAL_CANONICAL_POSTING_CST_DIVA_REPLAY_ROLLBACK_PASS
+# Synthetic QA only: SCRAM verifiers generated in-process, no password
+# output, direct company-scoped login then guaranteed NOLOGIN/password NULL.
+# Hosted CST-DEV is never touched by this localhost disposable harness.
+APP_ENV=development NODE_ENV=development \
+ CUSTOMER_INVOICE_DISPOSABLE_DB_URL="postgresql://postgres:disposable-only@127.0.0.1:$PORT/invoice_synthetic" \
+ node "$ROOT/scripts/tests/customer_invoice_scram_writer_activation.qa.mjs"
+echo B4_DIRECT_INDEPENDENT_SCRAM_LOGINS_RELOCKED_PASS
 # Disable actors before guarded B4-only permission rollback; no source
 # journal is deleted. B1/B2/B3 and the two NOLOGIN roles remain.
 docker exec "$PG_NAME" psql -X -q -v ON_ERROR_STOP=1 \
