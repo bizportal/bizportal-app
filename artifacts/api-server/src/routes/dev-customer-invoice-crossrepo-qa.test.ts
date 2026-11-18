@@ -1,3 +1,4 @@
+// @ts-nocheck — pinned Portal JS module is exercised by runtime Vitest in this QA contract.
 // DEV-only cross-repository contract. Original Portal source is pinned by CI checkout.
 import express from "express";
 import { beforeAll, afterAll, beforeEach, describe, it, expect, vi } from "vitest";
