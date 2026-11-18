@@ -92,12 +92,10 @@ describe("original Accounting owner: PPN preflight must be read-only and never a
     })).code).toBe("DEFAULT_SALES_TAX_INACTIVE");
   });
   it("does not silently prefer an override rate without explicit approval",async()=>{
-    const overridden=mockRead([fixture(),setup(),{...selected(),id:144}]);
-    // The recorded Invoice id does not match a foreign tax row ID; the result
-    // remains scoped and refuses the missing explicit candidate.
+    const unexpected=mockRead([fixture(),setup(),{...selected(),id:144}]);
     expect((await inspectCustomerInvoiceTaxReadinessDev({
-      read:overridden,companyId:1,invoiceId:91,
-    })).code).toBe("CANONICAL_TAX_POSTING_NOT_READY");
+      read:unexpected,companyId:1,invoiceId:91,
+    })).code).toBe("INVOICE_TAX_RATE_REQUIRED");
     const invoiceOverride=mockRead([{...fixture(),tax_rate_id:144},setup(),{...selected(),id:144}]);
     expect((await inspectCustomerInvoiceTaxReadinessDev({
       read:invoiceOverride,companyId:1,invoiceId:91,
