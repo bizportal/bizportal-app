@@ -105,7 +105,7 @@ suite("PR95 canonical finality reader against real disposable PostgreSQL 16", ()
     }finally{await client.query("ROLLBACK");}
     await expect(read()).resolves.toMatchObject({activeApprovedMutationLinkCount:0});
   });
-  it("rejects cross-company invoice allocation and inactive/unfinished group as final custody", async () => {
+  it("blocks active unfinished invoice allocation while ignoring cross-company and inactive rows", async () => {
     await client.query("BEGIN");
     try {
       await client.query(`
@@ -113,9 +113,13 @@ suite("PR95 canonical finality reader against real disposable PostgreSQL 16", ()
           VALUES(2,2,7,5,90002,true),(3,1,7,5,90001,false),
                 (4,1,7,5,90001,true);
       `);
-      await expect(read()).resolves.toMatchObject({ sourceFinalAllocationCount: 0 });
-      await client.query("UPDATE public.bank_mutations SET status='posted' WHERE id=90001");
+      // The matched/unposted mutation and the active group are sufficient
+      // to block full-payment reuse; final journal status is irrelevant.
       await expect(read()).resolves.toMatchObject({ sourceFinalAllocationCount: 1 });
+      await client.query("UPDATE public.payment_matching_groups SET status='reversed' WHERE id=5");
+      await expect(read()).resolves.toMatchObject({ sourceFinalAllocationCount: 1 });
+      await client.query("UPDATE public.payment_allocations SET is_active=false WHERE id=4");
+      await expect(read()).resolves.toMatchObject({ sourceFinalAllocationCount: 0 });
     } finally {
       await client.query("ROLLBACK");
     }
