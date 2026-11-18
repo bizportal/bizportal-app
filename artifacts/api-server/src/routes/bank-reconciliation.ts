@@ -7979,14 +7979,19 @@ router.use(["/bank-reconciliation/sheet-configs", "/bank-reconciliation/sheet-sy
   }
   if (!actor) { res.status(401).json({ error: "Unauthorized" }); return; }
 
-  const requestedCompany = req.method === "POST" && req.path === "/bank-reconciliation/sheet-configs"
-    ? req.body?.company_id : req.method === "PUT" ? req.body?.company_id : undefined;
+  // router.use() temporarily strips its mount prefix from req.path.
+  // Use the original path to enforce config ownership for nested routes.
+  const requestPath = req.originalUrl.split("?")[0];
+  const isCreate = req.method === "POST"
+    && /(?:^|\/)bank-reconciliation\/sheet-configs$/.test(requestPath);
+  const requestedCompany = isCreate || req.method === "PUT"
+    ? req.body?.company_id : undefined;
   if (requestedCompany !== undefined && actor.companyId != null
       && Number(requestedCompany) !== actor.companyId) {
     res.status(403).json({ error: "Akses perusahaan ditolak" });
     return;
   }
-  const idMatch = req.path.match(/^\/bank-reconciliation\/sheet-configs\/(\d+)(?:\/(?:sync|test))?$/);
+  const idMatch = requestPath.match(/(?:^|\/)bank-reconciliation\/sheet-configs\/(\d+)(?:\/(?:sync|test))?$/);
   if (idMatch && actor.companyId != null) {
     try {
       const owner = await pool.query<{ company_id: number | null }>(
