@@ -30,7 +30,7 @@ suite("PR95 canonical finality reader against real disposable PostgreSQL 16", ()
         id integer PRIMARY KEY, mutation_id integer NOT NULL, status text NOT NULL
       );
       CREATE TABLE public.payment_matching_groups (
-        id integer PRIMARY KEY, status text NOT NULL
+        id integer PRIMARY KEY, status text NOT NULL CHECK (status IN ('active','reversed','void'))
       );
       CREATE TABLE public.payment_allocations (
         id integer PRIMARY KEY, company_id integer NOT NULL,
@@ -78,8 +78,8 @@ suite("PR95 canonical finality reader against real disposable PostgreSQL 16", ()
           VALUES(1,90001,'approved');
         INSERT INTO public.payment_allocations(id,company_id,invoice_id,group_id,mutation_id,is_active)
           VALUES(1,1,7,5,90001,true);
-        UPDATE public.payment_matching_groups SET status='final' WHERE id=5;
-        UPDATE public.bank_mutations SET journal_entry_id=314,status='approved'
+        -- Matching group stays active; the posted bank mutation establishes finality.
+        UPDATE public.bank_mutations SET journal_entry_id=314,status='posted'
           WHERE id=90001;
       `);
       await expect(read()).resolves.toEqual({
@@ -97,6 +97,14 @@ suite("PR95 canonical finality reader against real disposable PostgreSQL 16", ()
     });
   });
 
+  it("blocks a source journal linked to an unfinalized mutation",async()=>{
+    await client.query("BEGIN");
+    try{
+      await client.query("UPDATE public.bank_mutations SET journal_entry_id=314,status='matched' WHERE id=90001");
+      await expect(read()).resolves.toMatchObject({activeApprovedMutationLinkCount:1});
+    }finally{await client.query("ROLLBACK");}
+    await expect(read()).resolves.toMatchObject({activeApprovedMutationLinkCount:0});
+  });
   it("rejects cross-company invoice allocation and inactive/unfinished group as final custody", async () => {
     await client.query("BEGIN");
     try {
@@ -106,7 +114,7 @@ suite("PR95 canonical finality reader against real disposable PostgreSQL 16", ()
                 (4,1,7,5,90001,true);
       `);
       await expect(read()).resolves.toMatchObject({ sourceFinalAllocationCount: 0 });
-      await client.query("UPDATE public.payment_matching_groups SET status='reconciled' WHERE id=5");
+      await client.query("UPDATE public.bank_mutations SET status='posted' WHERE id=90001");
       await expect(read()).resolves.toMatchObject({ sourceFinalAllocationCount: 1 });
     } finally {
       await client.query("ROLLBACK");
