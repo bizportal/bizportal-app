@@ -12,6 +12,7 @@ on:
       - 'scripts/tests/customer-invoice-portal-handler-disposable-extra.sql'
       - 'scripts/tests/customer-invoice-portal-handler-disposable-bundle.mjs'
       - 'scripts/tests/customer-invoice-portal-handler-disposable.mjs'
+      - 'scripts/tests/customer-invoice-bizportal-otp-issuer-disposable-bundle.mjs'
       - 'artifacts/api-server/src/lib/__tests__/portal-invoice-existing-owner-adapter.test.ts'
       - '.github/workflows/customer-invoice-atomic-ppn-dev.yml'
   workflow_dispatch:
@@ -32,6 +33,17 @@ jobs:
           ref: e005a3e7593c467693a7b2e7101fa47a929f9b6c
           path: vendor/customer-portal
           persist-credentials: false
+      - name: Checkout pinned original BizPortal signed OTP issuer
+        uses: actions/checkout@v4
+        with:
+          repository: bizportal/bizportal-app
+          ref: 69a811809ef250cc1b26296c59a27908eaa13e75
+          path: vendor/bizportal-otp
+          persist-credentials: false
+      - name: Verify signed OTP issuer exact SHA
+        run: |
+          test "$(git -C vendor/bizportal-otp rev-parse HEAD)" = 69a811809ef250cc1b26296c59a27908eaa13e75
+          test -f vendor/bizportal-otp/artifacts/api-server/src/routes/dev-customer-invoice-attestation.ts
       - name: Verify exact Portal handler source SHA
         run: |
           test "$(git -C vendor/customer-portal rev-parse HEAD)" = e005a3e7593c467693a7b2e7101fa47a929f9b6c
