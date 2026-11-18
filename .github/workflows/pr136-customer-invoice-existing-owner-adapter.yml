@@ -17,6 +17,8 @@ on:
       - 'artifacts/api-server/src/index.ts'
       - 'artifacts/api-server/src/lib/accounting/outboxProcessor.customer-portal-dev.test.ts'
       - 'artifacts/api-server/src/lib/posting-engine/customer-portal-sales-invoice-owner-dev.test.ts'
+      - 'artifacts/api-server/src/lib/posting-engine/customer-portal-sales-tax-readiness-dev.ts'
+      - 'artifacts/api-server/src/lib/posting-engine/customer-portal-sales-tax-readiness-dev.test.ts'
       - 'docs/dev-customer-invoice-original-posting-owner-transaction-bridge.md'
       - '.github/workflows/pr136-customer-invoice-existing-owner-adapter.yml'
   workflow_dispatch:
@@ -58,7 +60,7 @@ jobs:
           NODE_ENV: test
           TZ: Asia/Jakarta
         run: |
-          pnpm --dir artifacts/api-server exec vitest run             src/lib/__tests__/legacy-posting-owner-transactions.test.ts             src/lib/posting-engine/customer-portal-sales-invoice-owner-dev.test.ts             src/lib/accounting/outboxProcessor.customer-portal-dev.test.ts
+          pnpm --dir artifacts/api-server exec vitest run             src/lib/__tests__/legacy-posting-owner-transactions.test.ts             src/lib/posting-engine/customer-portal-sales-invoice-owner-dev.test.ts             src/lib/posting-engine/customer-portal-sales-tax-readiness-dev.test.ts             src/lib/accounting/outboxProcessor.customer-portal-dev.test.ts
       - name: Signed BizPortal Super Admin DEV password role/revocation regression
         env:
           APP_ENV: development
@@ -76,6 +78,17 @@ jobs:
           grep -Fq 'getProductionSession' artifacts/api-server/src/routes/dev-customer-invoice-attestation.ts
           grep -Fq 'getProductionUser' artifacts/api-server/src/routes/dev-customer-invoice-attestation.ts
           grep -Fq 'BIZPORTAL_CUSTOMER_INVOICE_ATTEST_DEV' artifacts/api-server/src/routes/dev-customer-invoice-attestation.ts
+      - name: Prove PPN preflight is read-only and cross-company fail-closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          f=artifacts/api-server/src/lib/posting-engine/customer-portal-sales-tax-readiness-dev.ts
+          grep -Fq 'DEFAULT_SALES_TAX_COMPANY_MISMATCH' "$f"
+          grep -Fq 'CANONICAL_TAX_POSTING_NOT_READY' "$f"
+          grep -Fq 'same' "$f"
+          ! grep -Eiq 'insert[[:space:]]+into[[:space:]]+public\.|update[[:space:]]+public\.|delete[[:space:]]+from[[:space:]]+public\.' "$f"
+          ! grep -Fq 'customer-portal-sales-tax-readiness-dev' artifacts/api-server/src/index.ts
+          echo SALES_PPN_PREFLIGHT_SOURCE_ONLY_PASS
       - name: Protect existing worker; keep new strict consumer default OFF
         shell: bash
         run: |
