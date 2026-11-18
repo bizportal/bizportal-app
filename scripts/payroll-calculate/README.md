@@ -36,6 +36,14 @@ Actual HTTP requests run through the original DEV **email OTP send and verificat
 
 **Boundary:** OTP send, OTP verify and all three financial actions (Calculate, approval, post-accounting) use the original HTTP handlers. The HMAC cookie is now issued by the **real OTP verification handler** over synthetic test identities, with the only external dependency (SMTP) intercepted; this is **not actual email delivery or an operational CST-DEV OTP**. The application database user lookup is real SQL on the fixture, and synthetic PostgreSQL roles use fixture-only credentials; no live Supabase/GCP secrets are read. Neither the existing DEV staging runtime nor PROD is changed. Synthetic end-to-end PASS does not establish live CST-DEV role provisioning, salary/period configuration, real user sign-in, or operational deployment approval.
 
+## DEV connection-preflight — safe diagnostic, no financial activation
+
+Reuses the existing `GET /api/payroll/connection-preflight?companyId=1` endpoint, with explicit `APP_ENV=development` and `PAYROLL_DEV_CONNECTION_PREFLIGHT_ENABLED=true`. The DEV branch is **default OFF**, available only to an active, signed-OTP Super Admin after a second user-ID and company verification. It never accepts legacy DEV login as permission for this diagnostic. The original PROD-only connection preflight and its designated-owner rules remain unchanged.
+
+If the project-pinned dedicated `bizportal_payroll_dev` URL is absent or malformed, return only `PAYROLL_DEV_DEDICATED_NOT_CONFIGURED` or `PAYROLL_DEV_DEDICATED_CONFIG_INVALID` as a sanitized HTTP 503. Never fall back to the shared Finance/BizPortal pool. With a valid dedicated URL, the existing adapter performs a transaction-local company-scoped **READ ONLY** SQL probe, verifying exact login/current role, company scope, session read-only mode, restricted role metadata and the ability to SELECT scoped Payroll runs/profiles. It returns **booleans only**, never salary totals, row counts, SQL, usernames, hosts, passwords or detailed database errors. Any failure stays fail-closed. A positive diagnostic does **not** prove that RLS rules isolate all rows, nor does it enable Calculate, approval, posting, payment or worker scheduling.
+
+Existing DEV staging does **not yet have** `PAYROLL_DATABASE_URL_DEV`; enabling this diagnostic must not be mistaken for real credential provisioning or Payroll readiness. The route and original PROD compatibility are protected by targeted negative and positive HTTP tests in the existing Payroll PostgreSQL CI gate.
+
 ## Operational NO-GO
 
 The **disposable signed Calculate→approval→posting HTTP** path is tested, but this is **not** a live email-delivered OTP login nor a live DEV acceptance.
