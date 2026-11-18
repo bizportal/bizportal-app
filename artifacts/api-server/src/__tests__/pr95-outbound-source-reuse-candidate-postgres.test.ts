@@ -18,6 +18,7 @@ suite("PR95 unregistered source-owned OUT reuse transition on disposable Postgre
       CREATE TABLE public.bank_mutations(
         id integer primary key,company_id integer,direction text,status text,
         journal_entry_id integer,amount numeric,bank_account_id text,
+        debit_amount numeric not null,credit_amount numeric not null,
         matching_group_id integer,
         reconciliation_status text,accounting_posted boolean default false,
         approved_at timestamptz,approved_by text,posted_at timestamptz,
@@ -81,8 +82,8 @@ suite("PR95 unregistered source-owned OUT reuse transition on disposable Postgre
         id serial primary key,mutation_id integer,action text,actor text,meta jsonb
       );
       INSERT INTO public.bank_mutations
-        (id,company_id,direction,status,journal_entry_id,amount,bank_account_id)
-        VALUES(90001,1,'OUT','unmatched',NULL,100.00,'17');
+        (id,company_id,direction,status,journal_entry_id,amount,bank_account_id,debit_amount,credit_amount)
+        VALUES(90001,1,'OUT','unmatched',NULL,100.00,'17',0,100.00);
       INSERT INTO public.vendor_invoices VALUES(7,1,'posted',NULL,100.00);
       INSERT INTO public.bank_disbursements VALUES(2,1,314,'posted',NULL);
       INSERT INTO public.bank_disbursement_items VALUES(1,2,7,100.00);
@@ -166,8 +167,8 @@ suite("PR95 unregistered source-owned OUT reuse transition on disposable Postgre
     await client.query("BEGIN");
     try {
       await client.query(`INSERT INTO public.bank_mutations
-         (id,company_id,direction,status,journal_entry_id,amount,bank_account_id)
-         VALUES(90002,1,'OUT','unmatched',NULL,100.00,'17')`);
+         (id,company_id,direction,status,journal_entry_id,amount,bank_account_id,debit_amount,credit_amount)
+         VALUES(90002,1,'OUT','unmatched',NULL,100.00,'17',0,100.00)`);
       await execute();
       await expect(finalizeOutboundSourceReuseCandidate(
         client as unknown as OutboundReuseQueryClient,
@@ -189,8 +190,8 @@ suite("PR95 unregistered source-owned OUT reuse transition on disposable Postgre
     let firstCommitted=false;
     try {
       await client.query(`INSERT INTO public.bank_mutations
-        (id,company_id,direction,status,journal_entry_id,amount,bank_account_id)
-        VALUES(90002,1,'OUT','unmatched',NULL,100.00,'17')`);
+        (id,company_id,direction,status,journal_entry_id,amount,bank_account_id,debit_amount,credit_amount)
+        VALUES(90002,1,'OUT','unmatched',NULL,100.00,'17',0,100.00)`);
       await client.query("BEGIN");
       await execute();
       await second.query("BEGIN");
