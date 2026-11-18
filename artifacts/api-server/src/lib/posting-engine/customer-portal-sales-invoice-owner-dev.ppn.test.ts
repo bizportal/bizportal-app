@@ -33,10 +33,27 @@ function fixture(companyId=1,rate=11){
     grand_total:String(gross),amount_paid:"0",
   };
   const sqls:string[]=[];
-  const client={query:vi.fn(async(q:string)=>{
+  const state={
+    priorTaxRows:[] as Record<string,unknown>[],
+    failTaxInsert:false,
+    tamperTaxProof:false,
+  };
+  const client={query:vi.fn(async(q:string,params?:unknown[])=>{
     sqls.push(q);
     if(q.includes("from public.sales_documents"))return {rows:[source]};
     if(q.includes("from public.accounting_settings"))return {rows:[settings]};
+    if(q.includes("from public.gl_tax_lines") && q.includes("for update"))
+      return {rows:state.priorTaxRows};
+    if(q.includes("insert into public.gl_tax_lines")){
+      if(state.failTaxInsert)throw Error("QA_FORCED_TAX_INSERT_FAILURE");
+      return {rows:[{id:701}]};
+    }
+    if(q.includes("from public.gl_tax_lines"))return {rows:[{
+      id:701,company_id:companyId,accounting_entry_id:77,
+      tax_type:"PPN_OUT",rate:String(rate),base_amount:"100",
+      tax_amount:state.tamperTaxProof?"999":String(tax),
+      direction:"out",entity_type:"sales_invoice",entity_id:"91",
+    }]};
     throw Error("UNEXPECTED_QA_SQL");
   })};
   const input={
@@ -45,7 +62,7 @@ function fixture(companyId=1,rate=11){
     companyId,source:"sales_invoice" as const,sourceId:91,
     invoice:invoice as any,actorId:"qa-bizportal-super-admin",
   };
-  return {source,settings,invoice,client,input,sqls};
+  return {source,settings,invoice,client,input,sqls,state};
 }
 beforeEach(()=>{
   vi.clearAllMocks();
@@ -62,10 +79,12 @@ describe("original CanonicalPostingEngine DEV-only PPN adapter tenant+rate check
     await expect(postCustomerPortalSalesInvoiceWithExistingOwner(x.input)).resolves.toEqual({
       posted:true,entryId:77,
     });
-    expect(x.client.query).toHaveBeenCalledTimes(2);
+    expect(x.client.query).toHaveBeenCalledTimes(5);
+    expect(x.sqls.filter(x=>x.includes("gl_tax_lines"))).toHaveLength(3);
     expect(x.sqls[0]).toContain("for update");
     expect(m.post).toHaveBeenCalledTimes(1);
     const [request]=m.post.mock.calls[0];
+    expect(request.taxes).toBeUndefined(); // original engine v1 remains byte-identical
     expect(request).toMatchObject({
       companyId:company,source:"sales_invoice",sourceId:91,
       createdById:"qa-bizportal-super-admin",
@@ -74,10 +93,6 @@ describe("original CanonicalPostingEngine DEV-only PPN adapter tenant+rate check
         {accountId:202,debit:0,credit:100},
         {accountId:company===1?49109:49199,debit:0,credit:rate},
       ],
-      taxes:[{
-        taxType:"PPN_OUT",baseAmount:100,taxAmount:rate,
-        rate,glAccountId:company===1?49109:49199,
-      }],
     });
   });
   it("rejects positive tax unless dedicated DEV flag explicitly ON",async()=>{
@@ -97,19 +112,40 @@ describe("original CanonicalPostingEngine DEV-only PPN adapter tenant+rate check
     expect(m.post).not.toHaveBeenCalled();
   });
   it.each([
-    ["tax company differs",x=>{x.settings.rate_company=3;}],
-    ["tax id differs from source",x=>{x.source.tax_rate_id=144;}],
-    ["tax output account is another company",x=>{x.settings.ppn_company=3;}],
-    ["tax account does not match mapped liability",x=>{x.settings.rate_account=999;}],
-    ["tax rate inactive",x=>{x.settings.rate_active=false;}],
-    ["tax treatment not exclusive",x=>{x.source.tax_treatment="inclusive";}],
-    ["net/tax rounding mismatch",x=>{x.source.tax_amount="10.99";x.source.grand_total="110.99";x.invoice.grand_total="110.99";}],
+    ["tax company differs",(x:ReturnType<typeof fixture>)=>{x.settings.rate_company=3;}],
+    ["tax id differs from source",(x:ReturnType<typeof fixture>)=>{x.source.tax_rate_id=144;}],
+    ["tax output account is another company",(x:ReturnType<typeof fixture>)=>{x.settings.ppn_company=3;}],
+    ["tax account does not match mapped liability",(x:ReturnType<typeof fixture>)=>{x.settings.rate_account=999;}],
+    ["tax rate inactive",(x:ReturnType<typeof fixture>)=>{x.settings.rate_active=false;}],
+    ["tax treatment not exclusive",(x:ReturnType<typeof fixture>)=>{x.source.tax_treatment="inclusive";}],
+    ["net/tax rounding mismatch",(x:ReturnType<typeof fixture>)=>{x.source.tax_amount="10.99";x.source.grand_total="110.99";x.invoice.grand_total="110.99";}],
   ])("blocks %s before CanonicalPostingEngine",async(_label,change)=>{
     const x=fixture(1);
     change(x);
     await expect(postCustomerPortalSalesInvoiceWithExistingOwner(x.input))
       .rejects.toThrow("DEV_SALES_POSTING_TAX_SETTINGS_NOT_READY");
     expect(m.post).not.toHaveBeenCalled();
+  });
+  it("fails if prior PPN metadata already exists; no accidental duplicate",async()=>{
+    const x=fixture(1);
+    x.state.priorTaxRows=[{id:89}];
+    await expect(postCustomerPortalSalesInvoiceWithExistingOwner(x.input))
+      .rejects.toThrow("DEV_SALES_POSTING_TAX_METADATA_DUPLICATE");
+    expect(x.sqls.filter(q=>q.includes("insert into public.gl_tax_lines"))).toHaveLength(0);
+    expect(m.post).toHaveBeenCalledTimes(1);
+  });
+  it("propagates tax metadata insert failure so caller rolls back original GL",async()=>{
+    const x=fixture(1);
+    x.state.failTaxInsert=true;
+    await expect(postCustomerPortalSalesInvoiceWithExistingOwner(x.input))
+      .rejects.toThrow("QA_FORCED_TAX_INSERT_FAILURE");
+    expect(m.post).toHaveBeenCalledTimes(1);
+  });
+  it("never acknowledges issuance with mismatched tax reporting readback",async()=>{
+    const x=fixture(1);
+    x.state.tamperTaxProof=true;
+    await expect(postCustomerPortalSalesInvoiceWithExistingOwner(x.input))
+      .rejects.toThrow("DEV_SALES_POSTING_TAX_METADATA_MISMATCH");
   });
   it("remains fail-closed for production even with tax feature flag ON",async()=>{
     process.env.APP_ENV="production";
