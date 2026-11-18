@@ -109,10 +109,17 @@ suite("PR95 locked outbound source journal preflight on disposable PostgreSQL 16
     const result=await client.query("select amount::text as amount from public.bank_mutations where id=90001");
     expect(Number(result.rows[0].amount)).toBe(100);
   });
+  it("accepts canonical bank debit-side OUT from a Sheet headed Keluar",async()=>{
+    await client.query("BEGIN");
+    try {
+      await client.query("UPDATE public.bank_mutations SET debit_amount=100,credit_amount=0 WHERE id=90001");
+      await expect(lock()).resolves.toMatchObject({verifiedAmountMinor:10000});
+    } finally {await client.query("ROLLBACK");}
+  });
   it("rejects inconsistent OUT import debit/credit columns",async()=>{
     await client.query("BEGIN");
     try{
-      await client.query("UPDATE public.bank_mutations SET debit_amount=100,credit_amount=0 WHERE id=90001");
+      await client.query("UPDATE public.bank_mutations SET debit_amount=100,credit_amount=100 WHERE id=90001");
       await expect(lock()).rejects.toThrow("PR95_OUTBOUND_BANK_DIRECTION_AMOUNTS_MISMATCH");
     }finally{await client.query("ROLLBACK");}
   });
