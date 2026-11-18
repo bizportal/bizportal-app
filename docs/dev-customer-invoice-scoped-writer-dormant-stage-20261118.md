@@ -1,16 +1,18 @@
 # CST Customer Invoice — dormant scoped writer stage (DEV only)
 
-Status: **Phases A, A2, B1, B2 and B3 applied and read-back verified on Supabase CST-DEV. Both writers remain NOLOGIN and cannot post.** Date: 18 November 2026.
+Status: **Phases A, A2, B1, B2, B3 and B4 applied and read-back verified on Supabase CST-DEV. Both writers remain NOLOGIN, AR actors disabled, and Invoice posting OFF.** Dates: 18–19 November 2026.
 
 ## Scope and immutable boundaries
 
 - Target Supabase project **`xssrfshdrtdfupgqwfdw`** only.
 - Never run these scripts against PROD project `nzdweipzckfszczzqtuw`.
 - No app release, original Accounting engine replacement, login credential,
-  Secret Manager payload, financial table WRITE privilege or financial data
-  was created. B1/B2 added scoped SELECT/RLS; B3 added *column-only* UPDATE
-  permissions solely to support FOR SHARE, with eight RLS UPDATE policies
-  using WITH CHECK(false) to prohibit any actual record mutation.
+  Secret Manager payload or financial data was created. B1/B2 added scoped
+  SELECT/RLS; B3 added no-mutation FOR SHARE permissions; B4 added
+  narrowly source-bound **financial INSERT/UPDATE grants and 40 RLS policies**
+  **only to the two dormant NOLOGIN roles**. Drizzle's explicit DEFAULT
+  columns require table-level INSERT on original GL headers/lines, contained
+  by source/company/account/money RLS. Current Portal cannot use these roles.
 - Customer Portal live release remains `577aa54`; five Invoice/PPN/AR/outbox
   feature flags stayed OFF, and Portal/BizPortal DEV ready probes returned 200.
 
@@ -45,19 +47,25 @@ Status: **Phases A, A2, B1, B2 and B3 applied and read-back verified on Supabase
    a single metadata timestamp column in each auth table. This supports
    PostgreSQL `SELECT ... FOR SHARE` to protect issuer/reviewer/approval
    evidence until COMMIT, but **forbids actual UPDATE**.
+6. B4 migration `dev_customer_invoice_scoped_writer_b4_dormant_20261118`
+   from `scripts/sql/customer_invoice_scoped_writer_b4_dormant_cst_dev.sql`:
+   **40 new policies on 11 financial/Portal audit tables** plus source-bound
+   INSERT/UPDATE and exact sequence grants. Its SQL guard requires both
+   roles NOLOGIN, AR actors disabled, and B1=68/B2=16/B3=8.
+   Original Accounting GL draft/posting, output PPN, AR projection,
+   ledger/outbox/audit and Portal notification operations are restricted to
+   company1 CST or company3 Diva. There is no global journal writer
+   and no trigger replacement.
 
-Latest live read-back: **B1=68, B2=16, B3=8 (92 total)**, all B3
-`WITH CHECK(false)`; roles still NOLOGIN/NOINHERIT/NOBYPASSRLS; no journal,
-Invoice or tax write grants; both new actor registry entries still disabled;
-preexisting active actor count remains **2**.
-
-Postcondition query confirmed both roles `rolcanlogin=false`,
-`rolbypassrls=false`, and no INSERT privileges on
-`sales_documents`, `accounting_entries`, `transaction_taxes`,
-`financial_outbox_events`; B3 allows only column-level UPDATE(updated_at)
-for acquiring row locks, while RLS WITH CHECK(false) denies actual writes.
-The real `users.role` cannot be changed, and password hashes remain unreadable.
-No `QA-OWNER-SCOPED-` sales document was present.
+Latest live read-back: **B1=68, B2=16, B3=8, B4=40 (132 total)**.
+Both writers remain NOLOGIN/NOINHERIT/NOBYPASSRLS, cannot SET ROLE postgres
+and have no ability to UPDATE original Invoice source amounts, user role,
+or read password hashes. The two newly registered AR actors remain
+`enabled=false`; preexisting enabled AR actor count remains **2**.
+The B4 policies target the two Invoice roles only: no new grants for
+`anon`, `authenticated`, Finance, Fleet or Payroll.
+The current Portal five financial flags remain OFF.
+No `QA-OWNER-SCOPED-` sales document was added to hosted DEV.
 
 ## Hosted PostgreSQL 17 creator edge
 
@@ -76,20 +84,24 @@ and rejects any extra membership, LOGIN or BYPASSRLS state.
 
 ## Verified rollback order (only before activating any writer)
 
-1. Check that roles remain `NOLOGIN`, actor entries remain `enabled=false`,
-   no B4 financial WRITE policy or active credentials have been installed, and
-   the B1/B2/B3 policy counts are exactly 68/16/8.
-2. Roll back B3 first with
+1. Confirm both roles remain `NOLOGIN`, AR actors `enabled=false`,
+   no independent DEV writer credential has been installed, and B1/B2/B3/B4
+   counts are exactly **68/16/8/40**.
+2. Roll back **B4 first**, using
+   `scripts/sql/customer_invoice_scoped_writer_b4_rollback_cst_dev.sql`.
+   It refuses active role or AR actor and removes only B4 grants/policies
+   (no deletion of existing financial records).
+3. Roll back B3 using
    `scripts/sql/customer_invoice_scoped_auth_lock_phase_b3_rollback_cst_dev.sql`.
-3. Roll back B2 with
+4. Roll back B2 using
    `scripts/sql/customer_invoice_scoped_identity_read_phase_b2_rollback_cst_dev.sql`.
-4. Roll back B1 with
+5. Roll back B1 using
    `scripts/sql/customer_invoice_scoped_writer_read_phase_b1_rollback_cst_dev.sql`.
-5. Remove only the disabled Phase A2 actors via
+6. Remove only the disabled Phase A2 actors via
    `scripts/sql/customer_invoice_dormant_ar_actor_rollback_cst_dev.sql`.
-6. Finally drop dormant roles with
+7. Finally drop dormant roles using
    `scripts/sql/customer_invoice_scoped_writer_dormant_rollback_cst_dev.sql`,
-   no CASCADE. Do not reverse order.
+   without CASCADE. **Do not reverse this order.**
 
 PostgreSQL16 disposable create/verify/rollback was tested with a synthetic
 ADMIN-only creator grant (no SET/INHERIT), exit 0. The AR actor stage/rollback
@@ -100,12 +112,16 @@ credentials are installed without a new review.**
 
 ## Unfinished release gates
 
-- **B1-B3 read and row-lock stages are completed on hosted CST-DEV**.
-  Finance WRITE grants, company-scoped INSERT/UPDATE RLS, audit/outbox writes,
-  sequence rights and direct login still require their own PostgreSQL16
-  disposable acceptance and reviewed hosted migration. Existing BizPortal
-  [PR150](https://github.com/bizportal/bizportal-app/pull/150) disposable owner
-  tests are PASS but are not sufficient to authorize hosted writer activation.
+- **B1–B4 source, authorization, write grants and role-scoped policies are
+  completed on hosted CST-DEV, deliberately dormant.** Original SHA-pinned
+  CanonicalPostingEngine B4 PG16 acceptance under both company role identities
+  passed: taxable GL/AR/PPN, ledger/outbox, idempotent replay and full
+  transaction rollback, followed by guarded B4 rollback preserving **6 posted
+  synthetic journal rows**. GitHub exact B4 SHA `985efb05` acceptance PASS
+  on VPS using only 5 already SHA-256-reviewed original owner artifacts.
+  The portable regression is
+  `scripts/tests/customer_invoice_b4_original_owner_disposable.sh`.
+  These offline results do **not** authorize active LOGIN or live posting.
 - Configure independent writer credentials and verified TLS/CA through an
   approved **DEV-only Secret Manager** chain. Do not use `postgres` or
   shared Finance readers as a fallback, and never print/store passwords in PR.
