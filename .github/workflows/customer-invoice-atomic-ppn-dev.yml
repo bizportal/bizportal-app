@@ -14,6 +14,7 @@ on:
       - 'scripts/tests/customer-invoice-scoped-owner.qa.mjs'
       - 'scripts/tests/customer-invoice-owner-lock*.qa.*'
       - 'scripts/tests/customer-invoice-handler-privileges.qa.*'
+      - 'scripts/tests/customer-invoice-independent-approval-lock.qa.*'
       - 'artifacts/api-server/src/lib/__tests__/portal-invoice-existing-owner-adapter.test.ts'
       - '.github/workflows/customer-invoice-atomic-ppn-dev.yml'
   workflow_dispatch:
