@@ -1,4 +1,6 @@
 import { normalizeCanonicalBankMutationId } from "../lib/reconciliation/canonicalBankMutationId";
+import { runOutboundReuseSignedDevCandidate } from "../lib/outboundSourceReuseDevBridge";
+import type { OutboundReuseQueryClient } from "../lib/outboundReuseFinalityReader";
 import { Router, type IRouter, type Request } from "express";
 import { pool } from "@workspace/db";
 import { scopeBankMutationRead } from "./bank-mutation-read-scope";
@@ -8388,6 +8390,47 @@ router.post("/bank-reconciliation/:mutationId/vendor-invoice-payment-batch", asy
   ));
   if (vendorInvoiceIds.length === 0 || vendorInvoiceIds.length !== rawIds.length) {
     res.status(400).json({ error: "Minimal satu invoice vendor yang valid wajib dipilih" });
+    return;
+  }
+
+  // PR95 explicit source-journal reuse branch: OFF by default and DEV-only.
+  // Never enter legacy journal creation after a reuse request fails.
+  // Reuse is restricted to a single exact full invoice; no partial/WHT.
+  if (req.body?.source_journal_reuse === true) {
+    const keys = Object.keys(req.body as Record<string, unknown>);
+    if (vendorInvoiceIds.length !== 1
+      || keys.some(key => !["source_journal_reuse", "vendor_invoice_ids"].includes(key))) {
+      res.status(422).json({
+        code: "PR95_SOURCE_REUSE_UNSUPPORTED_REQUEST",
+        error: "Reuse jurnal sumber hanya mendukung satu invoice tanpa alokasi tambahan.",
+      });
+      return;
+    }
+    const reuseClient = await pool.connect();
+    try {
+      await reuseClient.query("begin");
+      const receipt = await runOutboundReuseSignedDevCandidate(
+        req,
+        reuseClient as unknown as OutboundReuseQueryClient,
+        { companyId: requestedCompanyId, mutationId, invoiceId: vendorInvoiceIds[0]! },
+      );
+      await reuseClient.query("commit");
+      res.json({
+        ok: true,
+        mutation_id: mutationId,
+        journal_entry_id: receipt.sourceEntryId,
+        payment_matching_group_id: receipt.paymentMatchingGroupId,
+        status: "posted",
+        source_journal_reused: true,
+      });
+    } catch (error) {
+      await reuseClient.query("rollback").catch(() => undefined);
+      const message = error instanceof Error ? error.message : "PR95_SOURCE_REUSE_FAILED";
+      req.log.warn({ error, mutationId }, "PR95 DEV source-journal reuse rejected");
+      res.status(409).json({ code: message.startsWith("PR95_") ? message : "PR95_SOURCE_REUSE_FAILED" });
+    } finally {
+      reuseClient.release();
+    }
     return;
   }
 
