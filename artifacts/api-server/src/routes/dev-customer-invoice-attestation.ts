@@ -29,6 +29,8 @@ const PKCS8_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
 export function isCustomerInvoiceAttestationDevEnabled(): boolean {
   return process.env.APP_ENV?.trim().toLowerCase() === "development" &&
     isSignedOtpDevEnabled() &&
+    // Never issue Invoice attestations when the legacy password mode overlaps OTP.
+    process.env.BIZPORTAL_SIGNED_PASSWORD_ENABLED_DEV !== "true" &&
     process.env.BIZPORTAL_CUSTOMER_INVOICE_ATTEST_DEV === "true";
 }
 
