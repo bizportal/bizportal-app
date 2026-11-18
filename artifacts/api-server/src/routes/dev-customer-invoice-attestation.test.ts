@@ -20,6 +20,7 @@ import route,{
 const KEYS=[
   "APP_ENV","SESSION_SECRET","BIZPORTAL_SESSION_SECRET",
   "BIZPORTAL_CUSTOMER_INVOICE_ATTEST_DEV","BIZPORTAL_CUSTOMER_PORTAL_ORIGIN_DEV",
+  "BIZPORTAL_SIGNED_PASSWORD_ENABLED_DEV",
 ];
 const originals=Object.fromEntries(KEYS.map(k=>[k,process.env[k]]));
 const email="qa-bizportal-super@example.invalid", id="qa-signed-bizportal-actor";
@@ -60,6 +61,7 @@ describe("existing signed OTP BizPortal Super Admin -> Customer Invoice attestat
     process.env.SESSION_SECRET="qa-original-bizportal-session-secret-32-plus-character-string";
     delete process.env.BIZPORTAL_SESSION_SECRET;
     process.env.BIZPORTAL_CUSTOMER_INVOICE_ATTEST_DEV="true";
+    delete process.env.BIZPORTAL_SIGNED_PASSWORD_ENABLED_DEV;
     process.env.BIZPORTAL_CUSTOMER_PORTAL_ORIGIN_DEV="https://portal-qa.example.invalid";
     m.signedAuthEnabled.mockReturnValue(true);
     m.getProductionSession.mockImplementation(req=>
@@ -77,6 +79,14 @@ describe("existing signed OTP BizPortal Super Admin -> Customer Invoice attestat
     const r=await get(issuedChallenge(),{accept:"application/json"});
     expect(r.res.status).toBe(404);
     expect(m.getProductionSession).not.toHaveBeenCalled();
+  });
+  it("fails closed if legacy password and signed OTP modes overlap",async()=>{
+    process.env.BIZPORTAL_SIGNED_PASSWORD_ENABLED_DEV="true";
+    const r=await get(issuedChallenge(),{accept:"application/json"});
+    expect(r.res.status).toBe(404);
+    expect(m.getProductionSession).not.toHaveBeenCalled();
+    expect(m.getProductionUser).not.toHaveBeenCalled();
+    expect(()=>getCustomerInvoiceAttestationPublicKeyDev()).toThrow("DEV_ATTESTATION_DISABLED");
   });
   it("refuses missing independently authenticated BizPortal cookie",async()=>{
     const r=await get(issuedChallenge(),{signed:false,accept:"application/json"});
