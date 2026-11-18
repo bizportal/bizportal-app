@@ -68,7 +68,7 @@ async function assertReceipt(companyId, sourceId, { rollback = false, expectedFa
     client.release();
   }
 }
-async function verifyPosted(companyId, sourceId, { gross = 100, tax = 0 } = {}) {
+async function verifyPosted(companyId, sourceId, { gross = 100, tax = 0, taxRate = 11 } = {}) {
   const entry = await pool.query(
     "SELECT id,status::text,total_debit,total_credit FROM accounting_entries WHERE company_id=$1 AND source='sales_invoice' AND source_id=$2",
     [companyId, sourceId],
@@ -108,7 +108,7 @@ async function verifyPosted(companyId, sourceId, { gross = 100, tax = 0 } = {}) 
   if(tax) {
     assert.equal(Number(taxRows.rows[0].tax_amount),tax);
     assert.equal(Number(taxRows.rows[0].base_amount),gross-tax);
-    assert.equal(Number(taxRows.rows[0].tax_rate),11);
+    assert.equal(Number(taxRows.rows[0].tax_rate),taxRate);
     assert.equal(taxRows.rows[0].status,"posted");
     assert.equal(taxRows.rows[0].direction,"output");
     console.log("ATOMIC_OUTPUT_PPN_RECORD_PASS",companyId,sourceId);
@@ -165,6 +165,40 @@ try {
     assert.equal(Number(taxRow.rows[0].n),0);
   }
   console.log("INVALID_PPN_REJECTION_LEAVES_NO_JOURNAL_TAX_OR_AR_PASS");
+
+  // One additional 12% case uses a DISPOSABLE configuration switch only.
+  // Before switching from 11%, mismatched default must be rejected and clean.
+  await assertReceipt(3, 193, { expectedFailure: /TAX_CONFIGURATION_OR_AMOUNT_MISMATCH/ });
+  assert.equal(await counts(193),0);
+  const beforeSwitch = await pool.query(
+    "SELECT COUNT(*)::int AS n FROM public.ar_subledger WHERE company_id=3 AND invoice_id=193",
+  );
+  assert.equal(Number(beforeSwitch.rows[0].n),0);
+  const selected = await pool.query(
+    "UPDATE public.accounting_settings SET default_sales_tax_id=4 WHERE company_id=3 AND default_sales_tax_id=3 RETURNING company_id",
+  );
+  assert.equal(selected.rowCount,1,"synthetic 12% switch must be exactly scoped");
+  await assertReceipt(3,193);
+  await verifyPosted(3,193,{gross:112,tax:12,taxRate:12});
+  await assertReceipt(3,193);
+  assert.equal(await counts(193),1);
+  await verifyPosted(3,193,{gross:112,tax:12,taxRate:12});
+  console.log("DIVA_12_PERCENT_OUTPUT_PPN_COMMIT_AND_REPLAY_PASS");
+  await assertReceipt(3,195,{rollback:true});
+  assert.equal(await counts(195),0);
+  for (const table of ["ar_subledger","transaction_taxes"]) {
+    const column=table==="ar_subledger"?"invoice_id":"transaction_id";
+    const rows=await pool.query(
+      "SELECT COUNT(*)::int AS n FROM public."+table+" WHERE company_id=3 AND "+column+"=195",
+    );
+    assert.equal(Number(rows.rows[0].n),0,table+" 12% rollback");
+  }
+  const outbox = await pool.query(
+    "SELECT COUNT(*)::int AS n FROM public.ledger_events WHERE payload->>'sourceId'='195'",
+  );
+  assert.equal(Number(outbox.rows[0].n),0);
+  console.log("DIVA_12_PERCENT_ROLLBACK_GL_AR_PPN_OUTBOX_PASS");
+
 } finally {
   await pool.end();
 }
