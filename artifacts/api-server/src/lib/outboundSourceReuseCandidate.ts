@@ -11,6 +11,15 @@
 import { lockOutboundSourceJournalReuseScope } from "./outboundReuseTransactionScope";
 import type { OutboundReuseQueryClient } from "./outboundReuseFinalityReader";
 
+/** Exact numeric-to-minor conversion; never round a fractional cent. */
+function decimalMinor(raw: unknown): number | null {
+  const value=String(raw??"");
+  if(!/^(?:0|[1-9]\\d*)(?:\\.\\d{1,2})?$/.test(value))return null;
+  const [whole,fraction=""]=value.split(".");
+  const amount=Number(whole)*100+Number(fraction.padEnd(2,"0"));
+  return Number.isSafeInteger(amount)?amount:null;
+}
+
 type CandidateReceipt = Readonly<{
   mutationId: number;
   invoiceId: number;
@@ -62,8 +71,8 @@ export async function finalizeOutboundSourceReuseCandidate(
   );
   const apRow=ap.rows[0];
   if(!apRow || Number(apRow.n)!==1
-    || Math.round(Number(apRow.debit)*100)!==locked.verifiedAmountMinor
-    || Number(apRow.credit)!==0) {
+    || decimalMinor(apRow.debit)!==locked.verifiedAmountMinor
+    || decimalMinor(apRow.credit)!==0) {
     throw Error("PR95_SOURCE_REUSE_AP_CUSTODY_INVALID");
   }
   // Lock all existing matches for this mutation before writing; an earlier
@@ -118,12 +127,13 @@ export async function finalizeOutboundSourceReuseCandidate(
             approved_at=coalesce(approved_at,now()),approved_by=$3,
             posted_at=coalesce(posted_at,now()),
             linked_transaction_type='vendor_invoice_batch',
-            linked_transaction_id=$4,review_code='SOURCE_JOURNAL_REUSED',
+            linked_transaction_id=$4,matching_group_id=$6,
+            review_code='SOURCE_JOURNAL_REUSED',
             updated_at=now()
       where id=$1 and company_id=$5 and journal_entry_id is null
         and status in ('unmatched','matched','pending','pending_review')
       returning id`,
-    [input.mutationId,locked.sourceEntryId,input.verifiedActorEmail,input.invoiceId,input.companyId],
+    [input.mutationId,locked.sourceEntryId,input.verifiedActorEmail,input.invoiceId,input.companyId,groupId],
   );
   if(updated.rows.length!==1)throw Error("PR95_SOURCE_REUSE_MUTATION_CHANGED");
   await tx.query(
