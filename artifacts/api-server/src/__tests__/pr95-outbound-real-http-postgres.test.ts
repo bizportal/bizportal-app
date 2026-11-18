@@ -453,6 +453,29 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
       await auth.query("DELETE FROM public.vendor_invoice_lines WHERE id=88");
     }
   });
+  it("canonical HTTP refuses an unfinished active allocation already holding the invoice",async()=>{
+    const group=await auth.query(
+      `INSERT INTO public.payment_matching_groups
+         (company_id,group_type,matching_type,total_mutation_amount,total_invoice_amount,
+          total_allocated,remaining_amount,confidence,algorithm_used,status,created_by)
+        VALUES(1,'MULTI_INVOICE','MULTI_INVOICE',100,100,100,0,100,'other_writer','active','ci')
+        RETURNING id`,
+    );
+    const groupId=group.rows[0].id;
+    await auth.query(`INSERT INTO public.payment_allocations
+      (group_id,company_id,invoice_id,mutation_id,allocated_amount,remaining_amount,
+       allocation_sequence,strategy,is_active)
+      VALUES($1,1,7,90001,100,0,1,'MANUAL',true)`,[groupId]);
+    try{
+      const response=await sendCanonical();
+      expect(response.status).toBe(409);
+      expect(response.body.code).toBe("PR95_OUTBOUND_FINALIZED_CUSTODY_EXISTS");
+      expect(await counters()).toMatchObject({journals:1,allocations:1,matches:0,audits:0,mutation_status:"unmatched"});
+    }finally{
+      await auth.query("DELETE FROM public.payment_allocations WHERE group_id=$1",[groupId]);
+      await auth.query("DELETE FROM public.payment_matching_groups WHERE id=$1",[groupId]);
+    }
+  });
   it("rejects simultaneous HTTP requests for same source with one allocation only",async()=>{
     const responses=await Promise.all([send(),send()]);
     expect(responses.map(x=>x.status).sort()).toEqual([200,409]);
