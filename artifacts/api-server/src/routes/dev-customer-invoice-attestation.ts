@@ -67,6 +67,8 @@ function canonicalChallenge(raw: string): {
     if (data.v !== 1 || data.purpose !== "cst-portal-invoice-challenge" ||
         ![1, 3].includes(companyId) ||
         !Number.isSafeInteger(invoiceId) || invoiceId < 1 ||
+        !Number.isSafeInteger(Number(data.portalUserId)) ||
+        Number(data.portalUserId) < 1 ||
         typeof data.portalEmail !== "string" ||
         data.portalEmail.length < 3 || data.portalEmail.length > 320 ||
         typeof data.nonce !== "string" || !/^[a-f0-9]{32}$/.test(data.nonce) ||
