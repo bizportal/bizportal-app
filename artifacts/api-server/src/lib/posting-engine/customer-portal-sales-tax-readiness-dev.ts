@@ -131,6 +131,8 @@ export async function inspectCustomerInvoiceTaxReadinessDev({
   if (applied.rows.length !== 1)
     return result(companyId,invoiceId,"INVOICE_TAX_RATE_REQUIRED");
   const rate = applied.rows[0];
+  if (Number(rate.id) !== Number(doc.tax_rate_id))
+    return result(companyId,invoiceId,"INVOICE_TAX_RATE_REQUIRED");
   if (Number(rate.company_id) !== companyId)
     return result(companyId,invoiceId,"INVOICE_TAX_RATE_COMPANY_MISMATCH");
   if (rate.kind !== "sale" || rate.cut_type !== "self_borne" ||
