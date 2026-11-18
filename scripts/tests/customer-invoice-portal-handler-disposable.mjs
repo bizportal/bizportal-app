@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import path from "node:path";
-import {createHash,createPrivateKey,createPublicKey,hkdfSync,randomBytes,sign} from "node:crypto";
 import {createRequire} from "node:module";
 import {pathToFileURL,fileURLToPath} from "node:url";
 const ROOT=path.resolve(path.dirname(fileURLToPath(import.meta.url)),"../..");
@@ -12,31 +11,36 @@ const {
  mintPortalInvoiceChallenge,
  verifyIndependentBizPortalSuperAdminProof,
 }=await import(pathToFileURL(path.join(ROOT,"vendor/customer-portal/server/dev-bizportal-invoice-attestation.mjs")).href);
+const express=require("express");
+const {
+ default:bizportalIssuer,
+ getCustomerInvoiceAttestationPublicKeyDev,
+}=await import(pathToFileURL(path.join(ROOT,"artifacts/api-server/.qa-invoice-issuer-bundle.mjs")).href);
 const QA_PORTAL_SECRET="only-disposable-qa-portal-secret-material-2026";
 const QA_BIZ_SECRET="only-disposable-qa-bizportal-secret-material-2026";
 process.env.SESSION_SECRET=QA_PORTAL_SECRET;
 process.env.BIZPORTAL_SESSION_SECRET=QA_BIZ_SECRET;
-process.env.CUSTOMER_PORTAL_BIZPORTAL_ATTEST_SPKI_DEV="";
-const qaSeed=hkdfSync("sha256",Buffer.from(QA_BIZ_SECRET,"utf8"),
- Buffer.from("CST_BIZPORTAL_DEV_SESSION_DERIVED_KEY_V1"),
- Buffer.from("CUSTOMER_INVOICE_ED25519_ATTESTATION_V1"),32);
-const qaPrivateKey=createPrivateKey({
- key:Buffer.concat([Buffer.from("302e020100300506032b657004220420","hex"),Buffer.from(qaSeed)]),
- format:"der",type:"pkcs8",
-});
-process.env.CUSTOMER_PORTAL_BIZPORTAL_ATTEST_SPKI_DEV=createPublicKey(qaPrivateKey)
- .export({type:"spki",format:"der"}).toString("base64");
-function makeIndependentQaProof(challenge,invoiceId){
- const signed={
-  v:1,purpose:"cst-customer-invoice-owner",aud:"CST_CUSTOMER_PORTAL_DEV",
-  actorId:"synthetic-owner",email:"qa-invoice@example.invalid",
-  companyId:1,invoiceId,
-  challengeDigest:createHash("sha256").update(challenge,"utf8").digest("hex"),
-  nonce:randomBytes(16).toString("hex"),
-  iat:Date.now(),exp:Date.now()+60000,
- };
- const body=Buffer.from(JSON.stringify(signed)).toString("base64url");
- return body+"."+sign(null,Buffer.from("CST_BIZPORTAL_CUSTOMER_INVOICE_DEV_V1\n"+body),qaPrivateKey).toString("base64url");
+process.env.BIZPORTAL_CUSTOMER_INVOICE_ATTEST_DEV="true";
+process.env.BIZPORTAL_CUSTOMER_PORTAL_ORIGIN_DEV="http://127.0.0.1";
+process.env.CUSTOMER_PORTAL_BIZPORTAL_ATTEST_SPKI_DEV=getCustomerInvoiceAttestationPublicKeyDev();
+const app=express();
+app.use("/api",bizportalIssuer);
+const server=app.listen(0,"127.0.0.1");
+await new Promise(resolve=>server.once("listening",resolve));
+const address=server.address();
+assert(address&&typeof address==="object"&&Number.isSafeInteger(address.port));
+async function genuineIssuerProof(challenge,{authorized=true,admin=false}={}){
+ const url="http://127.0.0.1:"+address.port+
+  "/api/auth/dev/customer-invoice-attestation?challenge="+encodeURIComponent(challenge);
+ if(admin)process.env.QA_BIZPORTAL_ROLE_OVERRIDE="admin";
+ try{
+  const response=await fetch(url,{headers:{
+   accept:"application/json",
+   cookie:authorized?"qa_otp=valid":"",
+  }});
+  const payload=await response.json();
+  return {status:response.status,proof:payload.proof??null};
+ }finally {delete process.env.QA_BIZPORTAL_ROLE_OVERRIDE;}
 }
 const {Pool}=pg;
 const pool=new Pool({connectionString:process.env.CUSTOMER_INVOICE_DISPOSABLE_DB_URL,ssl:false,max:1});
@@ -46,9 +50,14 @@ async function invoke(id,valid=true) {
  const challenge=mintPortalInvoiceChallenge({
   portalUser:user,companyId:1,invoiceId:id,
  });
- const issuedProof=makeIndependentQaProof(challenge,id);
- // Negative case changes the invoice binding without falsifying the signature.
- const proof=valid?issuedProof:makeIndependentQaProof(challenge,id+1);
+ // Real BizPortal PR148 HTTP issuer signs the original Portal HMAC challenge.
+ const sourceChallenge=valid?challenge:mintPortalInvoiceChallenge({
+  portalUser:user,companyId:1,invoiceId:id+1,
+ });
+ const issuer=await genuineIssuerProof(sourceChallenge);
+ assert.equal(issuer.status,200,"actual BizPortal issuer HTTP200 expected");
+ const proof=issuer.proof;
+ assert(typeof proof==="string"&&proof.length>100);
  const request={method:"POST",body:{
   action:"mark_invoiced",bizportalInvoiceChallenge:challenge,bizportalInvoiceProof:proof,
  },headers:{}};
@@ -76,6 +85,7 @@ try{
  assert.equal(issued.companyId,1);
  console.log("ORIGINAL_PORTAL_HANDLER_SAME_TRANSACTION_COMMIT_PASS");
  console.log("ORIGINAL_PORTAL_HMAC_ED25519_SIGNED_PROOF_PASS");
+ console.log("ORIGINAL_BIZPORTAL_HTTP_ISSUER_TO_PORTAL_VERIFIER_PASS");
  const gl=await rows("select e.id,e.total_debit,e.total_credit from accounting_entries e where e.source='sales_invoice' and e.source_id=197");
  assert.equal(gl.length,1);
  assert.equal(Number(gl[0].total_debit),100);
@@ -103,4 +113,7 @@ try{
  assert.equal((await rows("select id from accounting_entries where source_id=199 and source='sales_invoice'")).length,0);
  console.log("ORIGINAL_PORTAL_HANDLER_DENIED_PROOF_ROLLBACK_PASS");
  console.log("ORIGINAL_PORTAL_WRONG_INVOICE_SIGNED_PROOF_DENIED_PASS");
-}finally {await pool.end()}
+}finally {
+ await pool.end();
+ await new Promise(resolve=>server.close(resolve));
+}
