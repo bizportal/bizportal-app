@@ -125,3 +125,18 @@ APP_ENV=development NODE_ENV=development \
  CUSTOMER_INVOICE_DISPOSABLE_OWNER_PATH="$WORK/bundle/portalInvoiceAdapter.mjs" \
  node scripts/tests/customer-invoice-original-owner-disposable.mjs
 echo ORIGINAL_OWNER_DISPOSABLE_JOURNAL_ACCEPTANCE_PASS
+# The same immutable owner is exercised through two genuine direct-login
+# PostgreSQL sessions; all extra roles/policies exist in the disposable DB only.
+test -f "$ROOT/scripts/tests/customer-invoice-scoped-writers.qa.sql"
+test -f "$ROOT/scripts/tests/customer-invoice-scoped-owner.qa.mjs"
+docker cp "$ROOT/scripts/tests/customer-invoice-scoped-writers.qa.sql" "$PG_NAME":/tmp/scoped-writers.sql
+docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic \
+  -f /tmp/scoped-writers.sql > "$WORK/scoped-writers.log"
+echo DISPOSABLE_SCOPED_WRITER_RLS_INSTALLED
+APP_ENV=development NODE_ENV=development \
+ CUSTOMER_PORTAL_ATOMIC_ACCOUNTING_POST_DEV=true \
+ CUSTOMER_PORTAL_REQUIRE_POSTED_AR_EVIDENCE_DEV=true \
+ CUSTOMER_INVOICE_DISPOSABLE_DB_URL="postgresql://postgres:disposable-only@127.0.0.1:$PORT/invoice_synthetic" \
+ CUSTOMER_INVOICE_DISPOSABLE_OWNER_PATH="$WORK/bundle/portalInvoiceAdapter.mjs" \
+ node scripts/tests/customer-invoice-scoped-owner.qa.mjs
+echo ORIGINAL_OWNER_DIRECT_TENANT_WRITER_DISPOSABLE_PASS
