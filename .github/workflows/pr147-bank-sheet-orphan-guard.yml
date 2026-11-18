@@ -58,7 +58,7 @@ jobs:
             echo "FAIL: orphaned posted source was permitted"
             exit 1
           fi
-          if ! grep -q 'BANK_SHEET_CUTOVER_BLOCKED: 21 orphan mutations, 7 journal-linked' /tmp/pr147_guard_stderr; then
+          if ! grep -q 'BANK_SHEET_CUTOVER_BLOCKED: 21 orphan mutations, 7 journal-linked, 2 missing journals, 5 non-posted journals' /tmp/pr147_guard_stderr; then
             echo "FAIL: did not fail for the expected orphan custody reason"
             sed -E 's/(password|token|key)=[^ ]+/\1=[REDACTED]/gi' /tmp/pr147_guard_stderr | tail -15
             exit 1
@@ -69,4 +69,5 @@ jobs:
           test "$(psql -Atqc "select count(*) from information_schema.columns where table_schema='public' and table_name='bank_sheet_configs' and column_name='bank_account_id'")" = "0"
           test "$(psql -Atqc "select count(*) from public.bank_mutations where sheet_config_id=4")" = "21"
           test "$(psql -Atqc "select count(*) from public.bank_mutations where sheet_config_id=4 and journal_entry_id is not null")" = "7"
-          echo "PASS: zero schema changes, zero historical mutation changes on transaction rollback"
+          test "$(psql -Atqc "select count(*) from public.accounting_entries where status='draft'")" = "5"
+          echo "PASS: zero schema changes, zero historical mutation or journal changes on transaction rollback"
