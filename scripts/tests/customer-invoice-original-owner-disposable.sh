@@ -5,6 +5,7 @@ WORK="$(mktemp -d /tmp/cst-original-owner-post.XXXXXXXX)"
 PG_NAME="cst-original-owner-post-$$"
 cleanup() {
   docker rm -f "$PG_NAME" >/dev/null 2>&1 || true
+  rm -f "$ROOT/artifacts/api-server/.qa-billing-handler-bundle.mjs"
   rm -rf -- "$WORK"
 }
 trap cleanup EXIT
@@ -125,3 +126,23 @@ APP_ENV=development NODE_ENV=development \
  CUSTOMER_INVOICE_DISPOSABLE_OWNER_PATH="$WORK/bundle/portalInvoiceAdapter.mjs" \
  node scripts/tests/customer-invoice-original-owner-disposable.mjs
 echo ORIGINAL_OWNER_DISPOSABLE_JOURNAL_ACCEPTANCE_PASS
+
+# Real Portal handler + original owner with ONE disposable PostgreSQL transaction.
+# Portal source is an exact SHA-pinned separate checkout in CI. Its runtime
+# DB/storage/notifications are substituted ONLY in the QA bundle, never DEV.
+test -f "$ROOT/vendor/customer-portal/server/billing-operations.mjs"
+node "$ROOT/scripts/tests/customer-invoice-portal-handler-disposable-bundle.mjs"
+docker cp "$ROOT/scripts/tests/customer-invoice-portal-handler-disposable-extra.sql" \
+  "$PG_NAME":/tmp/portal-qa.sql
+docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic \
+  -f /tmp/portal-qa.sql > "$WORK/portal-schema.log"
+APP_ENV=development NODE_ENV=development \
+ CUSTOMER_PORTAL_ATOMIC_ACCOUNTING_POST_DEV=true \
+ CUSTOMER_PORTAL_REQUIRE_POSTED_AR_EVIDENCE_DEV=true \
+ CUSTOMER_PORTAL_REQUIRE_BIZPORTAL_ATTEST_DEV=true \
+ CUSTOMER_INVOICE_DISPOSABLE_DB_URL="postgresql://postgres:disposable-only@127.0.0.1:$PORT/invoice_synthetic" \
+ CUSTOMER_INVOICE_DISPOSABLE_OWNER_PATH="$WORK/bundle/portalInvoiceAdapter.mjs" \
+ node "$ROOT/scripts/tests/customer-invoice-portal-handler-disposable.mjs"
+rm -f "$ROOT/artifacts/api-server/.qa-billing-handler-bundle.mjs"
+echo ORIGINAL_PORTAL_HANDLER_DISPOSABLE_E2E_PASS
+
