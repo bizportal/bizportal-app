@@ -31,6 +31,7 @@ describe("PR95 real canonical finality evidence reader (unregistered, SELECT onl
     expect(executed[1].sql).toContain("public.payment_matching_groups");
     expect(executed[1].params).toEqual([1, 7]);
     expect(executed[2].sql).toContain("journal_entry_id=$2");
+    expect(executed[2].sql).not.toContain("lower(status) in");
     expect(executed[2].params).toEqual([1, 314]);
     for (const q of executed) {
       expect(q.sql.trimStart().toLowerCase().startsWith("select")).toBe(true);
