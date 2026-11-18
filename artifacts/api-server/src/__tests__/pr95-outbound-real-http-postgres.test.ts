@@ -305,7 +305,7 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
     expect(mail.send).toHaveBeenCalledTimes(1);
     const [sentEmail,issuedCode]=mail.send.mock.calls[0] as [string,string];
     expect(sentEmail).toBe("owner@pr95.invalid");
-    expect(issuedCode).toMatch(/^\\d{6}$/);
+    expect(issuedCode).toMatch(/^\d{6}$/);
     const codeCheck=await auth.query(
       "SELECT code_hash,verified_at FROM public.bizportal_email_otp_codes WHERE email=$1",
       [sentEmail],
