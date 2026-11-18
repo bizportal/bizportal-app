@@ -306,10 +306,12 @@ export async function processCustomerPortalSalesInvoiceOutboxDevOnce():
         payload?.dedupeKey !== key) {
       return quarantine("DEV_OUTBOX_SOURCE_IDENTITY_INVALID");
     }
-    // Posted/owned/balanced journal, issued zero-tax Invoice, AR proof, and
-    // canonical Super Admin audit must all agree on THIS exact source.
+    // Posted/owned/balanced journal, Invoice, materialized AR and the
+    // canonical Super Admin audit must all agree on this exact source.
+    // Taxable source is accepted ONLY with a separate DEV flag and strict
+    // reporting tax metadata + three-line original GL verification.
     const proof = await tx.execute(sql`
-      SELECT e.id
+      SELECT e.id, s.tax_amount
       FROM public.accounting_entries e
       JOIN public.sales_documents s
         ON s.id=e.source_id AND s.company_id=e.company_id
@@ -323,13 +325,70 @@ export async function processCustomerPortalSalesInvoiceOutboxDevOnce():
         AND e.source::text='sales_invoice' AND e.status::text='posted'
         AND e.is_voided=false AND e.is_reversed=false
         AND s.invoice_status::text='invoiced'
-        AND s.id=${sourceId} AND s.tax_amount=0
+        AND s.id=${sourceId}
         AND e.ref=s.invoice_number
         AND e.total_debit=${amount} AND e.total_credit=${amount}
         AND s.grand_total=${amount}
       LIMIT 2
     `);
     if (proof.rows.length !== 1) return quarantine("DEV_OUTBOX_LEDGER_AR_AUDIT_MISSING");
+    const taxAmount = Number((proof.rows[0] as Record<string,unknown>).tax_amount ?? 0);
+    if (!Number.isFinite(taxAmount) || taxAmount < 0) {
+      return quarantine("DEV_OUTBOX_TAX_AMOUNT_INVALID");
+    }
+    if (taxAmount > 0) {
+      if (process.env.CUSTOMER_PORTAL_TAX_ATOMIC_POST_DEV !== "true") {
+        return quarantine("DEV_OUTBOX_TAX_POSTING_NOT_ENABLED");
+      }
+      // Cross-check explicit Invoice tax ID, company-owned active rate,
+      // default mapping, liability COA, original 3-line GL and exactly
+      // one matching PPN_OUT reporting row. All reads use this SAME tx.
+      const taxProof = await tx.execute(sql`
+        SELECT s.id
+        FROM public.sales_documents s
+        JOIN public.accounting_settings cfg
+          ON cfg.company_id=s.company_id
+        JOIN public.accounting_taxes t
+          ON t.id=s.tax_rate_id AND t.id=cfg.default_sales_tax_id
+         AND t.company_id=s.company_id AND t.kind::text='sale'
+         AND t.cut_type::text='self_borne' AND t.is_active=true
+        JOIN public.chart_of_accounts ppn
+          ON ppn.id=cfg.ppn_output_account_id
+         AND ppn.company_id=s.company_id AND ppn.type::text='liability'
+         AND ppn.is_active=true AND ppn.is_postable=true
+         AND ppn.status='ACTIVE'
+        JOIN public.gl_tax_lines g
+          ON g.accounting_entry_id=${entry} AND g.company_id=s.company_id
+         AND g.tax_type='PPN_OUT' AND g.direction='out'
+         AND g.entity_type='sales_invoice' AND g.entity_id=s.id::text
+         AND g.tax_amount=s.tax_amount
+         AND g.base_amount=s.total_amount AND g.rate=t.rate
+        WHERE s.id=${sourceId} AND s.company_id=${company}
+          AND s.tax_treatment='exclusive'
+          AND s.tax_amount>0 AND t.rate IN (11,12)
+          AND round(s.total_amount*t.rate/100,2)=s.tax_amount
+          AND t.account_id=ppn.id
+          AND s.grand_total=s.total_amount+s.tax_amount
+          AND (SELECT count(*)::int FROM public.gl_tax_lines all_tax
+               WHERE all_tax.accounting_entry_id=${entry}
+                 AND all_tax.company_id=${company})=1
+          AND (SELECT coalesce(sum(l.credit),0)
+               FROM public.accounting_entry_lines l
+               WHERE l.entry_id=${entry}
+                 AND l.account_id=cfg.sales_income_account_id)=s.total_amount
+          AND (SELECT coalesce(sum(l.credit),0)
+               FROM public.accounting_entry_lines l
+               WHERE l.entry_id=${entry} AND l.account_id=ppn.id)=s.tax_amount
+          AND (SELECT coalesce(sum(l.debit),0)
+               FROM public.accounting_entry_lines l
+               WHERE l.entry_id=${entry} AND l.account_id=cfg.ar_account_id)
+               =s.grand_total
+        LIMIT 2
+      `);
+      if (taxProof.rows.length !== 1) {
+        return quarantine("DEV_OUTBOX_TAX_METADATA_OR_GL_INVALID");
+      }
+    }
 
     const siblings = await tx.execute(sql`
       SELECT id FROM public.financial_outbox_events
