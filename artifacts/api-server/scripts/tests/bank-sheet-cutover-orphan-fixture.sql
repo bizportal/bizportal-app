@@ -6,7 +6,7 @@ CREATE TABLE public.bank_sheet_configs (
 );
 CREATE TABLE public.bank_mutations (
   id integer primary key, company_id integer, source text, sheet_config_id integer,
-  journal_entry_id integer
+  journal_entry_id integer, accounting_posted boolean not null default false
 );
 CREATE TABLE public.accounting_entries (
   id integer primary key, status text not null
