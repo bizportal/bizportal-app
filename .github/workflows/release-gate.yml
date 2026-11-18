@@ -34,6 +34,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Checkout pinned Portal verifier for cross-repository Invoice tests
+        if: ${{ hashFiles('artifacts/api-server/src/routes/dev-customer-invoice-crossrepo-qa.test.ts') != '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: Travelintrips/CST-CUSTOMER-PORTAL
+          ref: e005a3e7593c467693a7b2e7101fa47a929f9b6c
+          path: vendor/customer-portal
+          persist-credentials: false
+
+      - name: Assert exact original Portal verifier version
+        if: ${{ hashFiles('artifacts/api-server/src/routes/dev-customer-invoice-crossrepo-qa.test.ts') != '' }}
+        run: |
+          test "$(git -C vendor/customer-portal rev-parse HEAD)" = e005a3e7593c467693a7b2e7101fa47a929f9b6c
+          test -f vendor/customer-portal/server/dev-bizportal-invoice-attestation.mjs
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
