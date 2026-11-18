@@ -3,6 +3,29 @@
 
 begin;
 
+-- Fail closed BEFORE schema changes if historical bank mutations still
+-- reference a removed Sheet configuration. Some may already be posted;
+-- do not fabricate a replacement config or rewrite reconciled entries.
+do $pr147_preflight$
+declare
+  orphan_total integer;
+  posted_orphans integer;
+begin
+  select count(*)::int,
+         count(*) filter (where bm.journal_entry_id is not null)::int
+    into orphan_total, posted_orphans
+    from public.bank_mutations bm
+    left join public.bank_sheet_configs cfg on cfg.id=bm.sheet_config_id
+   where bm.sheet_config_id is not null and cfg.id is null;
+
+  if orphan_total > 0 then
+    raise exception
+      'BANK_SHEET_CUTOVER_BLOCKED: % orphan mutations, % journal-linked. Restore verified provenance before FK validation.',
+      orphan_total, posted_orphans;
+  end if;
+end
+$pr147_preflight$;
+
 alter table public.bank_sheet_configs
   add column if not exists bank_account_id integer;
 
