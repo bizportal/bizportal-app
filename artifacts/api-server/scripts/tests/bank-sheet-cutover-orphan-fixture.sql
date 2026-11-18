@@ -9,8 +9,11 @@ CREATE TABLE public.bank_mutations (
   journal_entry_id integer
 );
 INSERT INTO public.bank_sheet_configs VALUES (2,1,'1640006707220'),(3,1,'1234567890');
+-- Match the historic count and posted-source ratio found by read-only
+-- CST-DEV audit, but create these rows ONLY in ephemeral PostgreSQL.
 INSERT INTO public.bank_mutations(id,company_id,source,sheet_config_id,journal_entry_id)
-VALUES (26,1,'google_sheet',4,314),(27,1,'google_sheet',4,NULL);
+SELECT n+25,1,'google_sheet',4, CASE WHEN n<=7 THEN 1000+n ELSE NULL END
+FROM generate_series(1,21) AS n;
 
 -- The preflight must raise while remaining in an atomic transaction.
 -- The actual guard will be read from ensure-bank-sheet-account-isolation.sql
