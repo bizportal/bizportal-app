@@ -12,13 +12,16 @@ declare
   journal_linked integer;
   missing_journal integer;
   unposted_journal integer;
+  accounting_not_posted integer;
 begin
   select count(*)::int,
          count(*) filter (where bm.journal_entry_id is not null)::int,
          count(*) filter (where bm.journal_entry_id is not null and ae.id is null)::int,
          count(*) filter (where bm.journal_entry_id is not null
-                          and ae.id is not null and ae.status::text <> 'posted')::int
-    into orphan_total, journal_linked, missing_journal, unposted_journal
+                          and ae.id is not null and ae.status::text <> 'posted')::int,
+         count(*) filter (where bm.journal_entry_id is not null
+                          and bm.accounting_posted is distinct from true)::int
+    into orphan_total, journal_linked, missing_journal, unposted_journal, accounting_not_posted
     from public.bank_mutations bm
     left join public.bank_sheet_configs cfg on cfg.id=bm.sheet_config_id
     left join public.accounting_entries ae on ae.id=bm.journal_entry_id
@@ -26,8 +29,8 @@ begin
 
   if orphan_total > 0 then
     raise exception
-      'BANK_SHEET_CUTOVER_BLOCKED: % orphan mutations, % journal-linked, % missing journals, % non-posted journals. Recover verified source custody before FK validation.',
-      orphan_total, journal_linked, missing_journal, unposted_journal;
+      'BANK_SHEET_CUTOVER_BLOCKED: % orphan mutations, % journal-linked, % missing journals, % non-posted journals, % not accounting-posted. Recover verified source custody before FK validation.',
+      orphan_total, journal_linked, missing_journal, unposted_journal, accounting_not_posted;
   end if;
 end
 $pr147_preflight$;
