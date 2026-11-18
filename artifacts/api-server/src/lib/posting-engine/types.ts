@@ -16,6 +16,8 @@ export interface TaxLine {
   taxType: string;
   baseAmount: number;
   taxAmount: number;
+  /** Explicit tax rate (percent), already selected in original sales_documents. */
+  rate?: number;
   /** GL account for the tax line, if this tax must also produce a gl_tax_lines row. */
   glAccountId?: number | null;
   npwp?: string | null;
