@@ -1,0 +1,72 @@
+name: PR147 Bank Sheet Orphan Migration Guard
+
+on:
+  pull_request:
+    paths:
+      - "artifacts/api-server/scripts/ensure-bank-sheet-account-isolation.sql"
+      - "artifacts/api-server/scripts/tests/bank-sheet-cutover-orphan-fixture.sql"
+      - ".github/workflows/pr147-bank-sheet-orphan-guard.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-orphan-refusal:
+    name: Reject orphan source before DDL on disposable PG
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: pr147_ephemeral_only
+          POSTGRES_DB: pr147_ci
+        ports:
+          - 65434:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d pr147_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: "65434"
+      PGUSER: postgres
+      PGPASSWORD: pr147_ephemeral_only
+      PGDATABASE: pr147_ci
+    steps:
+      - uses: actions/checkout@v4
+      - name: Seed disposable historical orphan fixture
+        run: psql -v ON_ERROR_STOP=1 -f artifacts/api-server/scripts/tests/bank-sheet-cutover-orphan-fixture.sql
+      - name: Extract actual migration guard into a rollback-only isolated candidate
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path("artifacts/api-server/scripts/ensure-bank-sheet-account-isolation.sql").read_text()
+          guard=src.split("alter table public.bank_sheet_configs",1)[0]
+          assert "BANK_SHEET_CUTOVER_BLOCKED" in guard
+          assert guard.count("$pr147_preflight$")==2
+          Path("/tmp/pr147_guard_candidate.sql").write_text(guard + "\nALTER TABLE public.bank_sheet_configs ADD COLUMN bank_account_id integer;\nCOMMIT;\n")
+          PY
+      - name: Assert actual guard rejects orphaned posted source
+        run: |
+          set +e
+          psql -v ON_ERROR_STOP=1 -f /tmp/pr147_guard_candidate.sql > /tmp/pr147_guard_stdout 2> /tmp/pr147_guard_stderr
+          result=$?
+          set -e
+          if [ "$result" -eq 0 ]; then
+            echo "FAIL: orphaned posted source was permitted"
+            exit 1
+          fi
+          if ! grep -q 'BANK_SHEET_CUTOVER_BLOCKED: 2 orphan mutations, 1 journal-linked' /tmp/pr147_guard_stderr; then
+            echo "FAIL: did not fail for the expected orphan custody reason"
+            sed -E 's/(password|token|key)=[^ ]+/\1=[REDACTED]/gi' /tmp/pr147_guard_stderr | tail -15
+            exit 1
+          fi
+          echo "PASS: actual migration preflight rejects the orphaned posted source"
+      - name: Verify rejected migration left original schema and historical rows unchanged
+        run: |
+          test "$(psql -Atqc "select count(*) from information_schema.columns where table_schema='public' and table_name='bank_sheet_configs' and column_name='bank_account_id'")" = "0"
+          test "$(psql -Atqc "select count(*) from public.bank_mutations where sheet_config_id=4")" = "2"
+          test "$(psql -Atqc "select count(*) from public.bank_mutations where sheet_config_id=4 and journal_entry_id is not null")" = "1"
+          echo "PASS: zero schema changes, zero historical mutation changes on transaction rollback"
