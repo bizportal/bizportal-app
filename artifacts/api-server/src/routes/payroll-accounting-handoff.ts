@@ -81,6 +81,10 @@ export function prepareReviewedPayrollAccrual(input: PayrollHandoffInput) {
       !Number.isFinite(Date.parse(input.postingDate + "T00:00:00.000Z")) ||
       new Date(input.postingDate + "T00:00:00.000Z").toISOString().slice(0, 10) !== input.postingDate)
     reject("POSTING_DATE_INVALID");
+  // Accrual must belong to the approved Payroll month. Checking the fiscal
+  // calendar only against a caller-supplied date could otherwise let a closed
+  // November payroll post to an open December accounting period.
+  if (input.postingDate.slice(0, 7) !== period) reject("POSTING_PERIOD_MISMATCH");
 
   const active = new Set(input.activeEmployeeIds);
   if (!active.size || active.size !== input.activeEmployeeIds.length ||

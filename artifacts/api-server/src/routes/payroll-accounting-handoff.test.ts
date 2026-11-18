@@ -175,6 +175,16 @@ describe("reviewed Payroll handoff to existing accrual service — read-only", (
       amount: "600000.00", currentBalance: "500000.00", heldBalance: "500000.00" }));
     expect(() => prepareReviewedPayrollAccrual(input)).toThrow("RESERVATION_EXCEEDS_BALANCE");
   });
+  it.each(["2026-11-01", "2026-11-30"])("accepts boundary dates inside approved Payroll month: %s", date => {
+    const input = fixture(); input.postingDate = date;
+    const plan = prepareReviewedPayrollAccrual(input);
+    expect(plan.params.period).toBe("2026-11");
+    expect(plan.params.date).toBe(date);
+  });
+  it.each(["2026-10-31", "2026-12-01", "2027-11-17"])("refuses accounting posting date outside approved payroll month: %s", date => {
+    const input = fixture(); input.postingDate = date;
+    expect(() => prepareReviewedPayrollAccrual(input)).toThrow("POSTING_PERIOD_MISMATCH");
+  });
   it.each(["2026-02-30", "17/11/2026", "2026-11-17T00:00:00Z"])("rejects invalid calendar date %s", date => {
     const input = fixture(); input.postingDate = date;
     expect(() => prepareReviewedPayrollAccrual(input)).toThrow("POSTING_DATE_INVALID");

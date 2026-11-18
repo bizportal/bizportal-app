@@ -139,8 +139,8 @@
  };
  // Post through the real HTTP route, never call the transaction service
  // directly from the success/fault/replay test.
- const post=(digest:string)=>request('/api/payroll/runs/32/post-accounting?companyId=1','POST',{
-   expectedDigest:digest,postingDate:'2026-11-17'
+ const post=(digest:string,date='2026-11-17')=>request('/api/payroll/runs/32/post-accounting?companyId=1','POST',{
+   expectedDigest:digest,postingDate:date
  });
  try{
   // The *real* email OTP send handler generates a random 6-digit code and
@@ -267,6 +267,19 @@
   assert.equal((await closedResponse.json()).code,'PAYROLL_INTEGRITY_BLOCKED');
   assert.deepEqual(await state(),closedBefore);
   pass('posting HTTP refuses closed financial period and leaves approved data intact');
+
+  // An OPEN December period must not be used to post a NOVEMBER accrual.
+  // The signed approval binds its Payroll month; a later open accounting
+  // month must not bypass an explicitly closed approved month.
+  const mismatchDigest=await prepare();
+  await admin.query("UPDATE financial_periods SET is_closed=true WHERE company_id=1 AND year=2026 AND month=11");
+  await admin.query("INSERT INTO financial_periods(company_id,year,month,is_closed,override_allowed) VALUES(1,2026,12,false,false)");
+  const mismatchBefore=await state();
+  const mismatchHttp=await post(mismatchDigest,'2026-12-17');
+  assert.equal(mismatchHttp.status,409,'open December must not accept November approved accrual');
+  assert.equal((await mismatchHttp.json()).code,'PAYROLL_INTEGRITY_BLOCKED');
+  assert.deepEqual(await state(),mismatchBefore);
+  pass('posting HTTP cannot bypass closed November Payroll by selecting open December');
 
   // Even a legitimate signed approval cannot be reused after a salary edit.
   const changedDigest=await prepare();
