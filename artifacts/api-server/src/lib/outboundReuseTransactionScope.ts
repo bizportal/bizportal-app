@@ -106,7 +106,7 @@ export async function lockOutboundSourceJournalReuseScope(
   // CST-DEV canonical bank import stores OUT cash in credit_amount,
   // despite the accounting journal itself CREDITing the bank COA. Never
   // infer debit/credit direction from generic accounting conventions.
-  if(!/^0(?:\\.0{1,2})?$/.test(String(m.debit_amount??""))
+  if(!/^0(?:\.0{1,2})?$/.test(String(m.debit_amount??""))
     || minor(m.credit_amount)!==mutationMinor)
     throw new Error("PR95_OUTBOUND_BANK_DIRECTION_AMOUNTS_MISMATCH");
   const itemMinor = minor(sourceItems.rows[0].amount);
