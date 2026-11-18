@@ -63,5 +63,3 @@ try{
  assert.equal((await rows("select id from accounting_entries where source_id=199 and source='sales_invoice'")).length,0);
  console.log("ORIGINAL_PORTAL_HANDLER_DENIED_PROOF_ROLLBACK_PASS");
 }finally {await pool.end()}
-
-[executed on device: srv1792369 (0891e23a-6a6b-4f8c-a16a-962e888e2014)]
