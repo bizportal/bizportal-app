@@ -9,19 +9,25 @@ begin;
 do $pr147_preflight$
 declare
   orphan_total integer;
-  posted_orphans integer;
+  journal_linked integer;
+  missing_journal integer;
+  unposted_journal integer;
 begin
   select count(*)::int,
-         count(*) filter (where bm.journal_entry_id is not null)::int
-    into orphan_total, posted_orphans
+         count(*) filter (where bm.journal_entry_id is not null)::int,
+         count(*) filter (where bm.journal_entry_id is not null and ae.id is null)::int,
+         count(*) filter (where bm.journal_entry_id is not null
+                          and ae.id is not null and ae.status::text <> 'posted')::int
+    into orphan_total, journal_linked, missing_journal, unposted_journal
     from public.bank_mutations bm
     left join public.bank_sheet_configs cfg on cfg.id=bm.sheet_config_id
+    left join public.accounting_entries ae on ae.id=bm.journal_entry_id
    where bm.sheet_config_id is not null and cfg.id is null;
 
   if orphan_total > 0 then
     raise exception
-      'BANK_SHEET_CUTOVER_BLOCKED: % orphan mutations, % journal-linked. Restore verified provenance before FK validation.',
-      orphan_total, posted_orphans;
+      'BANK_SHEET_CUTOVER_BLOCKED: % orphan mutations, % journal-linked, % missing journals, % non-posted journals. Recover verified source custody before FK validation.',
+      orphan_total, journal_linked, missing_journal, unposted_journal;
   end if;
 end
 $pr147_preflight$;
