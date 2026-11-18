@@ -89,6 +89,22 @@ async function verifyPosted(companyId, sourceId, { gross = 100, tax = 0, taxRate
     const results = await pool.query("SELECT COUNT(*)::int AS n FROM " + table + " WHERE company_id=$1 AND entry_id=$2", [companyId, entryId]);
     assert.equal(Number(results.rows[0].n), 1, table + " should be once per source");
   }
+  // Verify the exact payload expected by the ORIGINAL Portal's transactional
+  // requireTransactionalSalesInvoiceEvidence() gate, not just outbox row count.
+  const outbox = await pool.query(
+    "SELECT payload FROM public.financial_outbox_events WHERE company_id=$1 AND entry_id=$2 AND event_type='JOURNAL_CREATED'",
+    [companyId,entryId],
+  );
+  assert.equal(outbox.rows.length,1,"single canonical outbox event");
+  const payload=outbox.rows[0].payload;
+  assert.equal(payload.eventType,"JOURNAL_CREATED");
+  assert.equal(payload.sourceType,"sales_invoice");
+  assert.equal(Number(payload.sourceId),sourceId);
+  assert.equal(Number(payload.companyId),companyId);
+  assert.equal(Number(payload.entryId),entryId);
+  assert.equal(Number(payload.amount),gross);
+  assert.equal(payload.actor,"synthetic-owner");
+  console.log("ORIGINAL_OWNER_PORTAL_OUTBOX_PAYLOAD_CONTRACT_PASS",companyId,sourceId);
   const ar = await pool.query(
     "SELECT company_id,invoice_id,gl_entry_id,gross_amount,outstanding_amount,paid_amount,status,notes FROM public.ar_subledger WHERE company_id=$1 AND invoice_id=$2",
     [companyId, sourceId],
