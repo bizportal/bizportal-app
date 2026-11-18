@@ -140,3 +140,21 @@ APP_ENV=development NODE_ENV=development \
  CUSTOMER_INVOICE_DISPOSABLE_OWNER_PATH="$WORK/bundle/portalInvoiceAdapter.mjs" \
  node scripts/tests/customer-invoice-scoped-owner.qa.mjs
 echo ORIGINAL_OWNER_DIRECT_TENANT_WRITER_DISPOSABLE_PASS
+# Validate that the original Portal Super Admin row-lock can be granted without
+# permitting UPDATE, and that its audit/notification SQL is tenant-scoped.
+# Every artifact in this section is disposable QA, never hosted finance DDL.
+for sql in customer-invoice-owner-lock.qa.sql \
+ customer-invoice-owner-lock-phase2.qa.sql \
+ customer-invoice-handler-privileges.qa.sql; do
+  docker cp "$ROOT/scripts/tests/$sql" "$PG_NAME":/tmp/qa-extra.sql
+  docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic \
+   -f /tmp/qa-extra.sql > "$WORK/qa-extra.log"
+  case "$sql" in
+   customer-invoice-owner-lock.qa.sql) node_test=customer-invoice-owner-lock.qa.mjs ;;
+   customer-invoice-owner-lock-phase2.qa.sql) node_test=customer-invoice-owner-lock-phase2.qa.mjs ;;
+   customer-invoice-handler-privileges.qa.sql) node_test=customer-invoice-handler-privileges.qa.mjs ;;
+  esac
+  CUSTOMER_INVOICE_DISPOSABLE_DB_URL="postgresql://postgres:disposable-only@127.0.0.1:$PORT/invoice_synthetic" \
+   node "$ROOT/scripts/tests/$node_test"
+done
+echo ORIGINAL_PORTAL_SUPERADMIN_ROW_LOCK_AND_AUDIT_NOTIFICATIONS_PASS
