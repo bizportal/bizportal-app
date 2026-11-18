@@ -18,6 +18,7 @@ suite("PR95 unregistered source-owned OUT reuse transition on disposable Postgre
       CREATE TABLE public.bank_mutations(
         id integer primary key,company_id integer,direction text,status text,
         journal_entry_id integer,amount numeric,bank_account_id text,
+        matching_group_id integer,
         reconciliation_status text,accounting_posted boolean default false,
         approved_at timestamptz,approved_by text,posted_at timestamptz,
         linked_transaction_type text,linked_transaction_id integer,
@@ -101,7 +102,8 @@ suite("PR95 unregistered source-owned OUT reuse transition on disposable Postgre
       (select count(*)::int from public.bank_reconciliation_matches) matches,
       (select count(*)::int from public.bank_reconciliation_audit) audits,
       (select status from public.bank_mutations where id=90001) mutation_status,
-      (select journal_entry_id from public.bank_mutations where id=90001) journal_id`);
+      (select journal_entry_id from public.bank_mutations where id=90001) journal_id,
+      (select matching_group_id from public.bank_mutations where id=90001) linked_group_id`);
     return r.rows[0];
   }
   it("enforces the canonical matching-group status check, not a permissive test-only status",async()=>{
@@ -126,6 +128,7 @@ suite("PR95 unregistered source-owned OUT reuse transition on disposable Postgre
       expect(result).toMatchObject({mutationId:90001,invoiceId:7,sourceEntryId:314});
       expect(await counts()).toMatchObject({
         journals:1,allocations:1,matches:1,audits:1,mutation_status:"posted",journal_id:314,
+        linked_group_id:expect.any(Number),
       });
       await expect(execute()).rejects.toThrow("PR95_OUTBOUND_MUTATION_NOT_ELIGIBLE");
     }finally{await client.query("ROLLBACK");}
@@ -225,6 +228,15 @@ suite("PR95 unregistered source-owned OUT reuse transition on disposable Postgre
     expect(await counts()).toMatchObject({
       journals:1,allocations:0,matches:0,audits:0,mutation_status:"unmatched",journal_id:null,
     });
+  });
+  it("rejects sub-cent liability debit even if floating-point rounding looks balanced",async()=>{
+    await client.query("BEGIN");
+    try{
+      await client.query("UPDATE public.accounting_entry_lines SET debit=100.001 WHERE id=1");
+      await expect(execute()).rejects.toThrow("PR95_OUTBOUND_LEDGER_MISMATCH");
+    }finally{await client.query("ROLLBACK");}
+    const r=await client.query("SELECT debit::text AS amount FROM public.accounting_entry_lines WHERE id=1");
+    expect(Number(r.rows[0].amount)).toBe(100);
   });
   it("rejects invalid AP debit account before financial writes",async()=>{
     await client.query("BEGIN");
