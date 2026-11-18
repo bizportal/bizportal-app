@@ -67,7 +67,19 @@ async function inspectDevConnection(req: ScopedPayrollRequest, res: Response): P
       "current_setting('transaction_read_only') AS \"txReadOnly\",",
       '(SELECT count(*) FROM public.payroll_runs) AS "visibleRuns",',
       '(SELECT count(*) FROM public.payroll_salary_profiles) AS "visibleProfiles",',
-      '(SELECT NOT rolsuper AND NOT rolbypassrls FROM pg_roles WHERE rolname=current_user) AS "restrictedRole"',
+      // All checks execute inside the same dedicated READ ONLY transaction.
+      // A matching username alone is insufficient if the role acquired DDL,
+      // membership or salary-payout write privileges after provisioning.
+      '(SELECT r.rolcanlogin AND NOT r.rolsuper AND NOT r.rolbypassrls',
+      'AND NOT r.rolcreaterole AND NOT r.rolcreatedb AND NOT r.rolreplication',
+      'AND NOT r.rolinherit AND NOT has_schema_privilege(r.oid, \'public\', \'CREATE\')',
+      'AND NOT EXISTS(SELECT 1 FROM pg_auth_members m WHERE m.member=r.oid)',
+      'AND COALESCE(NOT (',
+      "has_any_column_privilege(r.oid, to_regclass('public.salary_payments'), 'INSERT')",
+      "OR has_any_column_privilege(r.oid, to_regclass('public.salary_payments'), 'UPDATE')",
+      "OR has_table_privilege(r.oid, to_regclass('public.salary_payments'), 'DELETE')",
+      "OR has_table_privilege(r.oid, to_regclass('public.salary_payments'), 'TRUNCATE')",
+      '), false) FROM pg_roles r WHERE r.rolname=current_user) AS "restrictedRole"',
     ].join(" "), []);
     const row = check.rows[0];
     if (check.rowCount !== 1 || row?.dbRole !== "bizportal_payroll_dev" ||

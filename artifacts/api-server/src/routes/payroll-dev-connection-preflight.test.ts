@@ -149,7 +149,7 @@ describe("existing Payroll connection-preflight: DEV signed-only read-only diagn
     ["session switched role", { sessionRole: "postgres" }],
     ["foreign company scope", { dbScope: "3" }],
     ["missing read-only transaction", { readOnly: "off" }],
-    ["privileged role", { restricted: false }],
+    ["privileged role, broad payout writes or inherited privileges", { restricted: false }],
   ])("rejects %s even with a configured URL", async (_name, mutation) => {
     state.configured = true;
     Object.assign(state, mutation);
@@ -169,7 +169,12 @@ describe("existing Payroll connection-preflight: DEV signed-only read-only diagn
     expect(state.calls).toHaveLength(1);
     expect(state.calls[0]?.companyId).toBe(1);
     expect(state.calls[0]?.sql).toContain("current_setting('transaction_read_only')");
-    expect(state.calls[0]?.sql).not.toMatch(/\b(INSERT|UPDATE|DELETE|ALTER|DROP|CREATE)\b/i);
+    // Privilege checks mention INSERT/UPDATE/DELETE/CREATE as SQL string
+    // values; the probe itself must remain one read-only SELECT statement.
+    expect(state.calls[0]?.sql.trimStart()).toMatch(/^SELECT\s/i);
+    expect(state.calls[0]?.sql).not.toMatch(/;\s*(?:INSERT|UPDATE|DELETE|ALTER|DROP|CREATE)\b/i);
+    expect(state.calls[0]?.sql).toContain("pg_auth_members");
+    expect(state.calls[0]?.sql).toContain("salary_payments");
     expect(state.sharedCalls).toBe(0);
   });
   it("honors an explicitly selected second company without fallback", async () => {
