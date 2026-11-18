@@ -8,6 +8,7 @@ import {
   listQrisReviewDiagnostics,
 } from "../lib/reconciliation/qrisReviewDiagnostics";
 import { inspectSpreadsheet } from "../lib/google-sheets";
+import { bankSheetConfigAccountJoin } from "../lib/bankSheetConfigAccountJoin";
 import {
   syncAllBankSheetConfigs,
   syncOneBankSheetConfig,
@@ -7950,7 +7951,7 @@ const selectSheetConfigs = `
     config.label,
     config.sheet_id,
     config.tab_name,
-    config.bank_account_id,
+    cba.id as bank_account_id,
     config.bank_account_number,
     config.bank_name,
     cba.name as account_name,
@@ -7962,7 +7963,7 @@ const selectSheetConfigs = `
     config.last_sync_error
   from public.bank_sheet_configs config
   left join public.companies company on company.id = config.company_id
-  left join public.company_bank_accounts cba on cba.id = config.bank_account_id
+  ${bankSheetConfigAccountJoin}
   left join public.chart_of_accounts coa on coa.id = cba.coa_id
 `;
 
