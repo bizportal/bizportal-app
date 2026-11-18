@@ -233,7 +233,7 @@ suite("PR95 unregistered source-owned OUT reuse transition on disposable Postgre
     await client.query("BEGIN");
     try{
       await client.query("UPDATE public.accounting_entry_lines SET debit=100.001 WHERE id=1");
-      await expect(execute()).rejects.toThrow("PR95_OUTBOUND_LEDGER_MISMATCH");
+      await expect(execute()).rejects.toThrow("PR95_OUTBOUND_AMOUNT_INVALID");
     }finally{await client.query("ROLLBACK");}
     const r=await client.query("SELECT debit::text AS amount FROM public.accounting_entry_lines WHERE id=1");
     expect(Number(r.rows[0].amount)).toBe(100);
