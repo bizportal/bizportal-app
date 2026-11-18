@@ -8412,7 +8412,7 @@ router.post("/bank-reconciliation/:mutationId/vendor-invoice-payment-batch", asy
       const receipt = await runOutboundReuseSignedDevCandidate(
         req,
         reuseClient as unknown as OutboundReuseQueryClient,
-        { companyId: requestedCompanyId, mutationId, invoiceId: vendorInvoiceIds[0]! },
+        { companyId: requestedCompanyId, mutationId, invoiceId: Number(vendorInvoiceIds[0]) },
       );
       await reuseClient.query("commit");
       res.json({
