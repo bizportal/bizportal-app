@@ -106,6 +106,18 @@ try{
  assert.equal(replay.id,197);
  assert.equal((await rows("select id from accounting_entries where source_id=197 and source='sales_invoice'")).length,1);
  console.log("ORIGINAL_PORTAL_HANDLER_REPLAY_IDEMPOTENT_PASS");
+ // The original HTTP issuer must fail closed without an OTP session or
+ // when the authenticated actor is not a canonical Super Admin.
+ const missingSessionChallenge=mintPortalInvoiceChallenge({
+  portalUser:user,companyId:1,invoiceId:199,
+ });
+ const missingSession=await genuineIssuerProof(missingSessionChallenge,{authorized:false});
+ assert.equal(missingSession.status,401);
+ assert.equal(missingSession.proof,null);
+ const wrongRole=await genuineIssuerProof(missingSessionChallenge,{admin:true});
+ assert.equal(wrongRole.status,401);
+ assert.equal(wrongRole.proof,null);
+ console.log("ORIGINAL_BIZPORTAL_ISSUER_OTP_ABSENT_AND_WRONG_ROLE_REJECTED_PASS");
  const denied=await invoke(199,false);
  assert.equal(denied,null);
  const remaining=await rows("select invoice_status::text as status from sales_documents where id=199");
