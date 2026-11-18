@@ -34,5 +34,3 @@ await build({
  }]
 });
 console.log("ORIGINAL_BILLING_HANDLER_QA_BUNDLE_CREATED",destination);
-
-[executed on device: srv1792369 (0891e23a-6a6b-4f8c-a16a-962e888e2014)]
