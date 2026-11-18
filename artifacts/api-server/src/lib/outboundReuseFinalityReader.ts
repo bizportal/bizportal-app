@@ -10,6 +10,7 @@ export interface OutboundReuseQueryClient {
 
 export type OutboundReuseFinalityCounts = Readonly<{
   mutationFinalMatchCount: number;
+  /** Fail-closed count: every active invoice allocation, including unfinished ones. */
   sourceFinalAllocationCount: number;
   activeApprovedMutationLinkCount: number;
 }>;
@@ -40,12 +41,8 @@ export async function readOutboundReuseFinalityCounts(
   const allocations = await client.query<{ n: string }>(
     `select count(*)::text as n
        from public.payment_allocations pa
-       left join public.payment_matching_groups pmg on pmg.id=pa.group_id
-       left join public.bank_mutations bm on bm.id=pa.mutation_id
       where pa.company_id=$1 and pa.invoice_id=$2
-        and coalesce(pa.is_active,true)=true
-        and (lower(coalesce(pmg.status,'')) in ('final','posted','reconciled')
-          or lower(coalesce(bm.status,'')) in ('final','posted','reconciled'))`,
+        and coalesce(pa.is_active,true)=true`,
     [input.companyId,input.invoiceId],
   );
   const linked = await client.query<{ n: string }>(
