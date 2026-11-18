@@ -142,7 +142,7 @@ for stage in b1 b2 b3 b4; do
  docker cp "$WORK/$stage.sql" "$PG_NAME":"/tmp/$stage.sql"
  docker exec "$PG_NAME" psql -X -q -v ON_ERROR_STOP=1 \
   -U postgres -d invoice_synthetic -f "/tmp/$stage.sql" > "$WORK/$stage.log"
- echo "ORIGINAL_OWNER_SCOPED_$stage_POLICY_PASS"
+ echo "ORIGINAL_OWNER_SCOPED_${stage}_POLICY_PASS"
 done
 docker exec "$PG_NAME" psql -X -qAt -U postgres -d invoice_synthetic \
  -c "SELECT 'ORIGINAL_OWNER_B1_B4_POLICY_TOTAL='||count(*) FROM pg_policies WHERE policyname LIKE 'cst_invoice_b%';"
