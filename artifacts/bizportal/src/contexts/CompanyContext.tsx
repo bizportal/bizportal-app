@@ -31,6 +31,7 @@ interface CompanyContextValue {
   setConsolidated: () => void;
   setConsolidatedMode: () => void;
   isLoading: boolean;
+  loadError: string | null;
   refetch: () => void;
   /** Query param string for API calls, e.g. "companyId=3" or "companyId=all" */
   companyQueryParam: string;
@@ -46,6 +47,7 @@ const CompanyContext = createContext<CompanyContextValue>({
   setConsolidated: () => {},
   setConsolidatedMode: () => {},
   isLoading: false,
+  loadError: null,
   refetch: () => {},
   companyQueryParam: "",
 });
@@ -69,10 +71,13 @@ export function CompanyProvider({ children }: { children: React.ReactNode }) {
   });
 
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const fetchedRef = useRef(false);
+  const autoRetryAttemptsRef = useRef(0);
 
   const fetchCompanies = useCallback(async () => {
     if (!isApiAvailable) {
+      setLoadError("API perusahaan belum tersedia. Coba lagi setelah koneksi DEV pulih.");
       setIsLoading(false);
       return;
     }
@@ -80,18 +85,27 @@ export function CompanyProvider({ children }: { children: React.ReactNode }) {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), COMPANY_REQUEST_TIMEOUT_MS);
     setIsLoading(true);
+    setLoadError(null);
     try {
       const res = await fetch("/api/companies", {
         credentials: "include",
         signal: controller.signal,
       });
       if (res.status === 401) {
+        setCompanies([]);
+        setLoadError("Sesi login tidak valid. Silakan login ulang.");
         signOut();
         return;
       }
-      if (!res.ok) return;
-      const data = (await res.json()) as Company[];
-      setCompanies(data);
+      if (!res.ok) throw new Error(`Daftar perusahaan gagal dimuat (HTTP ${res.status}).`);
+      const data: unknown = await res.json();
+      if (!Array.isArray(data) || !data.every((entry) =>
+        entry && typeof entry === "object" && Number.isSafeInteger(entry.id)
+        && entry.id > 0 && typeof entry.companyName === "string")) {
+        throw new Error("Format respons daftar perusahaan tidak sesuai.");
+      }
+      setCompanies(data as Company[]);
+      if (data.length === 0) setLoadError("Tidak ada perusahaan yang dapat diakses oleh sesi ini.");
       if (data.length > 0 && activeCompanyId !== CONSOLIDATED_ID) {
         const storedRaw = (() => {
           try { return localStorage.getItem(STORAGE_KEY); } catch { return null; }
@@ -102,8 +116,9 @@ export function CompanyProvider({ children }: { children: React.ReactNode }) {
           setActiveCompanyIdState(data[0].id);
         }
       }
-    } catch {
-      // silently ignore
+    } catch (error) {
+      setLoadError(error instanceof Error && error.name !== "AbortError"
+        ? error.message : "Permintaan perusahaan gagal atau melebihi batas waktu.");
     } finally {
       window.clearTimeout(timeout);
       setIsLoading(false);
@@ -111,7 +126,10 @@ export function CompanyProvider({ children }: { children: React.ReactNode }) {
   }, [activeCompanyId, isApiAvailable, signOut]);
 
   useEffect(() => {
-    if (isAuthenticated) { fetchedRef.current = false; }
+    if (isAuthenticated) {
+      fetchedRef.current = false;
+      autoRetryAttemptsRef.current = 0;
+    }
   }, [isAuthenticated]);
 
   useEffect(() => {
@@ -122,6 +140,21 @@ export function CompanyProvider({ children }: { children: React.ReactNode }) {
       setIsLoading(false);
     }
   }, [isAuthenticated, isApiAvailable, fetchCompanies]);
+
+  // A cold DEV login can succeed before its first authenticated company
+  // request finishes. Retry transient failures at most twice; never retry
+  // invalid sessions, intentionally empty company access, or absent APIs.
+  useEffect(() => {
+    if (!isAuthenticated || !isApiAvailable || !loadError || companies.length > 0
+      || autoRetryAttemptsRef.current >= 2
+      || loadError.includes("Sesi login tidak valid")
+      || loadError.includes("Tidak ada perusahaan yang dapat diakses")) return;
+    const timer = window.setTimeout(() => {
+      autoRetryAttemptsRef.current += 1;
+      void fetchCompanies();
+    }, 1500 * (autoRetryAttemptsRef.current + 1));
+    return () => window.clearTimeout(timer);
+  }, [isAuthenticated, isApiAvailable, loadError, companies.length, fetchCompanies]);
 
   const setActiveCompany = useCallback((company: Company) => {
     setActiveCompanyIdState(company.id);
@@ -162,6 +195,7 @@ export function CompanyProvider({ children }: { children: React.ReactNode }) {
         setConsolidated,
         setConsolidatedMode,
         isLoading,
+        loadError,
         refetch: fetchCompanies,
         companyQueryParam,
       }}
