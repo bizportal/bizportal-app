@@ -9,6 +9,9 @@ on:
       - 'scripts/tests/customer-invoice-original-owner-synthetic-fixture.sql'
       - 'scripts/tests/customer-invoice-original-owner-disposable.mjs'
       - 'scripts/tests/customer-invoice-original-owner-disposable.sh'
+      - 'scripts/tests/customer-invoice-portal-handler-disposable-extra.sql'
+      - 'scripts/tests/customer-invoice-portal-handler-disposable-bundle.mjs'
+      - 'scripts/tests/customer-invoice-portal-handler-disposable.mjs'
       - 'artifacts/api-server/src/lib/__tests__/portal-invoice-existing-owner-adapter.test.ts'
       - '.github/workflows/customer-invoice-atomic-ppn-dev.yml'
   workflow_dispatch:
@@ -22,6 +25,17 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout pinned original Customer Portal issuer handler
+        uses: actions/checkout@v4
+        with:
+          repository: Travelintrips/CST-CUSTOMER-PORTAL
+          ref: e005a3e7593c467693a7b2e7101fa47a929f9b6c
+          path: vendor/customer-portal
+          persist-credentials: false
+      - name: Verify exact Portal handler source SHA
+        run: |
+          test "$(git -C vendor/customer-portal rev-parse HEAD)" = e005a3e7593c467693a7b2e7101fa47a929f9b6c
+          test -f vendor/customer-portal/server/billing-operations.mjs
       - uses: pnpm/action-setup@v4
         with:
           version: 10.33.0
