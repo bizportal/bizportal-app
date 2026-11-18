@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { bankSheetConfigAccountJoin } from "./bankSheetConfigAccountJoin";
 import { pool } from "@workspace/db";
 import {
   readSpreadsheetValues,
@@ -1006,10 +1007,10 @@ async function syncConfig(config: SheetConfig): Promise<{
 export async function syncOneBankSheetConfig(configId: number) {
   const result = await pool.query<SheetConfig>(
     `select config.id, config.company_id, config.sheet_id, config.tab_name, config.label,
-            config.bank_account_id, config.bank_account_number,
+            cba.id as bank_account_id, config.bank_account_number,
             cba.account_type
        from public.bank_sheet_configs config
-       left join public.company_bank_accounts cba on cba.id = config.bank_account_id
+       ${bankSheetConfigAccountJoin}
       where config.id = $1 and config.is_active = true`,
     [configId],
   );
@@ -1026,10 +1027,10 @@ export async function syncOneBankSheetConfig(configId: number) {
 export async function syncAllBankSheetConfigs(companyId?: number) {
   const result = await pool.query<SheetConfig>(
     `select config.id, config.company_id, config.sheet_id, config.tab_name, config.label,
-            config.bank_account_id, config.bank_account_number,
+            cba.id as bank_account_id, config.bank_account_number,
             cba.account_type
        from public.bank_sheet_configs config
-       left join public.company_bank_accounts cba on cba.id = config.bank_account_id
+       ${bankSheetConfigAccountJoin}
       where config.is_active = true
         and ($1::int is null or config.company_id = $1)
       order by config.id`,
