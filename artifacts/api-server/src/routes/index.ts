@@ -9,6 +9,7 @@ import accountingRouter from "./accounting";
 import purchaseWorkflowRouter from "./purchase-workflow";
 import businessDashboardRouter from "./business-dashboard";
 import localProductionAuthRouter from "./local-production-auth";
+import devCustomerInvoiceAttestationRouter from "./dev-customer-invoice-attestation";
 import salesCoreRouter from "./sales-core";
 import adminRealtimeRouter from "./admin-realtime";
 import driverGeofenceRouter from "./driver-geofence";
@@ -38,6 +39,9 @@ router.get("/", (_request, response) => {
 router.use(healthRouter);
 
 router.use(createDevAuthRouter());
+
+// DEV signed-OTP Invoice issuer: explicitly opt-in, OFF by default.
+router.use(devCustomerInvoiceAttestationRouter);
 
 // Production auth is local to this deployment and is mounted before the
 // remaining API-owned routes.
