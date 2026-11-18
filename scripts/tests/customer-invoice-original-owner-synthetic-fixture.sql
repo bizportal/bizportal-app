@@ -27,7 +27,8 @@ INSERT INTO public.accounting_journals(id,company_id,code,name,type) VALUES
 INSERT INTO public.accounting_taxes
 (id,company_id,name,rate,kind,account_id)
 VALUES (1,1,'Synthetic PPN 11% CST',11,'sale',103),
-       (3,3,'Synthetic PPN 11% DIVA',11,'sale',303);
+       (3,3,'Synthetic PPN 11% DIVA',11,'sale',303),
+       (4,3,'Synthetic PPN 12% DIVA',12,'sale',303);
 INSERT INTO public.accounting_settings
  (company_id,ar_account_id,sales_income_account_id,sales_journal_id,ppn_output_account_id,default_sales_tax_id)
 VALUES (1,101,102,11,103,1),(3,301,302,31,303,3);
@@ -44,7 +45,9 @@ VALUES
  (183,'QA-ORDER-183','order','confirmed','invoiced','Synthetic PPN DIVA',100,11,111,3,'QA-DIVA-183','2026-11-18','2026-12-18','exclusive',3),
  (185,'QA-ORDER-185','order','confirmed','invoiced','Synthetic PPN wrong amount',100,101.75,201.75,1,'QA-CST-185','2026-11-18','2026-12-18','exclusive',1),
  (187,'QA-ORDER-187','order','confirmed','invoiced','Synthetic foreign company tax',100,11,111,3,'QA-DIVA-187','2026-11-18','2026-12-18','exclusive',1),
- (189,'QA-ORDER-189','order','confirmed','invoiced','Synthetic taxable rollback',100,11,111,1,'QA-CST-189','2026-11-18','2026-12-18','exclusive',1);
+ (189,'QA-ORDER-189','order','confirmed','invoiced','Synthetic taxable rollback',100,11,111,1,'QA-CST-189','2026-11-18','2026-12-18','exclusive',1),
+ (193,'QA-ORDER-193','order','confirmed','invoiced','Synthetic PPN 12% DIVA',100,12,112,3,'QA-DIVA-193','2026-11-18','2026-12-18','exclusive',4),
+ (195,'QA-ORDER-195','order','confirmed','invoiced','Synthetic PPN 12% rollback DIVA',100,12,112,3,'QA-DIVA-195','2026-11-18','2026-12-18','exclusive',4);
 INSERT INTO public.sales_document_lines(document_id,name,quantity,unit_price,subtotal)
 VALUES (171,'Synthetic service',1,100,100),
  (173,'Synthetic service',1,100,100),
@@ -54,4 +57,6 @@ VALUES (171,'Synthetic service',1,100,100),
  (183,'Synthetic PPN DIVA service',1,100,100),
  (185,'Synthetic invalid PPN service',1,100,100),
  (187,'Synthetic cross-company PPN',1,100,100),
- (189,'Synthetic taxable rollback PPN',1,100,100);
+ (189,'Synthetic taxable rollback PPN',1,100,100),
+ (193,'Synthetic PPN 12% DIVA service',1,100,100),
+ (195,'Synthetic PPN 12% DIVA rollback service',1,100,100);
