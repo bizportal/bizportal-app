@@ -4,11 +4,14 @@ on:
   pull_request:
     branches:
       - test/dev-original-owner-disposable-journal-20261118
+      - test/dev-customer-invoice-atomic-ppn-20261118
     paths:
       - 'artifacts/api-server/src/lib/posting-engine/portalInvoiceAdapter.ts'
       - 'scripts/tests/customer-invoice-original-owner-synthetic-fixture.sql'
       - 'scripts/tests/customer-invoice-original-owner-disposable.mjs'
       - 'scripts/tests/customer-invoice-original-owner-disposable.sh'
+      - 'scripts/tests/customer-invoice-scoped-writers.qa.sql'
+      - 'scripts/tests/customer-invoice-scoped-owner.qa.mjs'
       - 'artifacts/api-server/src/lib/__tests__/portal-invoice-existing-owner-adapter.test.ts'
       - '.github/workflows/customer-invoice-atomic-ppn-dev.yml'
   workflow_dispatch:
