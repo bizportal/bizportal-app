@@ -28,6 +28,13 @@ suite("PR95 unregistered source-owned OUT reuse transition on disposable Postgre
         id integer primary key,company_id integer,status text,
         cancelled_at timestamptz,grand_total numeric
       );
+      CREATE TABLE public.vendor_invoice_lines(
+        id integer primary key,invoice_id integer not null
+      );
+      CREATE TABLE public.vendor_invoice_line_taxes(
+        id integer primary key,invoice_line_id integer not null,
+        company_id integer not null,tax_amount numeric not null
+      );
       CREATE TABLE public.bank_disbursements(
         id integer primary key,company_id integer,entry_id integer,
         status text,void_entry_id integer
@@ -91,6 +98,7 @@ suite("PR95 unregistered source-owned OUT reuse transition on disposable Postgre
       public.payment_allocations,public.payment_matching_groups,public.chart_of_accounts,
       public.company_bank_accounts,public.accounting_entry_lines,public.accounting_entries,
       public.bank_disbursement_items,public.bank_disbursements,
+      public.vendor_invoice_line_taxes,public.vendor_invoice_lines,
       public.vendor_invoices,public.bank_mutations`);
     await client.end();
   });
@@ -237,6 +245,15 @@ suite("PR95 unregistered source-owned OUT reuse transition on disposable Postgre
     }finally{await client.query("ROLLBACK");}
     const r=await client.query("SELECT debit::text AS amount FROM public.accounting_entry_lines WHERE id=1");
     expect(Number(r.rows[0].amount)).toBe(100);
+  });
+  it("rejects nonzero canonical invoice tax lines before writing allocations",async()=>{
+    await client.query("BEGIN");
+    try{
+      await client.query("INSERT INTO public.vendor_invoice_lines VALUES(88,7)");
+      await client.query("INSERT INTO public.vendor_invoice_line_taxes VALUES(99,88,1,10.00)");
+      await expect(execute()).rejects.toThrow("PR95_SOURCE_REUSE_TAX_LINES_UNSUPPORTED");
+    }finally{await client.query("ROLLBACK");}
+    expect(await counts()).toMatchObject({journals:1,allocations:0,matches:0,audits:0});
   });
   it("rejects invalid AP debit account before financial writes",async()=>{
     await client.query("BEGIN");
