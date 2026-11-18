@@ -10,6 +10,8 @@ import {
   initializeProductionSessionSigning,
   isDevelopmentEnvironment,
 } from "./routes/dev-auth";
+import { prepareDevApprovalCredential } from "./routes/payroll-dev-approval-db";
+import { prepareDevPayrollAtomicRuntime } from "./routes/payroll-accounting-bootstrap";
 
 const rawPort = process.env["PORT"];
 
@@ -63,6 +65,31 @@ async function initializeProductionSessionSigningInBackground(
 const server = app.listen(port, host, () => {
   logger.info({ port, host }, "Server listening");
 });
+
+// Separate approver secrets can be read ONLY for an explicitly opted-in DEV
+// canary, never for PROD or the ordinary BizPortal Payroll flow. Fail-closed:
+// routes remain unavailable until a correctly pinned credential is loaded.
+if (process.env.APP_ENV === "development" &&
+    process.env.PAYROLL_DEV_SUPER_ADMIN_ROUTE_MOUNT_ENABLED === "true" &&
+    process.env.PAYROLL_DEV_SUPER_ADMIN_APPROVAL_ENABLED === "true" &&
+    process.env.PAYROLL_APPROVAL_GCP_SECRET_NAME_DEV?.trim()) {
+  void prepareDevApprovalCredential()
+    .then(ready => logger.info({ prepared: ready }, "DEV Payroll approver credential readiness"))
+    .catch(() => logger.warn({ code: "PAYROLL_APPROVER_SECRET_UNAVAILABLE" },
+      "DEV Payroll approver remains disabled"));
+}
+
+// Optional DEV assembly reuses existing GCP custody, a release-pinned accrual
+// artifact and a dedicated settlement pool. No flags means no secret/DB work.
+// Failure preserves liveness and leaves the financial HTTP runtime unbound.
+if (process.env.APP_ENV === "development" &&
+    process.env.PAYROLL_DEV_ATOMIC_ROUTE_MOUNT_ENABLED === "true" &&
+    process.env.PAYROLL_DEV_ATOMIC_POSTING_ENABLED === "true") {
+  void prepareDevPayrollAtomicRuntime()
+    .then(prepared => logger.info({ prepared }, "DEV Payroll atomic runtime readiness"))
+    .catch(() => logger.warn({ code: "PAYROLL_NATIVE_BOOTSTRAP_UNAVAILABLE" },
+      "DEV Payroll atomic runtime remains unavailable"));
+}
 
 if (!isDevelopmentEnvironment()) {
   // Do not make process liveness depend on database/Secret Manager availability.

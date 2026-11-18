@@ -6,7 +6,7 @@ import { once } from "node:events";
 const mock = vi.hoisted(() => ({
   actor: { role: "admin", companyId: null as number | null },
   queries: [] as Array<{ sql: string; values?: unknown[] }>,
-  exists: true, status: "draft", itemExists: true, released: 0,
+  exists: true, status: "draft", itemExists: true, released: 0, dedicated: true, connect: vi.fn(),
 }));
 vi.mock("./dev-auth", () => ({
   isDevelopmentEnvironment: () => true,
@@ -14,9 +14,20 @@ vi.mock("./dev-auth", () => ({
   getProductionSession: () => null,
   getProductionUser: async () => null,
 }));
+vi.mock("./payroll-db", () => ({
+  payrollDedicatedEnabled: () => mock.dedicated,
+  getPayrollPool: () => ({ connect: () => mock.connect() }),
+  setPayrollCompanyScope: async (client: { query: (sql: string, args?: unknown[]) => Promise<unknown> }, companyId: number) => {
+    await client.query("SELECT set_config('app.payroll_company_id', $1, true)", [String(companyId)]);
+  },
+}));
 vi.mock("@workspace/db", () => ({
   pool: {
-    connect: async () => ({
+    connect: async () => { throw Error("SHARED_PAYROLL_WRITE_POOL_FORBIDDEN"); },
+    query: async () => { throw Error("Unexpected pool query"); },
+  },
+}));
+mock.connect.mockImplementation(async () => ({
       query: async (sql: string, values?: unknown[]) => {
         mock.queries.push({ sql, values });
         if (sql.includes("FROM public.payroll_runs WHERE company_id")) return mock.exists
@@ -34,10 +45,8 @@ vi.mock("@workspace/db", () => ({
         return { rowCount: 0, rows: [] };
       },
       release: () => { mock.released++; },
-    }),
-    query: async () => { throw Error("Unexpected pool query"); },
-  },
-}));
+    }));
+
 
 describe("DEV payroll salary editing HTTP", () => {
   let server: Server, url: string;
@@ -51,7 +60,7 @@ describe("DEV payroll salary editing HTTP", () => {
   afterAll(async () => { await new Promise<void>((resolve, reject) => server.close(e => e ? reject(e) : resolve())); });
   beforeEach(() => {
     mock.actor.role = "admin"; mock.actor.companyId = null;
-    mock.queries.length = 0; mock.exists = true; mock.status = "draft"; mock.itemExists = true; mock.released = 0;
+    mock.queries.length = 0; mock.exists = true; mock.status = "draft"; mock.itemExists = true; mock.released = 0; mock.dedicated = true; mock.connect.mockClear();
     delete process.env.PAYROLL_DEV_ITEM_EDIT_ENABLED;
   });
   afterEach(() => { delete process.env.PAYROLL_DEV_ITEM_EDIT_ENABLED; });
@@ -64,6 +73,13 @@ describe("DEV payroll salary editing HTTP", () => {
     expect(mock.queries).toHaveLength(0);
   });
 
+  it("rejects missing dedicated connection rather than editing via shared pool", async () => {
+    process.env.PAYROLL_DEV_ITEM_EDIT_ENABLED = "true";
+    mock.dedicated = false;
+    expect((await send({ allowance: 250000 })).status).toBe(503);
+    expect(mock.connect).not.toHaveBeenCalled();
+    expect(mock.queries).toHaveLength(0);
+  });
   it("blocks finance and foreign company", async () => {
     process.env.PAYROLL_DEV_ITEM_EDIT_ENABLED = "true";
     mock.actor.role = "finance"; mock.actor.companyId = 1;
@@ -101,6 +117,7 @@ describe("DEV payroll salary editing HTTP", () => {
     expect(update?.values?.slice(6, 9)).toEqual([5_400_000, 150_000, 5_250_000]);
     expect(mock.queries.some(q => /(?:^|\n)\s*(?:DELETE|INSERT|UPDATE public.cash_advances|UPDATE public.accounting)/i.test(q.sql))).toBe(false);
     expect(mock.queries.at(-1)?.sql).toBe("COMMIT");
+    expect(mock.queries.some(q => q.sql.includes("set_config('app.payroll_company_id'"))).toBe(true);
     expect(mock.released).toBe(1);
   });
 

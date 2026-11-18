@@ -1,0 +1,99 @@
+PASS NATIVE_PACKAGE same pinned inputs produce identical self-contained bytes
+PASS NATIVE_PACKAGE only approved builtin import and accrual exports
+PASS NATIVE_PACKAGE no fixture global database or synthetic credential is embedded
+PASS NATIVE_PACKAGE actual generated artifact imports without initializing any pool
+PASS NATIVE_PACKAGE actual artifact is unavailable in production
+PASS NATIVE_PACKAGE posting flag off prevents native invocation
+PASS NATIVE_PACKAGE missing caller transaction cannot select global fallback
+PASS NATIVE_PACKAGE transaction failure propagates without another pool or retry
+PASS NATIVE_PACKAGE unqualified source roots rejected
+PASS NATIVE_PACKAGE changed legacy source rejected before artifact creation
+PASS NATIVE_PACKAGE source-file symlink rejected before copying
+NATIVE_PACKAGE_BUILD_CHECKS_PASS 11 ARTIFACT_SHA256 3bad52140b01aeebc0b7bf993785c8072bcaf7d07fae812bd118929ea7729159 BYTES 543390 LIVE_DATABASE_USED false
+
+CLOSED_NATIVE_ARTIFACT_BUILT 3bad52140b01aeebc0b7bf993785c8072bcaf7d07fae812bd118929ea7729159 BYTES 543390 FINANCIAL_MOCKS false
+VERIFIED_PACKAGE_LOADER_USED true HTTP_SESSION_TESTED false
+POSTGRES 16.15 FIXTURE_ONLY true
+LEDGER_TRIGGER_SNAPSHOT_HASHES_MATCH 3 POLICY_AND_GRANTS SYNTHETIC_FIXTURE_ONLY
+PASS PERMISSION direct non-superuser, non-bypass identity retained
+PASS PERMISSION no table-wide UPDATE, DELETE or TRUNCATE remains anywhere in fixture public schema
+PASS PERMISSION approval receipt, salary, loan principal, bank-payment link, payout and schema writes absent
+PASS PERMISSION SELECT FOR SHARE retains actual access without broad write grants
+PASS PERMISSION rewrite approved_at is refused
+PASS PERMISSION rewrite approval receipt is refused
+PASS PERMISSION link salary payment is refused
+PASS PERMISSION change salary amount is refused
+PASS PERMISSION change loan principal is refused
+PASS PERMISSION change loan receivable account is refused
+PASS PERMISSION change configured COA is refused
+PASS PERMISSION create salary payment is refused
+PASS PERMISSION delete repayment ledger is refused
+PASS PERMISSION truncate payroll is refused
+PASS PERMISSION create schema object is refused
+PASS PERMISSION mutate employee lock-only column is refused
+PASS PERMISSION mutate COA lock-only column is refused
+PASS PERMISSION mutate mapping lock-only column is refused
+PASS PERMISSION mutate period lock-only column is refused
+PASS PERMISSION foreign company payroll cannot be read or locked
+PASS PERMISSION transaction scope does not leak into subsequent unscoped query
+PASS PERMISSION actual restricted PostgreSQL connection passes read-only runtime preflight across 18 tables
+PERMISSION_BOUNDARY_CHECKS_PASS 22 LIVE_GRANTS_CHANGED false
+BASELINE_REPRODUCED journal_rolled_back_but_external_audit_and_outbox_remained
+PASS baseline regression reproduced on actual PostgreSQL
+PASS APPLICATION service commits native journal, real repayment ledger, balance, confirmation and run link together
+PASS APPLICATION replay verifies existing journal lines and exact repayment ledger without another deduction
+PASS APPLICATION rollback on cash_advances failure leaves zero financial and audit residue
+PASS APPLICATION rollback on cash_advance_repayments failure leaves zero financial and audit residue
+PASS APPLICATION rollback on payroll_kasbon_auto_reservations failure leaves zero financial and audit residue
+PASS APPLICATION rollback on payroll_runs failure leaves zero financial and audit residue
+PASS APPLICATION concurrent calls create one journal and one repayment with bounded serialization retry
+PASS APPLICATION RLS rejects foreign company
+PASS APPLICATION closed period refused before writer
+PASS APPLICATION salary snapshot changed after approval is refused
+PASS APPLICATION changed kasbon balance is refused
+PASS APPLICATION financial_outbox_events failure rolls back without global escape
+PASS APPLICATION ledger_events failure rolls back without global escape
+PASS APPLICATION journal_sequences failure rolls back without global escape
+PASS APPLICATION replay rejects non-posted journal
+PASS APPLICATION replay rejects altered account lines even with identical totals
+PASS APPLICATION replay rejects missing repayment without silently recreating it
+PASS APPLICATION replay rejects changed repayment amount
+PASS APPLICATION reads real advance approval metadata rather than fixture constants
+PASS APPLICATION refuses loan belonging to a different employee
+PASS APPLICATION refuses reservation from a different Payroll period
+PASS APPLICATION loads and validates actual five-account mapping
+PASS APPLICATION blocks overlap with pre-existing legacy allocation ledger
+PASS APPLICATION rejects a writer claiming a nonexistent journal
+PASS APPLICATION limited writer is denied account-line mutation before settlement, with full rollback
+PASS APPLICATION fails closed on missing fiscal period
+PASS APPLICATION refuses inconsistent advance totals
+PASS APPLICATION writer stays OFF by default
+PASS APPLICATION preserves PostgreSQL microsecond approval time and records posting time
+PASS APPLICATION blocks loans with pending legacy installment schedules to prevent double settlement
+PASS APPLICATION refuses the unpatched global-posting native service before opening a connection
+PASS APPLICATION full kasbon settlement reaches zero with one repayment and no salary transfer
+PASS APPLICATION zero-kasbon payroll does not create a repayment or alter an unrelated balance
+PASS APPLICATION full 17-person roster posts one balanced accrual using database-loaded values
+APPLICATION_REAL_POSTGRES_CHECKS_PASS 35 LIVE_CST_DEV_OR_PROD_USED false BANK_TRANSFER_SENT false
+
+
+ RUN  v3.2.7 /opt/bizportal-payroll-native-package-20261117/artifacts/api-server
+
+ ✓ src/routes/payroll-accounting-http.test.ts (44 tests) 497ms
+ ✓ src/routes/payroll-accounting-bootstrap.test.ts (35 tests) 245ms
+ ✓ src/routes/payroll-accounting-native-runtime.test.ts (19 tests) 117ms
+ ✓ src/routes/payroll-accounting-runtime-preflight.test.ts (33 tests) 35ms
+
+ Test Files  4 passed (4)
+      Tests  131 passed (131)
+   Start at  14:41:57
+   Duration  2.67s (transform 348ms, setup 0ms, collect 464ms, tests 894ms, environment 1ms, prepare 373ms)
+
+
+ ✓ src/__tests__/bank-reconciliation-main-ai-button.test.ts (1 test) 3ms
+ ✓ src/__tests__/bank-reconciliation-manual-candidate-persistence.test.ts (1 test) 4ms
+
+ Test Files  124 passed | 12 skipped (136)
+      Tests  944 passed | 49 skipped (993)
+   Start at  14:43:15
+   Duration  42.32s (transform 4.38s, setup 0ms, collect 31.04s, tests 11.03s, environment 32ms, prepare 13.27s)

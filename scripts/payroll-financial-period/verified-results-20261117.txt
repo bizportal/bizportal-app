@@ -1,0 +1,28 @@
+POSTGRES 16.15 FIXTURE_ONLY true
+LEDGER_TRIGGER_SNAPSHOT_HASHES_MATCH 3 POLICY_AND_GRANTS SYNTHETIC_FIXTURE_ONLY
+PASS two unchanged audit trigger definitions match actual CST-DEV hashes
+PASS real limited-role INSERT creates exactly one period and one trigger-generated audit, no finance changes
+PASS same request replays recorded audit without another period or event
+PASS idempotency key rejects changed payload
+PASS concurrent same-request calls result in one registration and one replay
+PASS concurrent distinct requests do not create a duplicate period or audit
+PASS existing open period reused without manufacturing audit or human approval
+PASS closed period is never reopened
+PASS closed period override is not used as automatic permission
+PASS external lock locked refuses period registration
+PASS external lock null refuses period registration
+PASS external lock unrecognized refuses period registration
+PASS foreign-company run denied without period/audit writes
+PASS unapproved actor pin refused before connecting
+PASS invalid request ID rejected
+PASS already posted payroll cannot register a new period
+PASS audit write failure rolls back period INSERT
+PASS silently absent audit detected by read-back and period rolled back
+PASS limited database identity cannot reopen, override, pay, or mutate audit
+PASS company/actor transaction context does not persist in pool
+PASS direct fabricated registration event is refused by unchanged audit nesting guard
+PASS replay after period closure is rejected without reopening the period
+PASS original append-only audit guard still rejects edits
+PASS original audit truncate guard stayed enabled and explicitly rejects truncation
+PASS Payroll/approval/journals/kasbon/bank-payment counts unchanged across setup tests
+AUDITED_PERIOD_REGISTRATION_POSTGRES_PASS 25 LIVE_DATABASE_USED false FUNDING_APPROVED false

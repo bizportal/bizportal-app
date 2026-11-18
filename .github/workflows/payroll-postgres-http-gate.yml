@@ -5,6 +5,13 @@ on:
     branches: [main, develop]
     paths:
       - 'artifacts/api-server/src/routes/payroll*'
+      - 'scripts/payroll-*/**'
+      - 'lib/db/src/**'
+      - 'lib/db/package.json'
+      - 'artifacts/api-server/package.json'
+      - 'pnpm-lock.yaml'
+      - 'package.json'
+      - 'pnpm-workspace.yaml'
       - '.github/workflows/payroll-postgres-http-gate.yml'
   workflow_dispatch:
 
@@ -57,7 +64,116 @@ jobs:
         run: pnpm --filter @workspace/api-server exec vitest run src/routes/payroll-super-admin-approval-real-postgres.test.ts
       - name: Signed production login and role-scoped Super Admin approval (disposable DB only)
         run: pnpm --filter @workspace/api-server exec vitest run src/routes/payroll-super-admin-signed-session-postgres.test.ts --maxWorkers=1 --no-file-parallelism
+      - name: DEV signed Payroll dedicated-connection diagnostics and PROD preflight parity
+        run: pnpm --filter @workspace/api-server exec vitest run src/routes/payroll-dev-connection-preflight.test.ts src/routes/payroll-prod-connection-preflight.test.ts
       - name: Verify DEV HR review policy versus approval receipt guard (disposable PostgreSQL)
         run: pnpm --filter @workspace/api-server exec vitest run src/routes/payroll-dev-approval-rls-parity-postgres.test.ts --maxWorkers=1 --no-file-parallelism
       - name: Verify additive restricted receipt RLS and legacy HR compatibility (disposable PostgreSQL)
         run: pnpm --filter @workspace/api-server exec vitest run src/routes/payroll-dev-additive-receipt-rls-postgres.test.ts --maxWorkers=1 --no-file-parallelism
+
+  native-postgres:
+    name: Native accrual / atomic settlement / legacy installments
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      # Full history is needed only to reproduce the already-pinned earlier
+      # immutable-journal patch. No application or deployment secret is used.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10
+          run_install: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Test pinned source acquisition without network or credentials
+        run: node --test scripts/payroll-native-runtime/fetch-pinned-source.test.mjs
+      - name: Acquire five exact public source files and verify SHA256
+        run: node scripts/payroll-native-runtime/fetch-pinned-source.mjs "$RUNNER_TEMP/payroll-pinned-source"
+      - name: Prepare the same disposable PostgreSQL image used for local proof
+        run: |
+          set -euo pipefail
+          docker pull postgres@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+          docker tag postgres@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea postgres:16-alpine
+      - name: DEV Calculate restricted real PostgreSQL, replay, company scope and rollback
+        run: |
+          set -euo pipefail
+          bash scripts/payroll-calculate/run-disposable.sh | tee "$RUNNER_TEMP/payroll-calculate.log"
+          grep -qx 'REAL_POSTGRES_DISPOSABLE_PASS' "$RUNNER_TEMP/payroll-calculate.log"
+      - name: Signed HTTP Calculate -> one Super Admin approval on restricted PostgreSQL
+        run: |
+          set -euo pipefail
+          NODE_OPTIONS=--throw-deprecation bash scripts/payroll-calculate/run-disposable.sh signed | tee "$RUNNER_TEMP/payroll-calculate-signed.log"
+          grep -qx 'SIGNED_APPROVAL_POSTGRES_DISPOSABLE_PASS' "$RUNNER_TEMP/payroll-calculate-signed.log"
+      - name: Build and check the actual pinned native package
+        run: |
+          set -euo pipefail
+          node scripts/payroll-native-runtime/verify-build.mjs "$RUNNER_TEMP/payroll-pinned-source" | tee "$RUNNER_TEMP/payroll-native-integrity.log"
+          grep -Eq '^NATIVE_PACKAGE_BUILD_CHECKS_PASS [1-9][0-9]* ' "$RUNNER_TEMP/payroll-native-integrity.log"
+      - name: Real packaged accrual, kasbon, mapped deductions and legacy installments
+        run: |
+          set -euo pipefail
+          bash scripts/payroll-atomic-rehearsal/run-disposable.sh "$RUNNER_TEMP/payroll-pinned-source" packaged | tee "$RUNNER_TEMP/payroll-packaged.log"
+          for marker in PERMISSION_BOUNDARY_CHECKS_PASS MAPPED_OTHER_DEDUCTION_POSTGRES_PASS KASBON_CROSS_PERIOD_POSTGRES_PASS LEGACY_INSTALLMENT_LINK_POSTGRES_PASS APPLICATION_REAL_POSTGRES_CHECKS_PASS; do
+            grep -Eq "^${marker} [1-9][0-9]* " "$RUNNER_TEMP/payroll-packaged.log"
+          done
+      - name: Real OTP HTTP -> signed Calculate -> approval -> native journal and kasbon in ONE disposable PostgreSQL
+        run: |
+          set -euo pipefail
+          NODE_OPTIONS=--throw-deprecation bash scripts/payroll-atomic-rehearsal/run-disposable.sh "$RUNNER_TEMP/payroll-pinned-source" integrated | tee "$RUNNER_TEMP/payroll-integrated.log"
+          grep -Eq '^PAYROLL_SIGNED_CALCULATE_APPROVAL_NATIVE_HTTP_LEDGER_POSTGRES_PASS 17 SIGNED_COOKIE_ISSUED_BY_REAL_OTP_HANDLER true SMTP_NETWORK_DELIVERY_USED false '  "$RUNNER_TEMP/payroll-integrated.log"
+      - name: Original transaction, permission, trigger, native and period regressions
+        run: |
+          set -euo pipefail
+          for mode in application permissions triggers native financial-setup; do
+            bash scripts/payroll-atomic-rehearsal/run-disposable.sh "$RUNNER_TEMP/payroll-pinned-source" "$mode" | tee "$RUNNER_TEMP/payroll-${mode}.log"
+            case "$mode" in
+              application|permissions) marker=APPLICATION_REAL_POSTGRES_CHECKS_PASS ;;
+              triggers) marker=SELECTED_DEV_TRIGGER_CHECKS_PASS ;;
+              native) marker=REAL_POSTGRES_CHECKS_PASS ;;
+              financial-setup) marker=AUDITED_PERIOD_REGISTRATION_POSTGRES_PASS ;;
+            esac
+            grep -Eq "^${marker} [1-9][0-9]* " "$RUNNER_TEMP/payroll-${mode}.log"
+          done
+      - name: Verify temporary database cleanup and summarize separate evidence
+        run: |
+          set -euo pipefail
+          if docker ps --format '{{.Names}}' | grep -q '^cst-payroll-atomic-fixture-'; then
+            echo 'Temporary Payroll database still running'; exit 1
+          fi
+          if docker ps --format '{{.Names}}' | grep -q '^payroll-calculate-fixture-'; then
+            echo 'Temporary Calculate fixture still running'; exit 1
+          fi
+          for port in 65432 65436; do
+            if ss -lnt "( sport = :${port} )" | tail -n +2 | grep -q .; then
+              echo "Temporary Payroll database port ${port} still listening"; exit 1
+            fi
+          done
+          {
+            echo '### Payroll native/source-pinned PostgreSQL evidence'
+            echo 'Synthetic, disposable data only. No live signed-session HTTP posting or deployment is claimed.'
+            echo 'Each family below is separate; overlapping counts are not summed.'
+            echo '```text'
+            for mode in packaged application permissions triggers native financial-setup; do
+              echo "SUITE $mode"
+              grep -E '^(PERMISSION_BOUNDARY_CHECKS_PASS|MAPPED_OTHER_DEDUCTION_POSTGRES_PASS|KASBON_CROSS_PERIOD_POSTGRES_PASS|LEGACY_INSTALLMENT_LINK_POSTGRES_PASS|APPLICATION_REAL_POSTGRES_CHECKS_PASS|SELECTED_DEV_TRIGGER_CHECKS_PASS|REAL_POSTGRES_CHECKS_PASS|AUDITED_PERIOD_REGISTRATION_POSTGRES_PASS)' "$RUNNER_TEMP/payroll-${mode}.log"
+            done
+            echo "SUITE integrated single synthetic signed-session database"
+            grep -E '^PAYROLL_SIGNED_CALCULATE_APPROVAL_NATIVE_HTTP_LEDGER_POSTGRES_PASS ' "$RUNNER_TEMP/payroll-integrated.log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove this job's disposable database and downloaded source
+        if: always()
+        run: |
+          set -euo pipefail
+          while IFS= read -r name; do
+            case "$name" in cst-payroll-atomic-fixture-*|payroll-calculate-fixture-*) docker rm -f "$name" ;; esac
+          done < <(docker ps -a --format '{{.Names}}')
+          rm -rf -- "$RUNNER_TEMP/payroll-pinned-source"

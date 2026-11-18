@@ -1,10 +1,15 @@
 import { Router, type IRouter, type Request, type Response, type NextFunction } from "express";
 import { pool } from "@workspace/db";
-import { getPayrollPool, payrollScopedQuery, setPayrollCompanyScope } from "./payroll-db";
+import { getPayrollPool, payrollDedicatedEnabled, payrollScopedQuery, setPayrollCompanyScope } from "./payroll-db";
 import { authorizePayrollCompany } from "./payroll-access";
 import { registerPayrollSetupReadinessRoutes } from "./payroll-setup-readiness";
 import { registerPayrollProdConnectionPreflightRoutes } from "./payroll-prod-connection-preflight";
+import { registerPayrollSuperAdminApprovalRoutes } from "./payroll-super-admin-approval";
+import { createPayrollAtomicAccountingRouter } from "./payroll-accounting-http";
+import { createDevPayrollCalculateRouter } from "./payroll-calculate-http";
+import { createPayrollFinancialPeriodRouter } from "./payroll-financial-period-http";
 import { readPayrollSuperAdminApprovalReceipt } from "./payroll-super-admin-approval-receipt";
+import { buildPayrollPreview, type PayrollPreviewItem } from "./payroll-preview";
 import { getDevSession, getProductionSession, getProductionUser, isDevelopmentEnvironment, type DevAuthUser } from "./dev-auth";
 
 /**
@@ -63,11 +68,54 @@ function serializeRun(row: Record<string, unknown>) {
   };
 }
 
+// Exact POST path has its own signed-session + Origin checks; no DEV cookie fallback.
+// It stays absent unless both DEV gates are explicit and cannot write before trusted runtime binding.
+router.use(createPayrollAtomicAccountingRouter());
+// DEV canary Calculate is signed-session-only and stays absent in PROD.
+router.use(createDevPayrollCalculateRouter());
+// Reuses the existing audited period-registration contract; no funding/payroll approval.
+router.use(createPayrollFinancialPeriodRouter());
 router.use("/payroll", authorize);
 // Stage-one PROD readiness: aggregate-only, default OFF; no payroll writers.
 registerPayrollSetupReadinessRoutes(router);
 // Port exact legacy read-only scoped PROD connection diagnostic; write paths remain disabled.
 registerPayrollProdConnectionPreflightRoutes(router);
+
+// Approval is intentionally absent from the PROD route tree. This stage only
+// exposes the existing, independently guarded handler on an EXPLICIT DEV-only
+// canary. It does NOT grant a DB role, enable approval, or permit GL/payouts.
+// The handler still requires PAYROLL_DEV_SUPER_ADMIN_APPROVAL_ENABLED and the
+// distinct, pinned bizportal_payroll_approver_dev login before any write.
+if (process.env.APP_ENV?.trim().toLowerCase() === "development" &&
+    process.env.PAYROLL_DEV_SUPER_ADMIN_ROUTE_MOUNT_ENABLED === "true") {
+  const approvalRouter: IRouter = Router();
+  // A legacy DEV test-session cookie is NEVER sufficient for salary approval.
+  // Revalidate the server-issued OTP session and active DB user identity on
+  // each request, even when ordinary Payroll reads allow legacy DEV sessions.
+  approvalRouter.use(async (req: PayrollRequest, res: Response, next: NextFunction) => {
+    const signedSession = getProductionSession(req);
+    if (!signedSession) {
+      res.status(401).json({ message: "Persetujuan Payroll memerlukan sesi OTP Super Admin." });
+      return;
+    }
+    try {
+      const verifiedActor = await getProductionUser(signedSession);
+      const verifiedCompany = authorizePayrollCompany(verifiedActor, req.query.companyId);
+      if (!verifiedActor || verifiedActor.role.toLowerCase() !== "super_admin" ||
+          !verifiedCompany || verifiedCompany !== req.payrollCompanyId) {
+        res.status(403).json({ message: "Super Admin Payroll tidak berwenang." });
+        return;
+      }
+      req.payrollActor = verifiedActor;
+      next();
+    } catch (error) {
+      req.log?.error?.({ error }, "DEV Payroll Super Admin identity verification failed");
+      res.status(503).json({ message: "Identitas Super Admin tidak dapat diverifikasi." });
+    }
+  });
+  registerPayrollSuperAdminApprovalRoutes(approvalRouter);
+  router.use(approvalRouter);
+}
 
 router.get("/payroll/runs", async (req: PayrollRequest, res): Promise<void> => {
   const companyId = req.payrollCompanyId!;
@@ -142,6 +190,11 @@ router.get("/payroll/capabilities", (req: PayrollRequest, res) => {
     canEditItems: isDevelopmentEnvironment()
       && process.env.PAYROLL_DEV_ITEM_EDIT_ENABLED === "true"
       && ["admin", "owner", "super_admin"].includes(req.payrollActor?.role.toLowerCase() ?? ""),
+    canPreview: isDevelopmentEnvironment()
+      && process.env.PAYROLL_DEV_CALC_PREVIEW_ENABLED === "true"
+      && payrollDedicatedEnabled()
+      && ["owner", "super_admin"].includes(req.payrollActor?.role.toLowerCase() ?? "")
+      && (req.payrollActor?.role.toLowerCase() !== "owner" || req.payrollActor.companyId === req.payrollCompanyId),
     canCalculate: false,
     canApprove: false,
     canPay: false,
@@ -223,12 +276,19 @@ router.post("/payroll/runs/:id/generate-items", async (req: PayrollRequest, res)
   const runId = positiveId(req.params.id);
   if (!runId) { res.status(400).json({ message: "ID payroll tidak valid." }); return; }
   const companyId = req.payrollCompanyId!;
+  // Generating employee salary rows is a financial write: it may NEVER fall
+  // back to the shared application/OTP/Finance pool, even on DEV.
+  if (!payrollDedicatedEnabled()) {
+    res.status(503).json({ message: "Koneksi Payroll khusus untuk pengujian belum tersedia." });
+    return;
+  }
   try {
-    const client = await pool.connect();
+    const client = await getPayrollPool().connect();
     let activeTransaction = false;
     try {
       await client.query("BEGIN");
       activeTransaction = true;
+      await setPayrollCompanyScope(client, companyId);
       // Serialise item generation and edits for the same run.
       await client.query("SELECT pg_advisory_xact_lock($1::integer, $2::integer)", [companyId, -runId]);
       const run = await client.query(
@@ -330,12 +390,18 @@ router.patch("/payroll/runs/:id/items/:itemId", async (req: PayrollRequest, res)
   }
 
   const companyId = req.payrollCompanyId!;
+  // The editor changes financial amounts, so no general DB pool fallback.
+  if (!payrollDedicatedEnabled()) {
+    res.status(503).json({ message: "Koneksi Payroll khusus untuk pengujian belum tersedia." });
+    return;
+  }
   try {
-    const client = await pool.connect();
+    const client = await getPayrollPool().connect();
     let activeTransaction = false;
     try {
       await client.query("BEGIN");
       activeTransaction = true;
+      await setPayrollCompanyScope(client, companyId);
       await client.query("SELECT pg_advisory_xact_lock($1::integer, $2::integer)", [companyId, -runId]);
       const run = await client.query(
         "SELECT id, status FROM public.payroll_runs WHERE company_id = $1 AND id = $2 FOR UPDATE", [companyId, runId],
@@ -400,6 +466,75 @@ router.patch("/payroll/runs/:id/items/:itemId", async (req: PayrollRequest, res)
   } catch (error) {
     req.log.error({ error, companyId, runId, itemId }, "Payroll item edit failed");
     res.status(503).json({ message: "Item payroll tidak dapat diubah." });
+  }
+});
+
+/** DEV-only pure salary arithmetic preview. Not Calculate/Review/Approval.
+ * Reuses the persisted item arithmetic with integer cents. No deductions are
+ * invented; no advance, reservation, journal or salary table is modified.
+ */
+router.get("/payroll/runs/:id/calculation-preview", async (req: PayrollRequest, res): Promise<void> => {
+  res.setHeader("Cache-Control", "no-store");
+  if (!isDevelopmentEnvironment() || process.env.PAYROLL_DEV_CALC_PREVIEW_ENABLED !== "true") {
+    res.status(404).json({ message: "Pratinjau perhitungan Payroll tidak tersedia." });
+    return;
+  }
+  if (!["owner", "super_admin"].includes(req.payrollActor?.role.toLowerCase() ?? "")) {
+    res.status(403).json({ message: "Pratinjau komponen gaji memerlukan Super Admin." });
+    return;
+  }
+  if (req.payrollActor?.role.toLowerCase() === "owner" &&
+      req.payrollActor.companyId !== req.payrollCompanyId) {
+    res.status(403).json({ message: "Akses pratinjau perusahaan ini ditolak." });
+    return;
+  }
+  if (!payrollDedicatedEnabled()) {
+    res.status(503).json({ message: "Koneksi Payroll baca-saja khusus belum tersedia." });
+    return;
+  }
+  const runId = positiveId(req.params.id);
+  if (!runId) { res.status(400).json({ message: "ID Payroll tidak valid." }); return; }
+  const companyId = req.payrollCompanyId!;
+  try {
+    const run = await payrollScopedQuery(companyId,
+      "SELECT id,status FROM public.payroll_runs WHERE company_id=$1 AND id=$2 LIMIT 1",
+      [companyId, runId]);
+    if (run.rowCount !== 1) {
+      res.status(404).json({ message: "Payroll tidak ditemukan di perusahaan ini." });
+      return;
+    }
+    if (!["draft", "calculated", "reviewed"].includes(String(run.rows[0].status))) {
+      res.status(409).json({ message: "Periode tidak dapat dipratinjau untuk penghitungan." });
+      return;
+    }
+    const result = await payrollScopedQuery(companyId, `
+      SELECT pi.id,pi.employee_id AS "employeeId",pi.base_salary::text AS "baseSalary",
+        pi.allowance::text AS allowance,pi.gross_salary::text AS "grossSalary",
+        pi.bpjs_jht_employee::text AS "bpjsJhtEmployee",
+        pi.bpjs_kes_employee::text AS "bpjsKesEmployee",pi.pph21::text AS pph21,
+        pi.other_deductions::text AS "otherDeductions",
+        pi.kasbon_deduction::text AS "kasbonDeduction",
+        pi.total_deductions::text AS "totalDeductions",pi.net_salary::text AS "netSalary"
+      FROM public.payroll_items pi
+      JOIN public.employees e ON e.id=pi.employee_id AND e.company_id=$1
+      WHERE pi.run_id=$2 ORDER BY pi.id LIMIT 1000`, [companyId, runId]);
+    const items: PayrollPreviewItem[] = result.rows.map(row => ({
+      id:Number(row.id),employeeId:Number(row.employeeId),
+      baseSalary:String(row.baseSalary),allowance:String(row.allowance),
+      grossSalary:String(row.grossSalary),bpjsJhtEmployee:String(row.bpjsJhtEmployee),
+      bpjsKesEmployee:String(row.bpjsKesEmployee),pph21:String(row.pph21),
+      otherDeductions:String(row.otherDeductions),kasbonDeduction:String(row.kasbonDeduction),
+      totalDeductions:String(row.totalDeductions),netSalary:String(row.netSalary),
+    }));
+    if (!items.length || items.length===1000) {
+      res.status(409).json({ message: "Roster Payroll belum lengkap atau terlalu besar." });
+      return;
+    }
+    const preview = buildPayrollPreview(items);
+    res.status(200).json({ companyId, runId, status:run.rows[0].status,
+      ...preview, readOnly:true, canCalculate:false, canApprove:false, canPostJournal:false, canPay:false });
+  } catch {
+    res.status(503).json({ message: "Pratinjau Payroll tidak tersedia. Data tidak diubah." });
   }
 });
 

@@ -37,6 +37,17 @@ type PayrollItem = {
   employee: { firstName: string; lastName: string } | null;
 };
 type RunDetail = { run: PayrollRun; items: PayrollItem[]; integrityError?: string | null };
+type CalculationPreview = {
+  runId: number;
+  companyId: number;
+  itemCount: number;
+  gross: string;
+  deductions: string;
+  net: string;
+  mismatchedItemIds: number[];
+  readOnly: boolean;
+  canCalculate: boolean;
+};
 const money = (value: number | string) => new Intl.NumberFormat("id-ID", {
   style: "currency", currency: "IDR", maximumFractionDigits: 0,
 }).format(Number(value || 0));
@@ -60,6 +71,8 @@ export default function PayrollWorkspace() {
   const [canCreateDraft, setCanCreateDraft] = useState(false);
   const [canGenerate, setCanGenerate] = useState(false);
   const [canEditItems, setCanEditItems] = useState(false);
+  const [canPreview, setCanPreview] = useState(false);
+  const [calculationPreview, setCalculationPreview] = useState<CalculationPreview | null>(null);
   const [editingItemId, setEditingItemId] = useState<number | null>(null);
   const [editValues, setEditValues] = useState<Record<string, string>>({});
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -74,6 +87,7 @@ export default function PayrollWorkspace() {
   const runUrl = (id: number, suffix = "") => `/api/payroll/runs/${id}${suffix}?companyId=${companyId}`;
 
   async function refresh(scopeCompanyId: number, id?: number | null) {
+    setCalculationPreview(null);
     const response = await api<{ runs: PayrollRun[] }>(`/api/payroll/runs?companyId=${scopeCompanyId}`);
     setRuns(response.runs.filter((r) => r.companyId === scopeCompanyId));
     if (id != null) {
@@ -87,6 +101,8 @@ export default function PayrollWorkspace() {
     setCanCreateDraft(false);
     setCanGenerate(false);
     setCanEditItems(false);
+    setCanPreview(false);
+    setCalculationPreview(null);
     setEditingItemId(null);
     setEditValues({});
     setSelectedId(null);
@@ -98,7 +114,7 @@ export default function PayrollWorkspace() {
     setLoading(true);
     Promise.all([
       api<{ runs: PayrollRun[] }>(`/api/payroll/runs?companyId=${companyId}`),
-      api<{ companyId: number; canCreateDraft: boolean; canGenerate: boolean; canEditItems: boolean }>(`/api/payroll/capabilities?companyId=${companyId}`),
+      api<{ companyId: number; canCreateDraft: boolean; canGenerate: boolean; canEditItems: boolean; canPreview?: boolean }>(`/api/payroll/capabilities?companyId=${companyId}`),
     ])
       .then(([{ runs: result }, capabilities]) => {
         if (cancelled) return;
@@ -106,6 +122,7 @@ export default function PayrollWorkspace() {
         setCanCreateDraft(capabilities.companyId === companyId && capabilities.canCreateDraft === true);
         setCanGenerate(capabilities.companyId === companyId && capabilities.canGenerate === true);
         setCanEditItems(capabilities.companyId === companyId && capabilities.canEditItems === true);
+        setCanPreview(capabilities.companyId === companyId && capabilities.canPreview === true);
       })
       .catch((e) => { if (!cancelled) setError(e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -116,11 +133,33 @@ export default function PayrollWorkspace() {
     if (companyId == null || selectedId == null) return;
     let cancelled = false;
     setDetail(null);
+    setCalculationPreview(null);
     api<RunDetail>(runUrl(selectedId))
       .then((result) => { if (!cancelled && result.run.companyId === companyId) setDetail(result); })
       .catch((e) => { if (!cancelled) setError(e.message); });
     return () => { cancelled = true; };
   }, [companyId, selectedId]);
+
+  async function loadCalculationPreview() {
+    if (companyId === null || selectedId === null || !canPreview || busy ||
+        detail?.run.companyId !== companyId) return;
+    setBusy(true);
+    setError("");
+    setNotice("");
+    setCalculationPreview(null);
+    try {
+      const result = await api<CalculationPreview>(runUrl(selectedId, "/calculation-preview"));
+      if (result.companyId !== companyId || result.runId !== selectedId ||
+          result.readOnly !== true || result.canCalculate !== false) {
+        throw new Error("Respons pratinjau Payroll tidak sesuai.");
+      }
+      setCalculationPreview(result);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Pratinjau perhitungan gagal.");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function perform(action: "create" | "generate" | "calculate") {
     if (companyId === null || busy) return;
@@ -299,7 +338,20 @@ export default function PayrollWorkspace() {
                 {draft && <div className="flex flex-wrap gap-2">
                   <Button variant="outline" disabled={!canGenerate || busy} title={canGenerate ? "Muat karyawan aktif ke Draft DEV" : "Menunggu verifikasi backend DEV"} onClick={() => perform("generate")}><Users className="mr-2 h-4 w-4" />Muat Karyawan Aktif</Button>
                   <Button variant="outline" disabled title="Menunggu verifikasi alokasi kasbon" onClick={() => perform("calculate")}><Calculator className="mr-2 h-4 w-4" />Hitung Payroll</Button>
+                  {canPreview && <Button variant="outline" disabled={busy} onClick={() => void loadCalculationPreview()}>
+                    <Calculator className="mr-2 h-4 w-4" />Pratinjau (baca saja)
+                  </Button>}
                 </div>}
+                {calculationPreview?.runId === detail.run.id &&
+                  calculationPreview.companyId === companyId &&
+                  <div className="space-y-2 rounded-md border p-3 text-sm" role="status">
+                    <p className="font-medium">Pratinjau perhitungan tersimpan — baca saja</p>
+                    <p>Item: {calculationPreview.itemCount} · Gaji kotor: {money(calculationPreview.gross)} ·
+                      Potongan: {money(calculationPreview.deductions)} · Bersih: {money(calculationPreview.net)}</p>
+                    {calculationPreview.mismatchedItemIds.length > 0 &&
+                      <p className="text-red-500">Ada {calculationPreview.mismatchedItemIds.length} item dengan total tidak konsisten. Periksa sebelum menyetujui.</p>}
+                    <p className="text-muted-foreground">Tidak membuat reservasi kasbon, jurnal, atau pembayaran.</p>
+                  </div>}
                 <div className="overflow-x-auto"><table className="w-full text-left text-sm">
                   <thead><tr className="border-b"><th className="p-2">Karyawan</th><th className="p-2 text-right">Gaji Pokok</th><th className="p-2 text-right">Tunjangan</th><th className="p-2 text-right">Kasbon</th><th className="p-2 text-right">Bersih</th>{draft && canEditItems && <th className="p-2 text-right">Tindakan</th>}</tr></thead>
                   <tbody>{detail.items.map(({ item, employee }) =>

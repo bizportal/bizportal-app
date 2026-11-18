@@ -1,0 +1,18 @@
+POSTGRES 16.15 FIXTURE_ONLY true
+BASELINE_REPRODUCED journal_rolled_back_but_external_audit_and_outbox_remained
+PASS baseline regression reproduced on actual PostgreSQL
+PASS existing native writer commits journal, audit, outbox, kasbon and payroll together under restricted role
+PASS replay reuses same verified journal without duplicate kasbon
+PASS rollback after_journal leaves zero journal/lines/audit/outbox and preserves balance
+PASS rollback after_kasbon leaves zero journal/lines/audit/outbox and preserves balance
+PASS rollback after_payroll leaves zero journal/lines/audit/outbox and preserves balance
+PASS concurrent calls serialize to one accrual and one deduction
+PASS RLS rejects foreign company before mutation
+PASS closed posting period rolls back without global fallback
+PASS salary changed after approval is rejected
+PASS changed kasbon balance is rejected before posting
+PASS outbox failure aborts financial posting instead of silently leaving partial state
+PASS ledger_events failure aborts posting without external recovery or leftover writes
+PASS journal_sequences failure aborts posting without external recovery or leftover writes
+PASS replay refuses non-posted journal without double deduction
+REAL_POSTGRES_CHECKS_PASS 15 LIVE_CST_DEV_OR_PROD_USED false BANK_TRANSFER_SENT false

@@ -1,5 +1,6 @@
 import type { IRouter, Request, Response } from "express";
 import { payrollReadOnlyReady, payrollScopedQuery } from "./payroll-prod-db";
+import { payrollDedicatedEnabled as devPayrollDedicatedEnabled, payrollScopedQuery as devPayrollScopedQuery } from "./payroll-db";
 
 type ScopedPayrollRequest = Request & {
   payrollCompanyId?: number;
@@ -14,8 +15,14 @@ type ScopedPayrollRequest = Request & {
 export function registerPayrollSetupReadinessRoutes(router: IRouter): void {
   router.get("/payroll/setup-readiness", async (req: ScopedPayrollRequest, res: Response): Promise<void> => {
     res.setHeader("Cache-Control", "no-store");
-    // Canonical readiness is dormant until separately released.
-    if (process.env.PAYROLL_CANONICAL_SETUP_READINESS_ENABLED !== "true") {
+    // Preserve the original PROD gate. DEV gets a separate opt-in for
+    // read-only readiness; neither gate grants Draft/approval/payment rights.
+    const runtime = process.env.APP_ENV?.trim().toLowerCase();
+    const isProd = runtime === "production";
+    const isDev = runtime === "development";
+    const releaseEnabled = (isProd && process.env.PAYROLL_CANONICAL_SETUP_READINESS_ENABLED === "true")
+      || (isDev && process.env.PAYROLL_DEV_SETUP_READINESS_ENABLED === "true");
+    if (!releaseEnabled) {
       res.status(404).json({ message: "Kesiapan Payroll belum diaktifkan." });
       return;
     }
@@ -24,8 +31,17 @@ export function registerPayrollSetupReadinessRoutes(router: IRouter): void {
       res.status(403).json({ message: "Kesiapan komponen gaji hanya untuk Owner atau Super Admin." });
       return;
     }
-    if (process.env.APP_ENV?.trim().toLowerCase() !== "production" || !payrollReadOnlyReady()) {
-      res.status(503).json({ message: "Kesiapan Payroll baca-saja belum diaktifkan pada lingkungan ini." });
+    // Never fall back to a broad application pool for DEV salary data.
+    // DEV must use the existing separate, project-pinned Payroll role.
+    let ready = false;
+    try {
+      ready = isDev ? devPayrollDedicatedEnabled() : payrollReadOnlyReady();
+    } catch {
+      // A malformed or stale dedicated URL must not escape as a raw DB error.
+      ready = false;
+    }
+    if (!ready) {
+      res.status(503).json({ message: "Koneksi Payroll baca-saja khusus belum tersedia." });
       return;
     }
     const companyId = req.payrollCompanyId;
@@ -50,7 +66,8 @@ export function registerPayrollSetupReadinessRoutes(router: IRouter): void {
     try {
       // All reads run on the role-scoped, company-scoped, read-only connection.
       // Latest effective salary and latest effective deduction per code win.
-      const result = await payrollScopedQuery(companyId, `
+      const scopedRead = isDev ? devPayrollScopedQuery : payrollScopedQuery;
+      const result = await scopedRead(companyId, `
         SELECT
           COUNT(*)::int AS "employeeCount",
           COUNT(*) FILTER (WHERE s.id IS NOT NULL)::int AS "salaryConfiguredCount",

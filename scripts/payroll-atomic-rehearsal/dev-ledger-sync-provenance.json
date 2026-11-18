@@ -1,0 +1,14 @@
+{
+  "readOnlySource": "CST-DEV schema metadata; no employee or financial rows",
+  "observedDate": "2026-11-17",
+  "liveFunctionMd5": {
+    "fn_sync_entry_line_to_ledger": "de12fb2b61680f63b35c96235b822d84",
+    "fn_fleet_ledger_immutable": "4a3c77a9d193cca66b2b6ec9e405bb09",
+    "fn_ledger_period_lock": "23c5d000b6c309986b42638609778876"
+  },
+  "liveLedgerRlsEnabled": true,
+  "liveLedgerForceRls": false,
+  "liveLedgerPolicies": 0,
+  "fixturePolicyNote": "Any role grants and company policy in this test apply ONLY to disposable localhost PostgreSQL; live RLS is unchanged.",
+  "scope": "Read-only trigger snapshot used by pre-existing PostgreSQL regression fixture; newly planned ledger failure harness was blocked and not created."
+}
