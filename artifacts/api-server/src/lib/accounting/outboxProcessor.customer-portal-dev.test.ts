@@ -23,6 +23,7 @@ const keys = [
   "APP_ENV", "CUSTOMER_PORTAL_ATOMIC_ACCOUNTING_POST_DEV",
   "CUSTOMER_PORTAL_REQUIRE_POSTED_AR_EVIDENCE_DEV",
   "CUSTOMER_PORTAL_OUTBOX_SAFE_CONSUME_DEV",
+  "CUSTOMER_PORTAL_TAX_ATOMIC_POST_DEV",
 ];
 const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
 const source = (overrides: Record<string, unknown> = {}) => ({
@@ -54,6 +55,7 @@ beforeEach(() => {
   process.env.CUSTOMER_PORTAL_ATOMIC_ACCOUNTING_POST_DEV = "true";
   process.env.CUSTOMER_PORTAL_REQUIRE_POSTED_AR_EVIDENCE_DEV = "true";
   process.env.CUSTOMER_PORTAL_OUTBOX_SAFE_CONSUME_DEV = "true";
+  delete process.env.CUSTOMER_PORTAL_TAX_ATOMIC_POST_DEV;
   m.transaction.mockImplementation(async (work) => work({ execute: m.execute }));
 });
 afterEach(() => {
@@ -182,6 +184,50 @@ describe("original outbox worker: strict Customer Portal invoice DEV extension",
         status: "quarantined", reason: "DEV_OUTBOX_LEDGER_AR_AUDIT_MISSING",
       });
     expect(m.execute).toHaveBeenCalledTimes(3);
+  });
+
+  it("quarantines a taxable Invoice while the separate PPN flag is OFF",async()=>{
+    runResponses([[source()],[{id:92,tax_amount:"11.00"}],[{id:51}]]);
+    const r=await processCustomerPortalSalesInvoiceOutboxDevOnce();
+    expect(r).toMatchObject({status:"quarantined",reason:"DEV_OUTBOX_TAX_POSTING_NOT_ENABLED"});
+    expect(m.execute).toHaveBeenCalledTimes(3);
+  });
+
+  it("accepts a taxed source only when same-tenant PPN metadata and GL proof agree",async()=>{
+    process.env.CUSTOMER_PORTAL_TAX_ATOMIC_POST_DEV="true";
+    runResponses([
+      [source({payload:{...source().payload,amount:111}})],
+      [{id:92,tax_amount:"11.00"}],
+      [{id:77}], // exact PPN_OUT reporting record, tax rate, revenue and liability proof
+      [{id:51}],
+      [],
+      [{id:1001}],
+      [{id:51}],
+    ]);
+    const r=await processCustomerPortalSalesInvoiceOutboxDevOnce();
+    expect(r).toEqual({status:"processed",outboxId:51});
+    expect(m.execute).toHaveBeenCalledTimes(7);
+    const statements=m.execute.mock.calls.map(call=>JSON.stringify(call[0]));
+    expect(statements[2]).toContain("gl_tax_lines");
+    expect(statements[2]).toContain("tax_treatment");
+    expect(statements[2]).toContain("sales_income_account_id");
+    expect(statements[2]).toContain("ppn_output_account_id");
+    expect(statements[5]).toContain("INSERT INTO public.financial_events");
+  });
+
+  it("quarantines missing taxable PPN reporting row without emitting a financial event",async()=>{
+    process.env.CUSTOMER_PORTAL_TAX_ATOMIC_POST_DEV="true";
+    runResponses([
+      [source({payload:{...source().payload,amount:111}})],
+      [{id:92,tax_amount:"11.00"}],
+      [],
+      [{id:51}],
+    ]);
+    const r=await processCustomerPortalSalesInvoiceOutboxDevOnce();
+    expect(r).toMatchObject({
+      status:"quarantined",reason:"DEV_OUTBOX_TAX_METADATA_OR_GL_INVALID",
+    });
+    expect(m.execute).toHaveBeenCalledTimes(4);
   });
 
   it("refuses duplicate outbox rows for one journal without inserting", async () => {
