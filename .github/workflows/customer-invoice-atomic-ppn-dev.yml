@@ -21,6 +21,7 @@ on:
       - 'scripts/tests/customer_invoice_scoped_read_rls_disposable.sh'
       - 'scripts/tests/customer_invoice_b4_*.qa.*'
       - 'scripts/tests/customer_invoice_b4_*.sh'
+      - 'scripts/tests/customer_invoice_scram_writer_activation.qa.mjs'
       - 'artifacts/api-server/src/lib/__tests__/portal-invoice-existing-owner-adapter.test.ts'
       - '.github/workflows/customer-invoice-atomic-ppn-dev.yml'
   workflow_dispatch:
