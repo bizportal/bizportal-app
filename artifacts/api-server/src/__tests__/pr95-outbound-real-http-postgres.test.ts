@@ -57,7 +57,8 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
       (SELECT count(*)::int FROM public.payment_allocations) allocations,
       (SELECT count(*)::int FROM public.bank_reconciliation_matches) matches,
       (SELECT count(*)::int FROM public.bank_reconciliation_audit) audits,
-      (SELECT status FROM public.bank_mutations WHERE id=90001) mutation_status`);
+      (SELECT status FROM public.bank_mutations WHERE id=90001) mutation_status,
+      (SELECT matching_group_id FROM public.bank_mutations WHERE id=90001) matching_group_id`);
     return q.rows[0];
   };
   beforeAll(async()=>{
@@ -77,6 +78,7 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
       CREATE TABLE public.bank_mutations(
         id integer primary key,company_id integer,direction text,status text,
         journal_entry_id integer,amount numeric,bank_account_id text,
+        matching_group_id integer,
         reconciliation_status text,accounting_posted boolean default false,
         approved_at timestamptz,approved_by text,posted_at timestamptz,
         linked_transaction_type text,linked_transaction_id integer,
@@ -188,7 +190,8 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
       UPDATE public.bank_mutations SET status='unmatched',journal_entry_id=NULL,
         reconciliation_status=NULL,accounting_posted=false,
         approved_at=NULL,approved_by=NULL,posted_at=NULL,
-        linked_transaction_type=NULL,linked_transaction_id=NULL,review_code=NULL
+        linked_transaction_type=NULL,linked_transaction_id=NULL,
+        matching_group_id=NULL,review_code=NULL
         WHERE id=90001;
       UPDATE public.users SET role='super_admin',is_active=true,status='active'
         WHERE id='pr95-ci-superadmin';
@@ -221,10 +224,20 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
     expect(reply.body.receipt).toMatchObject({mutationId:90001,invoiceId:7,sourceEntryId:314});
     expect(await counters()).toMatchObject({
       journals:1,allocations:1,matches:1,audits:1,mutation_status:"posted",
+      matching_group_id:expect.any(Number),
     });
     const replay=await send();
     expect(replay.status).toBe(409);
     expect(await counters()).toMatchObject({journals:1,allocations:1,matches:1,audits:1});
+  });
+  it("mutations link to exactly the canonical allocation group after HTTP success",async()=>{
+    expect((await send()).status).toBe(200);
+    const result=await auth.query(`SELECT bm.matching_group_id,pa.group_id
+      FROM public.bank_mutations bm JOIN public.payment_allocations pa
+        ON pa.mutation_id=bm.id
+      WHERE bm.id=90001 AND bm.company_id=1`);
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0].matching_group_id).toBe(result.rows[0].group_id);
   });
   it("rejects missing/tampered cookie, wrong company and downgraded role before writes",async()=>{
     expect((await send(input,"")).status).toBe(409);
