@@ -50,8 +50,7 @@ export async function readOutboundReuseFinalityCounts(
   );
   const linked = await client.query<{ n: string }>(
     `select count(*)::text as n from public.bank_mutations
-      where company_id=$1 and journal_entry_id=$2
-        and lower(status) in ('approved','approved_pending_posting','posted','reconciled')`,
+      where company_id=$1 and journal_entry_id=$2`,
     [input.companyId,input.entryId],
   );
   return {
