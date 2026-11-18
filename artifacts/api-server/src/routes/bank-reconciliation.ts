@@ -7967,6 +7967,46 @@ const selectSheetConfigs = `
   left join public.chart_of_accounts coa on coa.id = cba.coa_id
 `;
 
+// Shared company-scoped auth for Sheet configuration CRUD, test and sync.
+// This guard runs before any database mutation or Google Sheet API call.
+router.use(["/bank-reconciliation/sheet-configs", "/bank-reconciliation/sheet-sync"], async (req, res, next) => {
+  let actor: ApprovalActor | null;
+  try { actor = await getApprovalActor(req); }
+  catch (error) {
+    req.log.error({ error }, "Bank Sheet authorization unavailable");
+    res.status(503).json({ error: "Authorization service unavailable" });
+    return;
+  }
+  if (!actor) { res.status(401).json({ error: "Unauthorized" }); return; }
+
+  const requestedCompany = req.method === "POST" && req.path === "/bank-reconciliation/sheet-configs"
+    ? req.body?.company_id : req.method === "PUT" ? req.body?.company_id : undefined;
+  if (requestedCompany !== undefined && actor.companyId != null
+      && Number(requestedCompany) !== actor.companyId) {
+    res.status(403).json({ error: "Akses perusahaan ditolak" });
+    return;
+  }
+  const idMatch = req.path.match(/^\/bank-reconciliation\/sheet-configs\/(\d+)(?:\/(?:sync|test))?$/);
+  if (idMatch && actor.companyId != null) {
+    try {
+      const owner = await pool.query<{ company_id: number | null }>(
+        "select company_id from public.bank_sheet_configs where id=$1", [Number(idMatch[1])],
+      );
+      if (owner.rows.length !== 1) { res.status(404).json({ error: "Konfigurasi tidak ditemukan" }); return; }
+      if (owner.rows[0].company_id !== actor.companyId) {
+        res.status(403).json({ error: "Akses perusahaan ditolak" });
+        return;
+      }
+    } catch (error) {
+      req.log.error({ error }, "Bank Sheet scope lookup failed");
+      res.status(503).json({ error: "Konfigurasi Google Sheet tidak dapat diverifikasi" });
+      return;
+    }
+  }
+  res.locals.sheetActor = actor;
+  next();
+});
+
 router.get("/bank-reconciliation/sheet-configs", async (req, res): Promise<void> => {
   // Do not disclose bank account numbers or Spreadsheet IDs to callers
   // without an authenticated, company-scoped Finance session.
@@ -8314,6 +8354,7 @@ router.post("/bank-reconciliation/sheet-configs/:id/sync", async (req, res): Pro
 });
 
 router.post("/bank-reconciliation/sheet-sync", async (req, res): Promise<void> => {
+  const actor = res.locals.sheetActor as ApprovalActor;
   const rawCompanyId = req.query.company_id;
   const companyId =
     rawCompanyId === undefined || rawCompanyId === "" || rawCompanyId === "all"
@@ -8323,8 +8364,12 @@ router.post("/bank-reconciliation/sheet-sync", async (req, res): Promise<void> =
     res.status(400).json({ error: "company_id tidak valid" });
     return;
   }
+  if (actor.companyId != null && companyId != null && actor.companyId !== companyId) {
+    res.status(403).json({ error: "Akses perusahaan ditolak" });
+    return;
+  }
   try {
-    const summaries = await syncAllBankSheetConfigs(companyId ?? undefined);
+    const summaries = await syncAllBankSheetConfigs(actor.companyId ?? companyId ?? undefined);
     const imported = summaries.reduce((sum, item) => sum + Number(item.imported ?? 0), 0);
     const failedConfigs = summaries.filter((item) => item.ok === false);
     const qrisAutoCandidates = await runQrisAutoCandidateSweep();
