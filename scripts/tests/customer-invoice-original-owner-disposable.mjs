@@ -26,7 +26,7 @@ async function counts(sourceId) {
   );
   return Number(rows[0].n);
 }
-async function assertReceipt(companyId, sourceId, { rollback = false, expectTaxRefusal = false } = {}) {
+async function assertReceipt(companyId, sourceId, { rollback = false, expectedFailure = null } = {}) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -45,8 +45,8 @@ async function assertReceipt(companyId, sourceId, { rollback = false, expectTaxR
       invoice,
       actorId: "synthetic-owner",
     });
-    if (expectTaxRefusal) {
-      await assert.rejects(action, /TAX_OR_ADJUSTMENT_UNSUPPORTED/);
+    if (expectedFailure) {
+      await assert.rejects(action, expectedFailure);
       await client.query("ROLLBACK");
       console.log("TAXABLE_INVOICE_FAIL_CLOSED_PASS", companyId, sourceId);
       return;
@@ -68,38 +68,67 @@ async function assertReceipt(companyId, sourceId, { rollback = false, expectTaxR
     client.release();
   }
 }
-async function verifyPosted(companyId, sourceId) {
+async function verifyPosted(companyId, sourceId, { gross = 100, tax = 0, taxRate = 11 } = {}) {
   const entry = await pool.query(
     "SELECT id,status::text,total_debit,total_credit FROM accounting_entries WHERE company_id=$1 AND source='sales_invoice' AND source_id=$2",
     [companyId, sourceId],
   );
   assert.equal(entry.rows.length, 1);
   assert.equal(entry.rows[0].status, "posted");
-  assert.equal(Number(entry.rows[0].total_debit), 100);
-  assert.equal(Number(entry.rows[0].total_credit), 100);
+  assert.equal(Number(entry.rows[0].total_debit), gross);
+  assert.equal(Number(entry.rows[0].total_credit), gross);
   const entryId = Number(entry.rows[0].id);
   const lines = await pool.query(
     "SELECT COALESCE(SUM(debit),0) AS debit,COALESCE(SUM(credit),0) AS credit,COUNT(*)::int AS n FROM accounting_entry_lines WHERE entry_id=$1",
     [entryId],
   );
-  assert.equal(Number(lines.rows[0].n), 2);
-  assert.equal(Number(lines.rows[0].debit), 100);
-  assert.equal(Number(lines.rows[0].credit), 100);
+  assert.equal(Number(lines.rows[0].n), tax ? 3 : 2);
+  assert.equal(Number(lines.rows[0].debit), gross);
+  assert.equal(Number(lines.rows[0].credit), gross);
   for (const table of ["ledger_events", "financial_outbox_events"]) {
     const results = await pool.query("SELECT COUNT(*)::int AS n FROM " + table + " WHERE company_id=$1 AND entry_id=$2", [companyId, entryId]);
     assert.equal(Number(results.rows[0].n), 1, table + " should be once per source");
   }
+  // Verify the exact payload expected by the ORIGINAL Portal's transactional
+  // requireTransactionalSalesInvoiceEvidence() gate, not just outbox row count.
+  const outbox = await pool.query(
+    "SELECT payload FROM public.financial_outbox_events WHERE company_id=$1 AND entry_id=$2 AND event_type='JOURNAL_CREATED'",
+    [companyId,entryId],
+  );
+  assert.equal(outbox.rows.length,1,"single canonical outbox event");
+  const payload=outbox.rows[0].payload;
+  assert.equal(payload.eventType,"JOURNAL_CREATED");
+  assert.equal(payload.sourceType,"sales_invoice");
+  assert.equal(Number(payload.sourceId),sourceId);
+  assert.equal(Number(payload.companyId),companyId);
+  assert.equal(Number(payload.entryId),entryId);
+  assert.equal(Number(payload.amount),gross);
+  assert.equal(payload.actor,"synthetic-owner");
+  console.log("ORIGINAL_OWNER_PORTAL_OUTBOX_PAYLOAD_CONTRACT_PASS",companyId,sourceId);
   const ar = await pool.query(
     "SELECT company_id,invoice_id,gl_entry_id,gross_amount,outstanding_amount,paid_amount,status,notes FROM public.ar_subledger WHERE company_id=$1 AND invoice_id=$2",
     [companyId, sourceId],
   );
   assert.equal(ar.rows.length, 1, "exactly one original reviewed AR projection");
   assert.equal(Number(ar.rows[0].gl_entry_id), entryId);
-  assert.equal(Number(ar.rows[0].gross_amount), 100);
-  assert.equal(Number(ar.rows[0].outstanding_amount), 100);
+  assert.equal(Number(ar.rows[0].gross_amount), gross);
+  assert.equal(Number(ar.rows[0].outstanding_amount), gross);
   assert.equal(Number(ar.rows[0].paid_amount), 0);
   assert.equal(ar.rows[0].status, "OPEN");
   assert.equal(ar.rows[0].notes, "bizportal:customer-ar-source:v1");
+  const taxRows = await pool.query(
+    "SELECT tax_id,tax_rate,base_amount,tax_amount,account_id,status,direction FROM public.transaction_taxes WHERE company_id=$1 AND transaction_type='sales_invoice' AND transaction_id=$2",
+    [companyId,sourceId],
+  );
+  assert.equal(taxRows.rows.length,tax ? 1 : 0);
+  if(tax) {
+    assert.equal(Number(taxRows.rows[0].tax_amount),tax);
+    assert.equal(Number(taxRows.rows[0].base_amount),gross-tax);
+    assert.equal(Number(taxRows.rows[0].tax_rate),taxRate);
+    assert.equal(taxRows.rows[0].status,"posted");
+    assert.equal(taxRows.rows[0].direction,"output");
+    console.log("ATOMIC_OUTPUT_PPN_RECORD_PASS",companyId,sourceId);
+  }
   console.log("POST_COMMIT_GL_AND_ORIGINAL_AR_PASS", companyId, sourceId);
   console.log("POST_COMMIT_BALANCED_AUDIT_OUTBOX_PASS", companyId, sourceId);
 }
@@ -120,11 +149,72 @@ try {
   const rbAr = await pool.query("SELECT COUNT(*)::int AS n FROM public.ar_subledger WHERE invoice_id=175");
   assert.equal(Number(rbAr.rows[0].n), 0);
   console.log("ROLLBACK_LEAVES_NO_JOURNAL_OR_AR_PASS");
-  await assertReceipt(1, 177, { expectTaxRefusal: true });
-  assert.equal(await counts(177), 0);
-  const taxAr = await pool.query("SELECT COUNT(*)::int AS n FROM public.ar_subledger WHERE invoice_id=177");
-  assert.equal(Number(taxAr.rows[0].n), 0);
-  console.log("TAXABLE_REJECTION_LEAVES_NO_JOURNAL_OR_AR_PASS");
+  await assertReceipt(1, 179);
+  await assertReceipt(3, 183);
+  await verifyPosted(1,179,{gross:111,tax:11});
+  await verifyPosted(3,183,{gross:111,tax:11});
+  await assertReceipt(1,179);
+  await assertReceipt(3,183);
+  assert.equal(await counts(179),1);
+  assert.equal(await counts(183),1);
+  await verifyPosted(1,179,{gross:111,tax:11});
+  await verifyPosted(3,183,{gross:111,tax:11});
+  console.log("ATOMIC_PPN_AND_REPLAY_PASS");
+  await assertReceipt(1,189,{rollback:true});
+  assert.equal(await counts(189),0);
+  for(const table of ["ar_subledger","transaction_taxes"]){
+    const column = table === "ar_subledger" ? "invoice_id" : "transaction_id";
+    const q = await pool.query("SELECT COUNT(*)::int AS n FROM "+table+" WHERE "+column+"=$1",[189]);
+    assert.equal(Number(q.rows[0].n),0,table+" rollback");
+  }
+  const related = await pool.query("SELECT COUNT(*)::int AS n FROM ledger_events WHERE payload->>'sourceId'='189'");
+  assert.equal(Number(related.rows[0].n),0);
+  console.log("ATOMIC_PPN_ROLLBACK_GL_AR_TAX_OUTBOX_PASS");
+  await assertReceipt(1, 177, { expectedFailure: /TAX_OR_ADJUSTMENT_UNSUPPORTED/ });
+  await assertReceipt(1, 185, { expectedFailure: /TAX_CONFIGURATION_OR_AMOUNT_MISMATCH/ });
+  await assertReceipt(3, 187, { expectedFailure: /TAX_CONFIGURATION_MISSING/ });
+  for(const sourceId of [177,185,187]){
+    assert.equal(await counts(sourceId),0);
+    const taxAr = await pool.query("SELECT COUNT(*)::int AS n FROM public.ar_subledger WHERE invoice_id=$1",[sourceId]);
+    assert.equal(Number(taxAr.rows[0].n), 0);
+    const taxRow = await pool.query("SELECT COUNT(*)::int AS n FROM public.transaction_taxes WHERE transaction_type='sales_invoice' AND transaction_id=$1",[sourceId]);
+    assert.equal(Number(taxRow.rows[0].n),0);
+  }
+  console.log("INVALID_PPN_REJECTION_LEAVES_NO_JOURNAL_TAX_OR_AR_PASS");
+
+  // One additional 12% case uses a DISPOSABLE configuration switch only.
+  // Before switching from 11%, mismatched default must be rejected and clean.
+  await assertReceipt(3, 193, { expectedFailure: /TAX_CONFIGURATION_OR_AMOUNT_MISMATCH/ });
+  assert.equal(await counts(193),0);
+  const beforeSwitch = await pool.query(
+    "SELECT COUNT(*)::int AS n FROM public.ar_subledger WHERE company_id=3 AND invoice_id=193",
+  );
+  assert.equal(Number(beforeSwitch.rows[0].n),0);
+  const selected = await pool.query(
+    "UPDATE public.accounting_settings SET default_sales_tax_id=4 WHERE company_id=3 AND default_sales_tax_id=3 RETURNING company_id",
+  );
+  assert.equal(selected.rowCount,1,"synthetic 12% switch must be exactly scoped");
+  await assertReceipt(3,193);
+  await verifyPosted(3,193,{gross:112,tax:12,taxRate:12});
+  await assertReceipt(3,193);
+  assert.equal(await counts(193),1);
+  await verifyPosted(3,193,{gross:112,tax:12,taxRate:12});
+  console.log("DIVA_12_PERCENT_OUTPUT_PPN_COMMIT_AND_REPLAY_PASS");
+  await assertReceipt(3,195,{rollback:true});
+  assert.equal(await counts(195),0);
+  for (const table of ["ar_subledger","transaction_taxes"]) {
+    const column=table==="ar_subledger"?"invoice_id":"transaction_id";
+    const rows=await pool.query(
+      "SELECT COUNT(*)::int AS n FROM public."+table+" WHERE company_id=3 AND "+column+"=195",
+    );
+    assert.equal(Number(rows.rows[0].n),0,table+" 12% rollback");
+  }
+  const outbox = await pool.query(
+    "SELECT COUNT(*)::int AS n FROM public.ledger_events WHERE payload->>'sourceId'='195'",
+  );
+  assert.equal(Number(outbox.rows[0].n),0);
+  console.log("DIVA_12_PERCENT_ROLLBACK_GL_AR_PPN_OUTBOX_PASS");
+
 } finally {
   await pool.end();
 }
