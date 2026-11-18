@@ -73,6 +73,7 @@ export function CompanyProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const fetchedRef = useRef(false);
+  const autoRetryAttemptsRef = useRef(0);
 
   const fetchCompanies = useCallback(async () => {
     if (!isApiAvailable) {
@@ -125,7 +126,10 @@ export function CompanyProvider({ children }: { children: React.ReactNode }) {
   }, [activeCompanyId, isApiAvailable, signOut]);
 
   useEffect(() => {
-    if (isAuthenticated) { fetchedRef.current = false; }
+    if (isAuthenticated) {
+      fetchedRef.current = false;
+      autoRetryAttemptsRef.current = 0;
+    }
   }, [isAuthenticated]);
 
   useEffect(() => {
@@ -136,6 +140,21 @@ export function CompanyProvider({ children }: { children: React.ReactNode }) {
       setIsLoading(false);
     }
   }, [isAuthenticated, isApiAvailable, fetchCompanies]);
+
+  // A cold DEV login can succeed before its first authenticated company
+  // request finishes. Retry transient failures at most twice; never retry
+  // invalid sessions, intentionally empty company access, or absent APIs.
+  useEffect(() => {
+    if (!isAuthenticated || !isApiAvailable || !loadError || companies.length > 0
+      || autoRetryAttemptsRef.current >= 2
+      || loadError.includes("Sesi login tidak valid")
+      || loadError.includes("Tidak ada perusahaan yang dapat diakses")) return;
+    const timer = window.setTimeout(() => {
+      autoRetryAttemptsRef.current += 1;
+      void fetchCompanies();
+    }, 1500 * (autoRetryAttemptsRef.current + 1));
+    return () => window.clearTimeout(timer);
+  }, [isAuthenticated, isApiAvailable, loadError, companies.length, fetchCompanies]);
 
   const setActiveCompany = useCallback((company: Company) => {
     setActiveCompanyIdState(company.id);
