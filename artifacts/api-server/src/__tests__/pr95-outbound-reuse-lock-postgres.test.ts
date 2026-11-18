@@ -18,7 +18,8 @@ suite("PR95 locked outbound source journal preflight on disposable PostgreSQL 16
     await client.query(`
       CREATE TABLE public.bank_mutations
         (id integer primary key, company_id integer not null, direction text not null,
-         status text not null, journal_entry_id integer, amount numeric not null,bank_account_id text);
+         status text not null, journal_entry_id integer, amount numeric not null,bank_account_id text,
+         debit_amount numeric not null,credit_amount numeric not null);
       CREATE TABLE public.company_bank_accounts(id integer primary key, company_id integer,coa_id integer,is_active boolean);
       CREATE TABLE public.chart_of_accounts(id integer primary key,company_id integer,is_active boolean);
       CREATE TABLE public.vendor_invoices
@@ -41,7 +42,7 @@ suite("PR95 locked outbound source journal preflight on disposable PostgreSQL 16
       CREATE TABLE public.payment_allocations
         (id integer primary key,company_id integer not null,invoice_id integer not null,
          group_id integer,mutation_id integer not null,is_active boolean);
-      INSERT INTO public.bank_mutations VALUES(90001,1,'OUT','unmatched',NULL,100.00,'17');
+      INSERT INTO public.bank_mutations VALUES(90001,1,'OUT','unmatched',NULL,100.00,'17',0,100.00);
       INSERT INTO public.company_bank_accounts VALUES(17,1,1023,true);
       INSERT INTO public.chart_of_accounts VALUES(1010,1,true),(1023,1,true);
       INSERT INTO public.vendor_invoices VALUES(7,1,'posted',NULL);
@@ -97,7 +98,7 @@ suite("PR95 locked outbound source journal preflight on disposable PostgreSQL 16
   it("rejects mismatched real bank mutation amount or journal lines, then rolls back",async()=>{
     await client.query("BEGIN");
     try {
-      await client.query("update public.bank_mutations set amount=99.99 where id=90001");
+      await client.query("update public.bank_mutations set amount=99.99,credit_amount=99.99 where id=90001");
       await expect(lock()).rejects.toThrow("PR95_OUTBOUND_LEDGER_MISMATCH");
     } finally { await client.query("ROLLBACK"); }
     await client.query("BEGIN");
@@ -107,6 +108,13 @@ suite("PR95 locked outbound source journal preflight on disposable PostgreSQL 16
     } finally { await client.query("ROLLBACK"); }
     const result=await client.query("select amount::text as amount from public.bank_mutations where id=90001");
     expect(Number(result.rows[0].amount)).toBe(100);
+  });
+  it("rejects inconsistent OUT import debit/credit columns",async()=>{
+    await client.query("BEGIN");
+    try{
+      await client.query("UPDATE public.bank_mutations SET debit_amount=100,credit_amount=0 WHERE id=90001");
+      await expect(lock()).rejects.toThrow("PR95_OUTBOUND_BANK_DIRECTION_AMOUNTS_MISMATCH");
+    }finally{await client.query("ROLLBACK");}
   });
   it("rejects account-to-COA mismatch inside the same locked transaction",async()=>{
     await client.query("BEGIN");
