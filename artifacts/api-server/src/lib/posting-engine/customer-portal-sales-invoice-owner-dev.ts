@@ -8,8 +8,10 @@
  *
  * Positive-tax invoices remain OFF unless a separately approved DEV-only
  * PPN flag is enabled and the ORIGINAL invoice/default tax mapping is valid.
- * The original engine then adds its own gl_tax_lines metadata under the same
- * PG transaction, never via a second writer or independent connection.
+ * This adapter records gl_tax_lines REPORTING metadata through the exact
+ * same caller-owned PostgreSQL client, after the byte-identical original
+ * CanonicalPostingEngine posts the balanced 3-line GL. Any failure rolls
+ * back the entire caller transaction; no second GL writer or pool is created.
  */
 import { drizzle } from "drizzle-orm/node-postgres";
 import type pg from "pg";
