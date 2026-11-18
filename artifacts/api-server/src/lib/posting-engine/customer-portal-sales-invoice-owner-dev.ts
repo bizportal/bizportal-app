@@ -167,13 +167,67 @@ export async function postCustomerPortalSalesInvoiceWithExistingOwner(
         accountId:scopedPpn.accountId,debit:0,credit:tax/100,
       }] : []),
     ],
-    ...(scopedPpn ? {taxes:[{
-      taxType:"PPN_OUT",baseAmount:net/100,taxAmount:tax/100,
-      rate:scopedPpn.rate,glAccountId:scopedPpn.accountId,
-    }]} : {}),
+    // Intentionally do NOT pass request.taxes: the original universal v1 tax
+    // rejection and all its byte-identical protected logic remain intact.
+    // The three GL lines are posted by its original canonical writer. The
+    // local DEV adapter owns only the pre-COMMIT tax reporting metadata.
   },drizzle(client));
   if (!result.ok || !Number.isSafeInteger(result.entryId) || !result.entryId) {
     throw new Error("DEV_SALES_POSTING_OWNER_REJECTED");
+  }
+  if (scopedPpn) {
+    // This is reporting metadata, NOT a second journal writer. Caller has
+    // already FOR UPDATE-locked the exact Invoice on the same PG client.
+    // A failure here MUST throw so Portal's outer transaction rolls back the
+    // original 3-line GL, Invoice status, AR, outbox and audit together.
+    const existing = await client.query(
+      `select id from public.gl_tax_lines
+        where company_id=$1 and accounting_entry_id=$2
+          and tax_type='PPN_OUT' and direction='out'
+        limit 2 for update`,
+      [companyId,result.entryId],
+    );
+    if (existing.rows.length !== 0) {
+      throw new Error("DEV_SALES_POSTING_TAX_METADATA_DUPLICATE");
+    }
+    const period = new Date(row.invoice_date).toISOString().slice(0,7);
+    const inserted = await client.query(
+      `insert into public.gl_tax_lines
+         (company_id,accounting_entry_id,tax_type,rate,base_amount,
+          tax_amount,direction,period,entity_type,entity_id)
+       values($1,$2,'PPN_OUT',$3,$4,$5,'out',$6,'sales_invoice',$7)
+       returning id`,
+      [
+        companyId,result.entryId,scopedPpn.rate,net/100,tax/100,
+        period,String(sourceId),
+      ],
+    );
+    const taxLineId = Number(inserted.rows[0]?.id);
+    if (inserted.rows.length !== 1 ||
+        !Number.isSafeInteger(taxLineId) || taxLineId <= 0) {
+      throw new Error("DEV_SALES_POSTING_TAX_METADATA_NOT_PERSISTED");
+    }
+    const proof = await client.query(
+      `select id,company_id,accounting_entry_id,tax_type,rate,
+              base_amount,tax_amount,direction,entity_type,entity_id
+         from public.gl_tax_lines
+        where id=$1 and company_id=$2 and accounting_entry_id=$3
+        limit 2`,
+      [taxLineId,companyId,result.entryId],
+    );
+    const t = proof.rows[0];
+    if (proof.rows.length !== 1 ||
+        Number(t?.id) !== taxLineId ||
+        Number(t?.company_id) !== companyId ||
+        Number(t?.accounting_entry_id) !== result.entryId ||
+        t?.tax_type !== "PPN_OUT" || t?.direction !== "out" ||
+        t?.entity_type !== "sales_invoice" ||
+        t?.entity_id !== String(sourceId) ||
+        Number(t?.rate) !== scopedPpn.rate ||
+        cents(t?.base_amount) !== net ||
+        cents(t?.tax_amount) !== tax) {
+      throw new Error("DEV_SALES_POSTING_TAX_METADATA_MISMATCH");
+    }
   }
   return {posted:true,entryId:result.entryId};
 }
