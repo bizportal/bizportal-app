@@ -88,10 +88,18 @@ jobs:
           set -euo pipefail
           e=artifacts/api-server/src/lib/posting-engine/CanonicalPostingEngine.ts
           a=artifacts/api-server/src/lib/posting-engine/customer-portal-sales-invoice-owner-dev.ts
-          grep -Fq 'CUSTOMER_PORTAL_TAX_ATOMIC_POST_DEV' "$e"
-          grep -Fq 'client !== db' "$e"
+          # ORIGINAL financial writer must remain byte-identical; its
+          # universal v1 request.taxes rejection is NOT weakened.
+          grep -Fq 'if (request.taxes && request.taxes.length > 0)' "$e"
           grep -Fq 'postEntryWithClient(client' "$e"
-          grep -Fq 'insert into public.gl_tax_lines' "$e"
+          ! grep -Fq 'CUSTOMER_PORTAL_TAX_ATOMIC_POST_DEV' "$e"
+          ! grep -Fq 'insert into public.gl_tax_lines' "$e"
+          # Only the existing caller-owned adapter may append tax metadata
+          # to the SAME PostgreSQL client before the Portal COMMIT.
+          grep -Fq 'getPostingEngine().post(' "$a"
+          grep -Fq 'CUSTOMER_PORTAL_TAX_ATOMIC_POST_DEV' "$a"
+          grep -Fq 'insert into public.gl_tax_lines' "$a"
+          grep -Fq 'DEV_SALES_POSTING_TAX_METADATA_MISMATCH' "$a"
           grep -Fq 'tax_rate_id,tax_treatment' "$a"
           grep -Fq 'DEV_SALES_POSTING_TAX_SETTINGS_NOT_READY' "$a"
           ! grep -Fq 'startCustomerPortalSalesTaxDevScheduler' artifacts/api-server/src/index.ts
