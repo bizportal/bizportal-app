@@ -14,10 +14,24 @@ BEGIN
    IF r.rolcanlogin OR r.rolbypassrls OR r.rolsuper THEN
      RAISE EXCEPTION 'CUSTOMER_INVOICE_DEV_ROLE_NOT_DORMANT: %',r.rolname;
    END IF;
-   IF EXISTS(SELECT 1 FROM pg_auth_members m
-     WHERE m.roleid=(SELECT oid FROM pg_roles WHERE rolname=r.rolname)
+   -- Hosted PostgreSQL 17 CREATEROLE gives its creator (postgres)
+   -- an automatic ADMIN membership, but no INHERIT or SET privilege.
+   -- Only that exact management edge is acceptable for a dormant rollback.
+   IF EXISTS (
+     SELECT 1 FROM pg_auth_members m
+     JOIN pg_roles member ON member.oid=m.member
+     WHERE (m.roleid=(SELECT oid FROM pg_roles WHERE rolname=r.rolname)
         OR m.member=(SELECT oid FROM pg_roles WHERE rolname=r.rolname))
-   THEN RAISE EXCEPTION 'CUSTOMER_INVOICE_DEV_ROLE_HAS_MEMBERSHIP: %',r.rolname;END IF;
+       AND NOT (
+         m.roleid=(SELECT oid FROM pg_roles WHERE rolname=r.rolname)
+         AND member.rolname='postgres'
+         AND m.admin_option=true
+         AND m.inherit_option=false
+         AND m.set_option=false
+       )
+   ) THEN
+     RAISE EXCEPTION 'CUSTOMER_INVOICE_DEV_ROLE_UNEXPECTED_MEMBERSHIP: %',r.rolname;
+   END IF;
  END LOOP;
  -- These will fail (without CASCADE) if any grant, policy or object depends
  -- on either role: never remove an activated or shared role implicitly.
