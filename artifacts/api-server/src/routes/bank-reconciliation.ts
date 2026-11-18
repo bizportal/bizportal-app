@@ -1,4 +1,6 @@
 import { normalizeCanonicalBankMutationId } from "../lib/reconciliation/canonicalBankMutationId";
+import { runOutboundReuseSignedDevCandidate } from "../lib/outboundSourceReuseDevBridge";
+import type { OutboundReuseQueryClient } from "../lib/outboundReuseFinalityReader";
 import { Router, type IRouter, type Request } from "express";
 import { pool } from "@workspace/db";
 import { scopeBankMutationRead } from "./bank-mutation-read-scope";
@@ -4313,8 +4315,9 @@ router.post("/bank-reconciliation/:mutationId/post", async (req, res): Promise<v
     const mutationResult = await client.query<{
       status: string;
       journal_entry_id: number | null;
+      company_id: number;
     }>(
-      `select status,journal_entry_id
+      `select status,journal_entry_id,company_id
          from public.bank_mutations
         where id=$1
         for update`,
@@ -4322,8 +4325,40 @@ router.post("/bank-reconciliation/:mutationId/post", async (req, res): Promise<v
     );
     const mutation = mutationResult.rows[0];
     if (!mutation) throw new ApprovalError("Mutasi tidak ditemukan.", 404, "NOT_FOUND");
+    if (actor.companyId != null && Number(mutation.company_id) !== actor.companyId) {
+      throw new ApprovalError("Mutasi berada di perusahaan yang berbeda.", 403, "COMPANY_SCOPE_FORBIDDEN");
+    }
 
     if (mutation.status === "posted" && mutation.journal_entry_id != null) {
+      // Never acknowledge a replay using only the mutation's historical marker.
+      // The source journal must still be posted and company-owned, not voided.
+      const receipt = await client.query<{
+        id: number; source: string; source_id: number | null;
+      }>(
+        `select id,source::text as source,source_id from public.accounting_entries
+          where id=$1 and company_id=$2 and status='posted'
+            and cancelled_at is null and voided_at is null
+          for update`,
+        [mutation.journal_entry_id, mutation.company_id],
+      );
+      if (!receipt.rows[0]) {
+        throw new ApprovalError(
+          "Jurnal mutasi tidak posted, sudah dibatalkan, atau berbeda perusahaan.",
+          409,
+          "POSTED_JOURNAL_RECEIPT_INVALID",
+        );
+      }
+      // A bank_reconciliation-owned journal must belong to this mutation.
+      // Other source-owned receipts use separate canonical reuse custody.
+      const linkedEntry = receipt.rows[0]!;
+      if (linkedEntry.source === "bank_reconciliation"
+        && Number(linkedEntry.source_id) !== mutationId) {
+        throw new ApprovalError(
+          "Jurnal rekonsiliasi tertaut ke mutasi lain.",
+          409,
+          "POSTED_JOURNAL_SOURCE_MISMATCH",
+        );
+      }
       await client.query("commit");
       res.json({ ok: true, status: "posted", journal_entry_id: mutation.journal_entry_id, idempotent: true });
       return;
@@ -8358,6 +8393,47 @@ router.post("/bank-reconciliation/:mutationId/vendor-invoice-payment-batch", asy
     return;
   }
 
+  // PR95 explicit source-journal reuse branch: OFF by default and DEV-only.
+  // Never enter legacy journal creation after a reuse request fails.
+  // Reuse is restricted to a single exact full invoice; no partial/WHT.
+  if (req.body?.source_journal_reuse === true) {
+    const keys = Object.keys(req.body as Record<string, unknown>);
+    if (vendorInvoiceIds.length !== 1
+      || keys.some(key => !["source_journal_reuse", "vendor_invoice_ids"].includes(key))) {
+      res.status(422).json({
+        code: "PR95_SOURCE_REUSE_UNSUPPORTED_REQUEST",
+        error: "Reuse jurnal sumber hanya mendukung satu invoice tanpa alokasi tambahan.",
+      });
+      return;
+    }
+    const reuseClient = await pool.connect();
+    try {
+      await reuseClient.query("begin");
+      const receipt = await runOutboundReuseSignedDevCandidate(
+        req,
+        reuseClient as unknown as OutboundReuseQueryClient,
+        { companyId: requestedCompanyId, mutationId, invoiceId: Number(vendorInvoiceIds[0]) },
+      );
+      await reuseClient.query("commit");
+      res.json({
+        ok: true,
+        mutation_id: mutationId,
+        journal_entry_id: receipt.sourceEntryId,
+        payment_matching_group_id: receipt.paymentMatchingGroupId,
+        status: "posted",
+        source_journal_reused: true,
+      });
+    } catch (error) {
+      await reuseClient.query("rollback").catch(() => undefined);
+      const message = error instanceof Error ? error.message : "PR95_SOURCE_REUSE_FAILED";
+      req.log.warn({ error, mutationId }, "PR95 DEV source-journal reuse rejected");
+      res.status(409).json({ code: message.startsWith("PR95_") ? message : "PR95_SOURCE_REUSE_FAILED" });
+    } finally {
+      reuseClient.release();
+    }
+    return;
+  }
+
   const requestedAllocationByInvoice = new Map<number, number>();
   const rawAllocations = Array.isArray(req.body?.allocations) ? req.body.allocations : [];
   for (const rawAllocation of rawAllocations as Array<Record<string, unknown>>) {
@@ -8467,6 +8543,39 @@ router.post("/bank-reconciliation/:mutationId/vendor-invoice-payment-batch", asy
     );
     if (invoiceResult.rows.length !== vendorInvoiceIds.length) {
       throw new ApprovalError("Satu atau lebih invoice vendor tidak ditemukan dalam perusahaan aktif", 404, "INVOICE_NOT_FOUND");
+    }
+
+    // PR95 fail-closed source-journal custody: do not produce a second bank
+    // debit from a mutation for an invoice already linked to a posted
+    // Bank Disbursement journal. A future source-journal reuse flow must
+    // verify ownership and bank COA before lifting this block.
+    const postedSourceDisbursement = await client.query<{
+      vendor_invoice_id: number; disbursement_id: number; entry_id: number;
+    }>(
+      `select bdi.vendor_invoice_id, bd.id as disbursement_id, bd.entry_id
+         from public.bank_disbursement_items bdi
+         join public.bank_disbursements bd on bd.id = bdi.disbursement_id
+         join public.accounting_entries ae on ae.id = bd.entry_id
+          and ae.company_id = bd.company_id
+        where bdi.vendor_invoice_id = any($1::bigint[])
+          and bd.company_id = $2
+          and bd.status = 'posted'
+          and bd.void_entry_id is null
+          and ae.status = 'posted'
+          and ae.cancelled_at is null
+          and ae.voided_at is null
+        order by bd.id
+        limit 1
+        for update of bd`,
+      [vendorInvoiceIds, companyId],
+    );
+    if (postedSourceDisbursement.rows[0]) {
+      throw new ApprovalError(
+        "Invoice vendor sudah memiliki jurnal Bank Disbursement posted. " +
+        "Rekonsiliasi harus memakai jurnal sumber yang terverifikasi, bukan membuat debit bank kedua.",
+        409,
+        "VENDOR_INVOICE_SOURCE_JOURNAL_REUSE_REQUIRED",
+      );
     }
 
     const taxResult = await client.query<{

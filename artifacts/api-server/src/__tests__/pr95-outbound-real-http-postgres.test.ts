@@ -1,0 +1,497 @@
+import { afterAll,beforeAll,beforeEach,describe,expect,it,vi } from "vitest";
+import express from "express";
+import { createServer,type Server } from "node:http";
+import { once } from "node:events";
+import pg from "pg";
+import type { OutboundReuseQueryClient } from "../lib/outboundReuseFinalityReader";
+
+// Only substitute @workspace/db connection routing with disposable PG.
+// Real signed-cookie validation, DB user lookup, locks and finance writer run.
+const shared=vi.hoisted(()=>({authClient:null as null | pg.Client}));
+const mail=vi.hoisted(()=>({send:vi.fn()}));
+vi.mock("../lib/smtp",()=>({sendAdminLoginOtpEmail:mail.send}));
+vi.mock("@workspace/db",()=>({
+  pool:{
+    query:async(sql:string,args?:unknown[])=>{
+      if(!shared.authClient) throw Error("PR95_HTTP_PG_UNAVAILABLE");
+      return shared.authClient.query(sql,args);
+    },
+    connect:async()=>{
+      const u=process.env.PR95_ATOMIC_PG_URL;
+      if(!u)throw Error("PR95_HTTP_PG_UNAVAILABLE");
+      const conn=new pg.Client({connectionString:u});
+      await conn.connect();
+      return {
+        query:conn.query.bind(conn),
+        release:()=>{void conn.end();},
+      };
+    },
+  },
+  getRuntimeDatabaseUrl:async()=>{throw Error("PR95_NO_EXTERNAL_DB");},
+}));
+import { setProductionSessionCookie } from "../routes/dev-auth";
+import localProductionAuth from "../routes/local-production-auth";
+import { runOutboundReuseSignedDevCandidate } from "../lib/outboundSourceReuseDevBridge";
+
+const url=process.env.PR95_ATOMIC_PG_URL;
+const suite=url?describe:describe.skip;
+const input={companyId:1,mutationId:90001,invoiceId:7};
+suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=>{
+  let auth:pg.Client;
+  let server:Server;
+  let origin="";
+  let cookie="";
+  const previous={
+    app:process.env.APP_ENV,secret:process.env.BIZPORTAL_SESSION_SECRET,
+    otp:process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV,
+    feature:process.env.PR95_OUTBOUND_SOURCE_REUSE_ENABLED_DEV,
+    pinnedEmail:process.env.BIZPORTAL_SIGNED_OTP_ACCOUNT_EMAIL_DEV,
+    pinnedId:process.env.BIZPORTAL_SIGNED_OTP_ACCOUNT_ID_DEV,
+  };
+  const issueCookie=()=>{
+    const issued=Date.now();
+    const headers:string[]=[];
+    setProductionSessionCookie({
+      append:(name:string,value:string)=>{
+        if(name==="Set-Cookie")headers.push(value);
+      },
+    } as never,{
+      id:"pr95-ci-superadmin",email:"owner@pr95.invalid",
+      issuedAt:issued,expiresAt:issued+60000,
+    });
+    return (headers[0]??"").split(";")[0]??"";
+  };
+  const send=async(payload:unknown=input,session=cookie)=>{
+    const res=await fetch(origin+"/__isolated__/vendor-out-reuse",{
+      method:"POST",headers:{"content-type":"application/json",...(session?{cookie:session}:{})},
+      body:JSON.stringify(payload),
+    });
+    return {status:res.status,body:await res.json() as Record<string,unknown>};
+  };
+  const sendCanonical=async(body:Record<string,unknown>={
+    vendor_invoice_ids:[7],source_journal_reuse:true,
+  },companyId=1,session=cookie)=>{
+    const response=await fetch(origin+
+      "/api/bank-reconciliation/90001/vendor-invoice-payment-batch?company="+companyId,{
+      method:"POST",
+      headers:{"content-type":"application/json",...(session?{cookie:session}:{})},
+      body:JSON.stringify(body),
+    });
+    return {status:response.status,body:await response.json() as Record<string,unknown>};
+  };
+  const counters=async()=>{
+    const q=await auth.query(`SELECT
+      (SELECT count(*)::int FROM public.accounting_entries) journals,
+      (SELECT count(*)::int FROM public.payment_allocations) allocations,
+      (SELECT count(*)::int FROM public.bank_reconciliation_matches) matches,
+      (SELECT count(*)::int FROM public.bank_reconciliation_audit) audits,
+      (SELECT status FROM public.bank_mutations WHERE id=90001) mutation_status,
+      (SELECT matching_group_id FROM public.bank_mutations WHERE id=90001) matching_group_id`);
+    return q.rows[0];
+  };
+  beforeAll(async()=>{
+    const parsed=new URL(url!);
+    if(parsed.hostname!=="127.0.0.1"||parsed.port!=="65433"
+      ||parsed.pathname!=="/pr95_ci"
+      ||parsed.username!=="postgres.xssrfshdrtdfupgqwfdw")
+      throw Error("PR95_REFUSE_NON_DISPOSABLE_HTTP_DB");
+    process.env.APP_ENV="development";
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV="true";
+    process.env.BIZPORTAL_SESSION_SECRET="pr95-isolated-only-test-key-not-real-0000001";
+    process.env.PR95_OUTBOUND_SOURCE_REUSE_ENABLED_DEV="true";
+    process.env.BIZPORTAL_SIGNED_OTP_ACCOUNT_EMAIL_DEV="owner@pr95.invalid";
+    process.env.BIZPORTAL_SIGNED_OTP_ACCOUNT_ID_DEV="pr95-ci-superadmin";
+    mail.send.mockResolvedValue(undefined);
+    auth=new pg.Client({connectionString:url});
+    await auth.connect();
+    shared.authClient=auth;
+    await auth.query(`
+      CREATE TABLE public.bank_mutations(
+        id integer primary key,company_id integer,direction text,status text,
+        journal_entry_id integer,amount numeric,bank_account_id text,
+        debit_amount numeric not null,credit_amount numeric not null,
+        matching_group_id integer,
+        reconciliation_status text,accounting_posted boolean default false,
+        approved_at timestamptz,approved_by text,posted_at timestamptz,
+        linked_transaction_type text,linked_transaction_id integer,
+        review_code text,updated_at timestamptz
+      );
+      CREATE TABLE public.vendor_invoices(
+        id integer primary key,company_id integer,status text,
+        cancelled_at timestamptz,grand_total numeric
+      );
+      CREATE TABLE public.vendor_invoice_lines(
+        id integer primary key,invoice_id integer not null
+      );
+      CREATE TABLE public.vendor_invoice_line_taxes(
+        id integer primary key,invoice_line_id integer not null,
+        company_id integer not null,tax_amount numeric not null
+      );
+      CREATE TABLE public.bank_disbursements(
+        id integer primary key,company_id integer,entry_id integer,
+        status text,void_entry_id integer
+      );
+      CREATE TABLE public.bank_disbursement_items(
+        id integer primary key,disbursement_id integer,
+        vendor_invoice_id integer,amount numeric
+      );
+      CREATE TABLE public.accounting_entries(
+        id integer primary key,company_id integer,source text,status text,
+        cancelled_at timestamptz,voided_at timestamptz,
+        total_debit numeric,total_credit numeric
+      );
+      CREATE TABLE public.accounting_entry_lines(
+        id integer primary key,entry_id integer,account_id integer,
+        debit numeric,credit numeric
+      );
+      CREATE TABLE public.company_bank_accounts(
+        id integer primary key,company_id integer,coa_id integer,is_active boolean
+      );
+      CREATE TABLE public.chart_of_accounts(
+        id integer primary key,company_id integer,is_active boolean,code text
+      );
+      CREATE TABLE public.payment_matching_groups(
+        id serial primary key,company_id integer,group_type text,matching_type text,
+        total_mutation_amount numeric,total_invoice_amount numeric,
+        total_allocated numeric,remaining_amount numeric,confidence integer,
+        algorithm_used text,status text CHECK(status IN ('active','reversed','void')),
+        created_by text
+      );
+      CREATE TABLE public.payment_allocations(
+        id serial primary key,group_id integer,company_id integer,
+        invoice_id integer,mutation_id integer,allocated_amount numeric,
+        remaining_amount numeric,allocation_sequence integer,strategy text,
+        is_active boolean
+      );
+      CREATE TABLE public.bank_reconciliation_matches(
+        id serial primary key,mutation_id integer,candidate_type text,
+        candidate_id text,match_score integer,match_reason text,amount_match boolean,
+        date_match boolean,name_match boolean,order_id_match boolean,proof_match boolean,
+        status text,candidate_source text,is_manual boolean
+      );
+      CREATE TABLE public.bank_reconciliation_audit(
+        id serial primary key,mutation_id integer,action text,actor text,meta jsonb
+      );
+      INSERT INTO public.bank_mutations
+        (id,company_id,direction,status,journal_entry_id,amount,bank_account_id,debit_amount,credit_amount)
+        VALUES(90001,1,'OUT','unmatched',NULL,100.00,'17',0,100.00);
+      INSERT INTO public.vendor_invoices VALUES(7,1,'posted',NULL,100.00);
+      INSERT INTO public.bank_disbursements VALUES(2,1,314,'posted',NULL);
+      INSERT INTO public.bank_disbursement_items VALUES(1,2,7,100.00);
+      INSERT INTO public.accounting_entries VALUES(314,1,'manual_payment','posted',NULL,NULL,100.00,100.00);
+      INSERT INTO public.accounting_entry_lines VALUES(1,314,1010,100.00,0),(2,314,1023,0,100.00);
+      INSERT INTO public.company_bank_accounts VALUES(17,1,1023,true);
+      INSERT INTO public.chart_of_accounts VALUES(1010,1,true,'2-1010-CST'),(1023,1,true,'1-1023-CST');
+
+      CREATE TABLE public.users(id text primary key,email text,role text,
+        company_id integer,is_active boolean,status text);
+      CREATE TABLE public.bizportal_email_otp_codes(
+        id bigserial primary key,email text not null,request_ip text not null,
+        purpose text not null,code_hash text,attempts integer not null default 0,
+        expires_at timestamptz not null,verified_at timestamptz,
+        created_at timestamptz not null default now()
+      );
+      INSERT INTO public.users VALUES
+        ('pr95-ci-superadmin','owner@pr95.invalid','super_admin',1,true,'active');
+    `);
+    const app=express();
+    app.use(express.json({limit:"4kb"}));
+    app.use((req,_res,next)=>{
+      req.log={warn:()=>undefined,error:()=>undefined} as never;
+      next();
+    });
+    const {default:canonicalBankReconciliation}=await import("../routes/bank-reconciliation");
+    app.use("/api",localProductionAuth);
+    app.use("/api",canonicalBankReconciliation);
+    // Test ONLY. No registration in production/API routers.
+    app.post("/__isolated__/vendor-out-reuse",async(req,res)=>{
+      const body=req.body as Record<string,unknown>;
+      if(!body || !["companyId","mutationId","invoiceId"].every(k=>
+        Number.isSafeInteger(body[k]) && Number(body[k])>0)
+        || Object.keys(body).length!==3){
+        res.status(422).json({error:"INVALID_INPUT"});return;
+      }
+      const conn=new pg.Client({connectionString:url});
+      await conn.connect();
+      try{
+        await conn.query("BEGIN");
+        const receipt=await runOutboundReuseSignedDevCandidate(
+          req,conn as unknown as OutboundReuseQueryClient,
+          {companyId:Number(body.companyId),mutationId:Number(body.mutationId),invoiceId:Number(body.invoiceId)},
+        );
+        await conn.query("COMMIT");
+        res.status(200).json({ok:true,receipt});
+      }catch(err){
+        await conn.query("ROLLBACK").catch(()=>{});
+        res.status(409).json({ok:false,reason:err instanceof Error?err.message:"rejected"});
+      }finally{await conn.end();}
+    });
+    server=createServer(app);
+    server.listen(0,"127.0.0.1");
+    await once(server,"listening");
+    const address=server.address();
+    if(!address||typeof address==="string")throw Error("NO_LOCAL_HTTP");
+    origin="http://127.0.0.1:"+address.port;
+    cookie=issueCookie();
+  });
+  beforeEach(async()=>{
+    process.env.PR95_OUTBOUND_SOURCE_REUSE_ENABLED_DEV="true";
+    mail.send.mockClear();
+    await auth.query(`
+      TRUNCATE public.bizportal_email_otp_codes RESTART IDENTITY;
+      TRUNCATE public.bank_reconciliation_audit,public.bank_reconciliation_matches,
+        public.payment_allocations,public.payment_matching_groups RESTART IDENTITY;
+      UPDATE public.bank_mutations SET status='unmatched',journal_entry_id=NULL,
+        reconciliation_status=NULL,accounting_posted=false,
+        approved_at=NULL,approved_by=NULL,posted_at=NULL,
+        linked_transaction_type=NULL,linked_transaction_id=NULL,
+        matching_group_id=NULL,review_code=NULL
+        WHERE id=90001;
+      UPDATE public.users SET role='super_admin',is_active=true,status='active'
+        WHERE id='pr95-ci-superadmin';
+    `);
+  });
+  afterAll(async()=>{
+    if(server) await new Promise<void>(resolve=>server.close(()=>resolve()));
+    if(auth){
+      await auth.query(`
+        DROP TABLE public.bizportal_email_otp_codes,public.users,public.bank_reconciliation_audit,
+          public.bank_reconciliation_matches,public.payment_allocations,
+          public.payment_matching_groups,public.chart_of_accounts,
+          public.company_bank_accounts,public.accounting_entry_lines,
+          public.accounting_entries,public.bank_disbursement_items,
+          public.bank_disbursements,public.vendor_invoice_line_taxes,public.vendor_invoice_lines,
+      public.vendor_invoices,public.bank_mutations;
+      `);
+      await auth.end();
+    }
+    shared.authClient=null;
+    for(const [k,v] of Object.entries({
+      APP_ENV:previous.app,BIZPORTAL_SESSION_SECRET:previous.secret,
+      BIZPORTAL_SIGNED_OTP_ENABLED_DEV:previous.otp,
+      PR95_OUTBOUND_SOURCE_REUSE_ENABLED_DEV:previous.feature,
+      BIZPORTAL_SIGNED_OTP_ACCOUNT_EMAIL_DEV:previous.pinnedEmail,
+      BIZPORTAL_SIGNED_OTP_ACCOUNT_ID_DEV:previous.pinnedId,
+    })){if(v===undefined) delete process.env[k];else process.env[k]=v;}
+  });
+  it("uses the actual canonical vendor batch route with signed DEV Super Admin and no second journal",async()=>{
+    const result=await sendCanonical();
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({
+      ok:true,status:"posted",source_journal_reused:true,
+      journal_entry_id:314,mutation_id:90001,
+    });
+    expect(await counters()).toMatchObject({
+      journals:1,allocations:1,matches:1,audits:1,mutation_status:"posted",
+      matching_group_id:expect.any(Number),
+    });
+    const replay=await sendCanonical();
+    expect(replay.status).toBe(409);
+    expect(await counters()).toMatchObject({journals:1,allocations:1,matches:1,audits:1});
+  });
+  it("canonical route rejects signed cross-company and unsupported multi-invoice reuse before writes",async()=>{
+    expect((await sendCanonical(undefined,2)).status).toBe(409);
+    expect((await sendCanonical({source_journal_reuse:true,vendor_invoice_ids:[7,8]})).status).toBe(422);
+    expect((await sendCanonical({source_journal_reuse:true,vendor_invoice_ids:[7],allocations:[{invoice_id:7,amount:100}]})).status).toBe(422);
+    expect(await counters()).toMatchObject({journals:1,allocations:0,matches:0,audits:0});
+  });
+  it("executes genuine email OTP send/verify and canonical payment in one isolated HTTP E2E",async()=>{
+    // SMTP delivery is mocked. All OTP DB state, bcrypt hashing, verification,
+    // signed session issuance and the finance writer are actual application code.
+    const sendOtp=await fetch(origin+"/api/auth/email-otp/send",{
+      method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({email:"owner@pr95.invalid"}),
+    });
+    expect(sendOtp.status).toBe(202);
+    expect(mail.send).toHaveBeenCalledTimes(1);
+    const [sentEmail,issuedCode]=mail.send.mock.calls[0] as [string,string];
+    expect(sentEmail).toBe("owner@pr95.invalid");
+    expect(issuedCode).toMatch(/^\d{6}$/);
+    const codeCheck=await auth.query(
+      "SELECT code_hash,verified_at FROM public.bizportal_email_otp_codes WHERE email=$1",
+      [sentEmail],
+    );
+    expect(codeCheck.rows).toHaveLength(1);
+    expect(codeCheck.rows[0].code_hash).not.toBe(issuedCode);
+    expect(codeCheck.rows[0].verified_at).toBeNull();
+    const verify=await fetch(origin+"/api/auth/email-otp/verify",{
+      method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({email:sentEmail,code:issuedCode}),
+    });
+    expect(verify.status).toBe(200);
+    const otpCookie=(verify.headers.get("set-cookie")??"").split(";")[0];
+    expect(otpCookie).toContain("bizportal_supabase_session=");
+    const receipt=await sendCanonical(undefined,1,otpCookie);
+    expect(receipt.status).toBe(200);
+    expect(receipt.body).toMatchObject({
+      status:"posted",source_journal_reused:true,journal_entry_id:314,
+    });
+    const reused=await sendCanonical(undefined,1,otpCookie);
+    expect(reused.status).toBe(409);
+    const replayOtp=await fetch(origin+"/api/auth/email-otp/verify",{
+      method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({email:sentEmail,code:issuedCode}),
+    });
+    expect(replayOtp.status).toBe(400);
+    expect(await counters()).toMatchObject({
+      journals:1,allocations:1,matches:1,audits:1,mutation_status:"posted",
+    });
+  });
+  it("OTP issues no finance write before verification, and wrong code cannot authenticate",async()=>{
+    const sent=await fetch(origin+"/api/auth/email-otp/send",{
+      method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({email:"owner@pr95.invalid"}),
+    });
+    expect(sent.status).toBe(202);
+    const denied=await fetch(origin+"/api/auth/email-otp/verify",{
+      method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({email:"owner@pr95.invalid",code:"000000"}),
+    });
+    expect(denied.status).toBe(400);
+    expect(await counters()).toMatchObject({
+      journals:1,allocations:0,matches:0,audits:0,mutation_status:"unmatched",
+    });
+  });
+  it("authenticates signed super_admin and executes real writer with one source journal",async()=>{
+    const reply=await send();
+    expect(reply.status).toBe(200);
+    expect(reply.body.ok).toBe(true);
+    expect(reply.body.receipt).toMatchObject({mutationId:90001,invoiceId:7,sourceEntryId:314});
+    expect(await counters()).toMatchObject({
+      journals:1,allocations:1,matches:1,audits:1,mutation_status:"posted",
+      matching_group_id:expect.any(Number),
+    });
+    const replay=await send();
+    expect(replay.status).toBe(409);
+    expect(await counters()).toMatchObject({journals:1,allocations:1,matches:1,audits:1});
+  });
+  it("mutations link to exactly the canonical allocation group after HTTP success",async()=>{
+    expect((await send()).status).toBe(200);
+    const result=await auth.query(`SELECT bm.matching_group_id,pa.group_id
+      FROM public.bank_mutations bm JOIN public.payment_allocations pa
+        ON pa.mutation_id=bm.id
+      WHERE bm.id=90001 AND bm.company_id=1`);
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0].matching_group_id).toBe(result.rows[0].group_id);
+  });
+  it("rejects missing/tampered cookie, wrong company and downgraded role before writes",async()=>{
+    expect((await send(input,"")).status).toBe(409);
+    const tampered=cookie.slice(0,-1)+(cookie.endsWith("A")?"B":"A");
+    expect((await send(input,tampered)).status).toBe(409);
+    expect((await send({...input,companyId:2})).status).toBe(409);
+    await auth.query("UPDATE public.users SET role='finance' WHERE id='pr95-ci-superadmin'");
+    expect((await send()).status).toBe(409);
+    expect(await counters()).toMatchObject({journals:1,allocations:0,matches:0,audits:0});
+  });
+  it("rejects inactive user, disabled bridge and incorrect invoice without financial rows",async()=>{
+    await auth.query("UPDATE public.users SET is_active=false WHERE id='pr95-ci-superadmin'");
+    expect((await send()).status).toBe(409);
+    await auth.query("UPDATE public.users SET is_active=true WHERE id='pr95-ci-superadmin'");
+    delete process.env.PR95_OUTBOUND_SOURCE_REUSE_ENABLED_DEV;
+    expect((await send()).status).toBe(409);
+    process.env.PR95_OUTBOUND_SOURCE_REUSE_ENABLED_DEV="true";
+    expect((await send({...input,invoiceId:8})).status).toBe(409);
+    expect(await counters()).toMatchObject({journals:1,allocations:0,matches:0,audits:0});
+  });
+  it("rolls back the real HTTP transaction when mutation posting fails after allocation writes",async()=>{
+    await auth.query(`CREATE FUNCTION public.pr95_http_fail_mutation() RETURNS trigger
+      LANGUAGE plpgsql AS $pr95_http$
+        BEGIN IF NEW.status='posted' THEN
+          RAISE EXCEPTION 'PR95_HTTP_INJECTED_FAILURE';
+        END IF;
+        RETURN NEW;
+      END $pr95_http$`);
+    await auth.query(`CREATE TRIGGER pr95_http_fail_mutation
+      BEFORE UPDATE ON public.bank_mutations
+      FOR EACH ROW EXECUTE FUNCTION public.pr95_http_fail_mutation()`);
+    try {
+      const result=await send();
+      expect(result.status).toBe(409);
+      expect(result.body.reason).toContain("PR95_HTTP_INJECTED_FAILURE");
+      expect(await counters()).toMatchObject({
+        journals:1,allocations:0,matches:0,audits:0,mutation_status:"unmatched",
+      });
+    } finally {
+      await auth.query("DROP TRIGGER IF EXISTS pr95_http_fail_mutation ON public.bank_mutations");
+      await auth.query("DROP FUNCTION IF EXISTS public.pr95_http_fail_mutation()");
+    }
+  });
+  it("shows finalized canonical allocation without a second journal after successful HTTP payment",async()=>{
+    expect((await send()).status).toBe(200);
+    const result=await auth.query(`select
+      coalesce(sum(pa.allocated_amount),0)::numeric as canonical_paid
+      from public.payment_allocations pa
+      join public.payment_matching_groups pmg on pmg.id=pa.group_id
+      join public.bank_mutations bm on bm.id=pa.mutation_id
+      where pa.company_id=1 and pa.invoice_id=7 and pa.is_active=true
+        and pmg.status='active' and bm.status='posted'`);
+    expect(Number(result.rows[0].canonical_paid)).toBe(100);
+    const journal=await auth.query("select count(*)::int as n from public.accounting_entries");
+    expect(journal.rows[0].n).toBe(1);
+  });
+  it("accepts legitimate debit-side bank OUT via the same canonical HTTP endpoint",async()=>{
+    await auth.query("UPDATE public.bank_mutations SET debit_amount=100,credit_amount=0 WHERE id=90001");
+    try {
+      const result=await sendCanonical();
+      expect(result.status).toBe(200);
+      expect(result.body).toMatchObject({source_journal_reused:true,journal_entry_id:314});
+      expect(await counters()).toMatchObject({journals:1,allocations:1,matches:1,mutation_status:"posted"});
+    } finally {
+      await auth.query("UPDATE public.bank_mutations SET debit_amount=0,credit_amount=100 WHERE id=90001");
+    }
+  });
+  it("rejects an OUT mutation with inconsistent persisted credit/debit import columns",async()=>{
+    await auth.query("UPDATE public.bank_mutations SET debit_amount=100,credit_amount=100 WHERE id=90001");
+    try{
+      const result=await sendCanonical();
+      expect(result.status).toBe(409);
+      expect(result.body.code).toBe("PR95_OUTBOUND_BANK_DIRECTION_AMOUNTS_MISMATCH");
+      expect(await counters()).toMatchObject({journals:1,allocations:0,matches:0,audits:0});
+    }finally{
+      await auth.query("UPDATE public.bank_mutations SET debit_amount=0,credit_amount=100 WHERE id=90001");
+    }
+  });
+  it("canonical HTTP rejects invoice with persisted positive tax lines and no writes",async()=>{
+    await auth.query("INSERT INTO public.vendor_invoice_lines VALUES(88,7)");
+    await auth.query("INSERT INTO public.vendor_invoice_line_taxes VALUES(99,88,1,10.00)");
+    try{
+      const response=await sendCanonical();
+      expect(response.status).toBe(409);
+      expect(response.body.code).toBe("PR95_SOURCE_REUSE_TAX_LINES_UNSUPPORTED");
+      expect(await counters()).toMatchObject({journals:1,allocations:0,matches:0,audits:0});
+    }finally{
+      await auth.query("DELETE FROM public.vendor_invoice_line_taxes WHERE id=99");
+      await auth.query("DELETE FROM public.vendor_invoice_lines WHERE id=88");
+    }
+  });
+  it("canonical HTTP refuses an unfinished active allocation already holding the invoice",async()=>{
+    const group=await auth.query(
+      `INSERT INTO public.payment_matching_groups
+         (company_id,group_type,matching_type,total_mutation_amount,total_invoice_amount,
+          total_allocated,remaining_amount,confidence,algorithm_used,status,created_by)
+        VALUES(1,'MULTI_INVOICE','MULTI_INVOICE',100,100,100,0,100,'other_writer','active','ci')
+        RETURNING id`,
+    );
+    const groupId=group.rows[0].id;
+    await auth.query(`INSERT INTO public.payment_allocations
+      (group_id,company_id,invoice_id,mutation_id,allocated_amount,remaining_amount,
+       allocation_sequence,strategy,is_active)
+      VALUES($1,1,7,90001,100,0,1,'MANUAL',true)`,[groupId]);
+    try{
+      const response=await sendCanonical();
+      expect(response.status).toBe(409);
+      expect(response.body.code).toBe("PR95_OUTBOUND_FINALIZED_CUSTODY_EXISTS");
+      expect(await counters()).toMatchObject({journals:1,allocations:1,matches:0,audits:0,mutation_status:"unmatched"});
+    }finally{
+      await auth.query("DELETE FROM public.payment_allocations WHERE group_id=$1",[groupId]);
+      await auth.query("DELETE FROM public.payment_matching_groups WHERE id=$1",[groupId]);
+    }
+  });
+  it("rejects simultaneous HTTP requests for same source with one allocation only",async()=>{
+    const responses=await Promise.all([send(),send()]);
+    expect(responses.map(x=>x.status).sort()).toEqual([200,409]);
+    expect(await counters()).toMatchObject({
+      journals:1,allocations:1,matches:1,audits:1,mutation_status:"posted",
+    });
+  });
+});
