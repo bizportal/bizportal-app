@@ -1,0 +1,62 @@
+name: DEV Customer Invoice — Existing Signed OTP Attestation
+
+on:
+  pull_request:
+    branches:
+      - test/base-payroll-otp-caaef80-20261118
+    paths:
+      - 'artifacts/api-server/src/routes/dev-customer-invoice-attestation.ts'
+      - 'artifacts/api-server/src/routes/dev-customer-invoice-attestation.test.ts'
+      - 'artifacts/api-server/src/routes/dev-customer-invoice-crossrepo-qa.test.ts'
+      - 'artifacts/api-server/src/routes/index.ts'
+      - '.github/workflows/dev-customer-invoice-otp-attestation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  signed-otp-invoice-issuer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout pinned public Customer Portal verifier for cross-repo contract
+        uses: actions/checkout@v4
+        with:
+          repository: Travelintrips/CST-CUSTOMER-PORTAL
+          ref: e005a3e7593c467693a7b2e7101fa47a929f9b6c
+          path: vendor/customer-portal
+          persist-credentials: false
+      - name: Assert pinned Portal verification source
+        run: |
+          test "$(git -C vendor/customer-portal rev-parse HEAD)" = e005a3e7593c467693a7b2e7101fa47a929f9b6c
+          test -f vendor/customer-portal/server/dev-bizportal-invoice-attestation.mjs
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Install immutable dependency graph
+        run: pnpm install --frozen-lockfile
+      - name: Enforce original signed OTP session boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          f=artifacts/api-server/src/routes/dev-customer-invoice-attestation.ts
+          grep -Fq 'isSignedOtpDevEnabled()' "$f"
+          grep -Fq 'getProductionSession(request)' "$f"
+          grep -Fq 'getProductionUser(session)' "$f"
+          grep -Fq 'actor.role !== "super_admin"' "$f"
+          grep -Fq 'BIZPORTAL_CUSTOMER_INVOICE_ATTEST_DEV === "true"' "$f"
+          ! grep -Fq 'isSignedPasswordDevEnabled()' "$f"
+          ! grep -Fq 'getDevSession(request)' "$f"
+          grep -Fq 'router.use(devCustomerInvoiceAttestationRouter)' artifacts/api-server/src/routes/index.ts
+      - name: Existing OTP and Invoice attestation regression
+        run: |
+          cd artifacts/api-server
+          pnpm exec vitest run             src/routes/dev-customer-invoice-attestation.test.ts             src/routes/dev-customer-invoice-crossrepo-qa.test.ts             src/routes/dev-signed-otp-opt-in.test.ts             src/routes/dev-signed-auth-legacy-closure.test.ts             src/routes/dev-signed-otp-admin-http.test.ts             src/routes/dev-auth.test.ts             src/routes/local-production-auth.test.ts
+      - name: API TypeScript scope
+        run: pnpm --dir artifacts/api-server run typecheck
