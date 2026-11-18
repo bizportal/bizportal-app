@@ -10,6 +10,9 @@ on:
       - 'artifacts/api-server/src/routes/dev-auth.ts'
       - 'artifacts/api-server/src/routes/local-production-auth.ts'
       - 'artifacts/api-server/src/routes/dev-superadmin-password-http.test.ts'
+      - 'artifacts/api-server/src/routes/dev-customer-invoice-attestation.ts'
+      - 'artifacts/api-server/src/routes/dev-customer-invoice-attestation.test.ts'
+      - 'artifacts/api-server/src/routes/index.ts'
       - 'artifacts/api-server/src/lib/accounting/outboxProcessor.ts'
       - 'artifacts/api-server/src/index.ts'
       - 'artifacts/api-server/src/lib/accounting/outboxProcessor.customer-portal-dev.test.ts'
@@ -63,6 +66,16 @@ jobs:
           TZ: Asia/Jakarta
         run: |
           pnpm --dir artifacts/api-server exec vitest run src/routes/dev-superadmin-password-http.test.ts
+      - name: Independently signed BizPortal attestation route and Ed25519 proof gates
+        env:
+          APP_ENV: development
+          NODE_ENV: test
+        run: |
+          pnpm --dir artifacts/api-server exec vitest run src/routes/dev-customer-invoice-attestation.test.ts
+          grep -Fq 'devCustomerInvoiceAttestationRouter' artifacts/api-server/src/routes/index.ts
+          grep -Fq 'getProductionSession' artifacts/api-server/src/routes/dev-customer-invoice-attestation.ts
+          grep -Fq 'getProductionUser' artifacts/api-server/src/routes/dev-customer-invoice-attestation.ts
+          grep -Fq 'BIZPORTAL_CUSTOMER_INVOICE_ATTEST_DEV' artifacts/api-server/src/routes/dev-customer-invoice-attestation.ts
       - name: Protect existing worker; keep new strict consumer default OFF
         shell: bash
         run: |
