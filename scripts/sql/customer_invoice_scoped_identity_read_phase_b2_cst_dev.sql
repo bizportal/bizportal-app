@@ -107,7 +107,15 @@ BEGIN
   predicate:=format(
    '(CURRENT_USER=SESSION_USER AND matched_company_id=%s AND '||
     'status=''approved'' AND reviewed_by IS NOT NULL AND '||
-    'reviewed_by<>portal_customer_id AND reviewed_at IS NOT NULL)',tenant);
+    'reviewed_by<>portal_customer_id AND reviewed_at IS NOT NULL '||
+    'AND EXISTS(SELECT 1 FROM public.portal_customers issuer '||
+      'WHERE issuer.id=portal_company_requests.portal_customer_id '||
+        'AND issuer.role=''admin'' '||
+        'AND (issuer.account_status=''active'' OR issuer.account_status IS NULL)) '||
+    'AND EXISTS(SELECT 1 FROM public.portal_customers reviewer '||
+      'WHERE reviewer.id=portal_company_requests.reviewed_by '||
+        'AND reviewer.role=''admin'' '||
+        'AND (reviewer.account_status=''active'' OR reviewer.account_status IS NULL)))',tenant);
   EXECUTE format(
    'CREATE POLICY cst_invoice_b2_read_%s ON public.portal_company_requests '||
    'FOR SELECT TO %I USING (%s)',suffix,role_name,predicate);
