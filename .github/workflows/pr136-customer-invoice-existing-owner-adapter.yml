@@ -85,7 +85,7 @@ jobs:
           f=artifacts/api-server/src/lib/posting-engine/customer-portal-sales-tax-readiness-dev.ts
           grep -Fq 'DEFAULT_SALES_TAX_COMPANY_MISMATCH' "$f"
           grep -Fq 'CANONICAL_TAX_POSTING_NOT_READY' "$f"
-          grep -Fq 'same' "$f"
+          grep -Fq 'SameTransactionRead' "$f"
           ! grep -Eiq 'insert[[:space:]]+into[[:space:]]+public\.|update[[:space:]]+public\.|delete[[:space:]]+from[[:space:]]+public\.' "$f"
           ! grep -Fq 'customer-portal-sales-tax-readiness-dev' artifacts/api-server/src/index.ts
           echo SALES_PPN_PREFLIGHT_SOURCE_ONLY_PASS
