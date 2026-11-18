@@ -6,8 +6,10 @@
  * API route. Customer Portal must provide its own trusted, authenticated
  * same-session transactionClient; never open another pool or post to PROD.
  *
- * For taxAmount>0 the existing engine v1 lacks proven atomic tax posting:
- * fail closed until the original owner adds and certifies that capability.
+ * Positive-tax invoices remain OFF unless a separately approved DEV-only
+ * PPN flag is enabled and the ORIGINAL invoice/default tax mapping is valid.
+ * The original engine then adds its own gl_tax_lines metadata under the same
+ * PG transaction, never via a second writer or independent connection.
  */
 import { drizzle } from "drizzle-orm/node-postgres";
 import type pg from "pg";
@@ -72,7 +74,8 @@ export async function postCustomerPortalSalesInvoiceWithExistingOwner(
   // then reject PPN until the original engine proves atomic tax posting.
   const source=await client.query(
     `select id,company_id,invoice_status,invoice_number,invoice_date,
-            due_date,total_amount,grand_total,tax_amount,amount_paid
+            due_date,total_amount,grand_total,tax_amount,amount_paid,
+            tax_rate_id,tax_treatment
        from public.sales_documents
       where id=$1 and company_id=$2
       for update`, [sourceId,companyId],
@@ -97,14 +100,22 @@ export async function postCustomerPortalSalesInvoiceWithExistingOwner(
       (invoice.tax_amount != null && cents(invoice.tax_amount)!==tax)) {
     throw new Error("DEV_SALES_POSTING_FINANCIAL_TOTAL_INVALID");
   }
-  if (tax !== 0) {
-    // Existing posting engine v1 explicitly refuses request.taxes; do not
-    // post a ledger without its legally correct and atomic PPN entry.
+  if (tax !== 0 && process.env.CUSTOMER_PORTAL_TAX_ATOMIC_POST_DEV !== "true") {
+    // Existing universal tax rejection remains the default. Never silently
+    // select a tax rate from this company's active alternative rates.
     throw new Error("DEV_SALES_POSTING_TAX_NOT_READY");
   }
   const settings=await client.query(
     `select s.sales_journal_id as journal,s.ar_account_id as ar,
-            s.sales_income_account_id as revenue
+            s.sales_income_account_id as revenue,
+            s.default_sales_tax_id as default_tax_id,
+            s.ppn_output_account_id as ppn_output_account,
+            t.company_id as rate_company,t.id as rate_id,t.rate as rate_percent,
+            t.account_id as rate_account,t.kind::text as rate_kind,
+            t.cut_type::text as rate_cut_type,t.is_active as rate_active,
+            p.company_id as ppn_company,p.type::text as ppn_type,
+            p.status as ppn_status,p.is_active as ppn_active,
+            p.is_postable as ppn_postable
        from public.accounting_settings s
        join public.accounting_journals j on j.id=s.sales_journal_id
           and j.company_id=s.company_id and j.is_active and j.type='sales'
@@ -114,10 +125,34 @@ export async function postCustomerPortalSalesInvoiceWithExistingOwner(
        join public.chart_of_accounts r on r.id=s.sales_income_account_id
           and r.company_id=s.company_id and r.is_active and r.is_postable
           and r.status='ACTIVE'
+       left join public.accounting_taxes t on t.id=s.default_sales_tax_id
+       left join public.chart_of_accounts p on p.id=s.ppn_output_account_id
       where s.company_id=$1`, [companyId],
   );
   if (settings.rows.length!==1) throw new Error("DEV_SALES_POSTING_SETTINGS_MISSING");
   const a=settings.rows[0];
+  let scopedPpn: { accountId: number; rate: number } | null = null;
+  if (tax > 0) {
+    const rateId = Number(row.tax_rate_id);
+    const rate = Number(a.rate_percent);
+    const ppnAccount = Number(a.ppn_output_account);
+    if (!Number.isSafeInteger(rateId) || rateId <= 0 ||
+        rateId !== Number(a.default_tax_id) ||
+        rateId !== Number(a.rate_id) ||
+        Number(a.rate_company) !== companyId ||
+        a.rate_kind !== "sale" || a.rate_cut_type !== "self_borne" ||
+        a.rate_active !== true || row.tax_treatment !== "exclusive" ||
+        Number(a.ppn_company) !== companyId ||
+        a.ppn_type !== "liability" || a.ppn_status !== "ACTIVE" ||
+        a.ppn_active !== true || a.ppn_postable !== true ||
+        !Number.isSafeInteger(ppnAccount) || ppnAccount <= 0 ||
+        Number(a.rate_account) !== ppnAccount ||
+        (rate !== 11 && rate !== 12) ||
+        Math.round(net * rate / 100) !== tax) {
+      throw new Error("DEV_SALES_POSTING_TAX_SETTINGS_NOT_READY");
+    }
+    scopedPpn = {accountId:ppnAccount,rate};
+  }
   const money=gross/100;
   const result=await getPostingEngine().post({
     journalId:Number(a.journal),journalCode:"SAL",
@@ -127,8 +162,15 @@ export async function postCustomerPortalSalesInvoiceWithExistingOwner(
     createdById:input.actorId == null ? null : String(input.actorId),
     lines:[
       {accountId:Number(a.ar),debit:money,credit:0},
-      {accountId:Number(a.revenue),debit:0,credit:money},
+      {accountId:Number(a.revenue),debit:0,credit:scopedPpn ? net/100 : money},
+      ...(scopedPpn ? [{
+        accountId:scopedPpn.accountId,debit:0,credit:tax/100,
+      }] : []),
     ],
+    ...(scopedPpn ? {taxes:[{
+      taxType:"PPN_OUT",baseAmount:net/100,taxAmount:tax/100,
+      rate:scopedPpn.rate,glAccountId:scopedPpn.accountId,
+    }]} : {}),
   },drizzle(client));
   if (!result.ok || !Number.isSafeInteger(result.entryId) || !result.entryId) {
     throw new Error("DEV_SALES_POSTING_OWNER_REJECTED");
