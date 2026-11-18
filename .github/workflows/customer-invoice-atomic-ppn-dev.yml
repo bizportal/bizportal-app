@@ -19,6 +19,8 @@ on:
       - 'scripts/tests/customer_invoice_read_b*.qa.sql'
       - 'scripts/tests/customer_invoice_lock_b3_*.qa.sql'
       - 'scripts/tests/customer_invoice_scoped_read_rls_disposable.sh'
+      - 'scripts/tests/customer_invoice_b4_*.qa.*'
+      - 'scripts/tests/customer_invoice_b4_*.sh'
       - 'artifacts/api-server/src/lib/__tests__/portal-invoice-existing-owner-adapter.test.ts'
       - '.github/workflows/customer-invoice-atomic-ppn-dev.yml'
   workflow_dispatch:
@@ -45,6 +47,8 @@ jobs:
         run: bash scripts/tests/customer-invoice-original-owner-disposable.sh
       - name: Direct CST/Diva identity RLS and no-login B1-B3 rollback in disposable PostgreSQL16
         run: bash scripts/tests/customer_invoice_scoped_read_rls_disposable.sh
+      - name: Original CanonicalPostingEngine posting via B4 scoped writer with rollback
+        run: bash scripts/tests/customer_invoice_b4_original_owner_disposable.sh
       - name: Adapter and original-owner regression
         run: pnpm --dir artifacts/api-server exec vitest run src/lib/__tests__/legacy-posting-owner-transactions.test.ts src/lib/__tests__/portal-invoice-existing-owner-adapter.test.ts
       - name: Complete API typecheck
