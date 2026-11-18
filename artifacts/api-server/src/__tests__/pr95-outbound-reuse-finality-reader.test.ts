@@ -28,7 +28,8 @@ describe("PR95 real canonical finality evidence reader (unregistered, SELECT onl
     expect(executed[1].sql).toContain("public.payment_allocations");
     expect(executed[1].sql).toContain("pa.company_id=$1 and pa.invoice_id=$2");
     expect(executed[1].sql).toContain("coalesce(pa.is_active,true)=true");
-    expect(executed[1].sql).toContain("public.payment_matching_groups");
+    expect(executed[1].sql).not.toContain("public.payment_matching_groups");
+    expect(executed[1].sql).not.toContain("bm.status");
     expect(executed[1].params).toEqual([1, 7]);
     expect(executed[2].sql).toContain("journal_entry_id=$2");
     expect(executed[2].sql).not.toContain("lower(status) in");
