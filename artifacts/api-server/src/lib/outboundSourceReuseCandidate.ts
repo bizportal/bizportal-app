@@ -14,7 +14,7 @@ import type { OutboundReuseQueryClient } from "./outboundReuseFinalityReader";
 /** Exact numeric-to-minor conversion; never round a fractional cent. */
 function decimalMinor(raw: unknown): number | null {
   const value=String(raw??"");
-  if(!/^(?:0|[1-9]\\d*)(?:\\.\\d{1,2})?$/.test(value))return null;
+  if(!/^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/.test(value))return null;
   const [whole,fraction=""]=value.split(".");
   const amount=Number(whole)*100+Number(fraction.padEnd(2,"0"));
   return Number.isSafeInteger(amount)?amount:null;
