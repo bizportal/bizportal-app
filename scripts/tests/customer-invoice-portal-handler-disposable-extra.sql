@@ -54,5 +54,3 @@ INSERT INTO public.sales_documents(
 );
 INSERT INTO public.sales_document_lines(document_id,name,quantity,unit_price,subtotal)
 VALUES(199,'QA Portal denied case',1,100,100);
-
-[executed on device: srv1792369 (0891e23a-6a6b-4f8c-a16a-962e888e2014)]
