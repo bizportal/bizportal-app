@@ -109,6 +109,7 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
       CREATE TABLE public.bank_mutations(
         id integer primary key,company_id integer,direction text,status text,
         journal_entry_id integer,amount numeric,bank_account_id text,
+        debit_amount numeric not null,credit_amount numeric not null,
         matching_group_id integer,
         reconciliation_status text,accounting_posted boolean default false,
         approved_at timestamptz,approved_by text,posted_at timestamptz,
@@ -172,8 +173,8 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
         id serial primary key,mutation_id integer,action text,actor text,meta jsonb
       );
       INSERT INTO public.bank_mutations
-        (id,company_id,direction,status,journal_entry_id,amount,bank_account_id)
-        VALUES(90001,1,'OUT','unmatched',NULL,100.00,'17');
+        (id,company_id,direction,status,journal_entry_id,amount,bank_account_id,debit_amount,credit_amount)
+        VALUES(90001,1,'OUT','unmatched',NULL,100.00,'17',0,100.00);
       INSERT INTO public.vendor_invoices VALUES(7,1,'posted',NULL,100.00);
       INSERT INTO public.bank_disbursements VALUES(2,1,314,'posted',NULL);
       INSERT INTO public.bank_disbursement_items VALUES(1,2,7,100.00);
@@ -427,6 +428,17 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
     expect(Number(result.rows[0].canonical_paid)).toBe(100);
     const journal=await auth.query("select count(*)::int as n from public.accounting_entries");
     expect(journal.rows[0].n).toBe(1);
+  });
+  it("rejects an OUT mutation with inconsistent persisted credit/debit import columns",async()=>{
+    await auth.query("UPDATE public.bank_mutations SET debit_amount=100,credit_amount=0 WHERE id=90001");
+    try{
+      const result=await sendCanonical();
+      expect(result.status).toBe(409);
+      expect(result.body.code).toBe("PR95_OUTBOUND_BANK_DIRECTION_AMOUNTS_MISMATCH");
+      expect(await counters()).toMatchObject({journals:1,allocations:0,matches:0,audits:0});
+    }finally{
+      await auth.query("UPDATE public.bank_mutations SET debit_amount=0,credit_amount=100 WHERE id=90001");
+    }
   });
   it("canonical HTTP rejects invoice with persisted positive tax lines and no writes",async()=>{
     await auth.query("INSERT INTO public.vendor_invoice_lines VALUES(88,7)");
