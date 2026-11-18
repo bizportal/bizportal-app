@@ -1,7 +1,9 @@
-import {build} from "esbuild";
+import {createRequire} from "node:module";
 import {resolve,dirname} from "node:path";
 import {fileURLToPath} from "node:url";
 const root=resolve(dirname(fileURLToPath(import.meta.url)),"../..");
+const require=createRequire(resolve(root,"artifacts/api-server/package.json"));
+const {build}=require("esbuild");
 const source=resolve(root,"vendor/bizportal-otp/artifacts/api-server/src/routes/dev-customer-invoice-attestation.ts");
 const out=resolve(root,"artifacts/api-server/.qa-invoice-issuer-bundle.mjs");
 await build({
