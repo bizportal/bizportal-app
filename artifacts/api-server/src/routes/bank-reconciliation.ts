@@ -7968,13 +7968,29 @@ const selectSheetConfigs = `
 `;
 
 router.get("/bank-reconciliation/sheet-configs", async (req, res): Promise<void> => {
-  const companyId =
+  // Do not disclose bank account numbers or Spreadsheet IDs to callers
+  // without an authenticated, company-scoped Finance session.
+  let actor: ApprovalActor | null;
+  try { actor = await getApprovalActor(req); }
+  catch (error) {
+    req.log.error({ error }, "Sheet configuration auth unavailable");
+    res.status(503).json({ error: "Authorization service unavailable" });
+    return;
+  }
+  if (!actor) { res.status(401).json({ error: "Unauthorized" }); return; }
+
+  const requestedCompanyId =
     req.query.company_id === undefined ? null : parsePositiveInt(req.query.company_id);
-  if (req.query.company_id !== undefined && companyId === null) {
+  if (req.query.company_id !== undefined && requestedCompanyId === null) {
     res.status(400).json({ error: "company_id tidak valid" });
     return;
   }
-
+  if (actor.companyId != null && requestedCompanyId != null
+      && requestedCompanyId !== actor.companyId) {
+    res.status(403).json({ error: "Akses perusahaan ditolak" });
+    return;
+  }
+  const companyId = actor.companyId ?? requestedCompanyId;
   try {
     const result = await pool.query<SheetConfigRow>(
       `${selectSheetConfigs}
@@ -8236,6 +8252,8 @@ router.delete("/bank-reconciliation/sheet-configs/:id", async (req, res): Promis
 });
 
 router.post("/bank-reconciliation/sheet-configs/:id/test", async (req, res): Promise<void> => {
+  const actor = await getApprovalActor(req).catch(() => null);
+  if (!actor) { res.status(401).json({ error: "Unauthorized" }); return; }
   const id = parsePositiveInt(req.params.id);
   if (id === null) {
     res.status(400).json({ ok: false, error: "ID konfigurasi tidak valid" });
@@ -8244,8 +8262,8 @@ router.post("/bank-reconciliation/sheet-configs/:id/test", async (req, res): Pro
 
   try {
     const config = await pool.query<{ sheet_id: string; tab_name: string }>(
-      "select sheet_id, tab_name from public.bank_sheet_configs where id = $1",
-      [id],
+      "select sheet_id, tab_name from public.bank_sheet_configs where id = $1 and ($2::int is null or company_id = $2)",
+      [id, actor.companyId],
     );
     if (config.rowCount === 0) {
       res.status(404).json({ ok: false, error: "Konfigurasi tidak ditemukan" });
