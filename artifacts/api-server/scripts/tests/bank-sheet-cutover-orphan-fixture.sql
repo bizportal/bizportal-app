@@ -8,7 +8,16 @@ CREATE TABLE public.bank_mutations (
   id integer primary key, company_id integer, source text, sheet_config_id integer,
   journal_entry_id integer
 );
+CREATE TABLE public.accounting_entries (
+  id integer primary key, status text not null
+);
 INSERT INTO public.bank_sheet_configs VALUES (2,1,'1640006707220'),(3,1,'1234567890');
+-- The historical seven journal references include five draft entries
+-- and two missing accounting_entries rows. Preserve these contradictions
+-- in the disposable fixture; do not "repair" the financial source silently.
+INSERT INTO public.accounting_entries(id,status)
+SELECT 1000+n,'draft' FROM generate_series(1,5) AS n;
+
 -- Match the historic count and posted-source ratio found by read-only
 -- CST-DEV audit, but create these rows ONLY in ephemeral PostgreSQL.
 INSERT INTO public.bank_mutations(id,company_id,source,sheet_config_id,journal_entry_id)
