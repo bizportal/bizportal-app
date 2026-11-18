@@ -429,8 +429,19 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
     const journal=await auth.query("select count(*)::int as n from public.accounting_entries");
     expect(journal.rows[0].n).toBe(1);
   });
-  it("rejects an OUT mutation with inconsistent persisted credit/debit import columns",async()=>{
+  it("accepts legitimate debit-side bank OUT via the same canonical HTTP endpoint",async()=>{
     await auth.query("UPDATE public.bank_mutations SET debit_amount=100,credit_amount=0 WHERE id=90001");
+    try {
+      const result=await sendCanonical();
+      expect(result.status).toBe(200);
+      expect(result.body).toMatchObject({source_journal_reused:true,journal_entry_id:314});
+      expect(await counters()).toMatchObject({journals:1,allocations:1,matches:1,mutation_status:"posted"});
+    } finally {
+      await auth.query("UPDATE public.bank_mutations SET debit_amount=0,credit_amount=100 WHERE id=90001");
+    }
+  });
+  it("rejects an OUT mutation with inconsistent persisted credit/debit import columns",async()=>{
+    await auth.query("UPDATE public.bank_mutations SET debit_amount=100,credit_amount=100 WHERE id=90001");
     try{
       const result=await sendCanonical();
       expect(result.status).toBe(409);
