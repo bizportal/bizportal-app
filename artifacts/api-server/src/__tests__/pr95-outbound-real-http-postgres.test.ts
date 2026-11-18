@@ -8,6 +8,8 @@ import type { OutboundReuseQueryClient } from "../lib/outboundReuseFinalityReade
 // Only substitute @workspace/db connection routing with disposable PG.
 // Real signed-cookie validation, DB user lookup, locks and finance writer run.
 const shared=vi.hoisted(()=>({authClient:null as null | pg.Client}));
+const mail=vi.hoisted(()=>({send:vi.fn()}));
+vi.mock("../lib/smtp",()=>({sendAdminLoginOtpEmail:mail.send}));
 vi.mock("@workspace/db",()=>({
   pool:{
     query:async(sql:string,args?:unknown[])=>{
@@ -28,6 +30,7 @@ vi.mock("@workspace/db",()=>({
   getRuntimeDatabaseUrl:async()=>{throw Error("PR95_NO_EXTERNAL_DB");},
 }));
 import { setProductionSessionCookie } from "../routes/dev-auth";
+import localProductionAuth from "../routes/local-production-auth";
 import { runOutboundReuseSignedDevCandidate } from "../lib/outboundSourceReuseDevBridge";
 
 const url=process.env.PR95_ATOMIC_PG_URL;
@@ -42,6 +45,8 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
     app:process.env.APP_ENV,secret:process.env.BIZPORTAL_SESSION_SECRET,
     otp:process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV,
     feature:process.env.PR95_OUTBOUND_SOURCE_REUSE_ENABLED_DEV,
+    pinnedEmail:process.env.BIZPORTAL_SIGNED_OTP_ACCOUNT_EMAIL_DEV,
+    pinnedId:process.env.BIZPORTAL_SIGNED_OTP_ACCOUNT_ID_DEV,
   };
   const issueCookie=()=>{
     const issued=Date.now();
@@ -94,6 +99,9 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
     process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV="true";
     process.env.BIZPORTAL_SESSION_SECRET="pr95-isolated-only-test-key-not-real-0000001";
     process.env.PR95_OUTBOUND_SOURCE_REUSE_ENABLED_DEV="true";
+    process.env.BIZPORTAL_SIGNED_OTP_ACCOUNT_EMAIL_DEV="owner@pr95.invalid";
+    process.env.BIZPORTAL_SIGNED_OTP_ACCOUNT_ID_DEV="pr95-ci-superadmin";
+    mail.send.mockResolvedValue(undefined);
     auth=new pg.Client({connectionString:url});
     await auth.connect();
     shared.authClient=auth;
@@ -176,6 +184,12 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
 
       CREATE TABLE public.users(id text primary key,email text,role text,
         company_id integer,is_active boolean,status text);
+      CREATE TABLE public.bizportal_email_otp_codes(
+        id bigserial primary key,email text not null,request_ip text not null,
+        purpose text not null,code_hash text,attempts integer not null default 0,
+        expires_at timestamptz not null,verified_at timestamptz,
+        created_at timestamptz not null default now()
+      );
       INSERT INTO public.users VALUES
         ('pr95-ci-superadmin','owner@pr95.invalid','super_admin',1,true,'active');
     `);
@@ -186,6 +200,7 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
       next();
     });
     const {default:canonicalBankReconciliation}=await import("../routes/bank-reconciliation");
+    app.use("/api",localProductionAuth);
     app.use("/api",canonicalBankReconciliation);
     // Test ONLY. No registration in production/API routers.
     app.post("/__isolated__/vendor-out-reuse",async(req,res)=>{
@@ -220,7 +235,9 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
   });
   beforeEach(async()=>{
     process.env.PR95_OUTBOUND_SOURCE_REUSE_ENABLED_DEV="true";
+    mail.send.mockClear();
     await auth.query(`
+      TRUNCATE public.bizportal_email_otp_codes RESTART IDENTITY;
       TRUNCATE public.bank_reconciliation_audit,public.bank_reconciliation_matches,
         public.payment_allocations,public.payment_matching_groups RESTART IDENTITY;
       UPDATE public.bank_mutations SET status='unmatched',journal_entry_id=NULL,
@@ -237,7 +254,7 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
     if(server) await new Promise<void>(resolve=>server.close(()=>resolve()));
     if(auth){
       await auth.query(`
-        DROP TABLE public.users,public.bank_reconciliation_audit,
+        DROP TABLE public.bizportal_email_otp_codes,public.users,public.bank_reconciliation_audit,
           public.bank_reconciliation_matches,public.payment_allocations,
           public.payment_matching_groups,public.chart_of_accounts,
           public.company_bank_accounts,public.accounting_entry_lines,
@@ -252,6 +269,8 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
       APP_ENV:previous.app,BIZPORTAL_SESSION_SECRET:previous.secret,
       BIZPORTAL_SIGNED_OTP_ENABLED_DEV:previous.otp,
       PR95_OUTBOUND_SOURCE_REUSE_ENABLED_DEV:previous.feature,
+      BIZPORTAL_SIGNED_OTP_ACCOUNT_EMAIL_DEV:previous.pinnedEmail,
+      BIZPORTAL_SIGNED_OTP_ACCOUNT_ID_DEV:previous.pinnedId,
     })){if(v===undefined) delete process.env[k];else process.env[k]=v;}
   });
   it("uses the actual canonical vendor batch route with signed DEV Super Admin and no second journal",async()=>{
@@ -274,6 +293,63 @@ suite("PR95 signed Super Admin + real source reuse writer via isolated HTTP",()=
     expect((await sendCanonical({source_journal_reuse:true,vendor_invoice_ids:[7,8]})).status).toBe(422);
     expect((await sendCanonical({source_journal_reuse:true,vendor_invoice_ids:[7],allocations:[{invoice_id:7,amount:100}]})).status).toBe(422);
     expect(await counters()).toMatchObject({journals:1,allocations:0,matches:0,audits:0});
+  });
+  it("executes genuine email OTP send/verify and canonical payment in one isolated HTTP E2E",async()=>{
+    // SMTP delivery is mocked. All OTP DB state, bcrypt hashing, verification,
+    // signed session issuance and the finance writer are actual application code.
+    const sendOtp=await fetch(origin+"/api/auth/email-otp/send",{
+      method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({email:"owner@pr95.invalid"}),
+    });
+    expect(sendOtp.status).toBe(202);
+    expect(mail.send).toHaveBeenCalledTimes(1);
+    const [sentEmail,issuedCode]=mail.send.mock.calls[0] as [string,string];
+    expect(sentEmail).toBe("owner@pr95.invalid");
+    expect(issuedCode).toMatch(/^\\d{6}$/);
+    const codeCheck=await auth.query(
+      "SELECT code_hash,verified_at FROM public.bizportal_email_otp_codes WHERE email=$1",
+      [sentEmail],
+    );
+    expect(codeCheck.rows).toHaveLength(1);
+    expect(codeCheck.rows[0].code_hash).not.toBe(issuedCode);
+    expect(codeCheck.rows[0].verified_at).toBeNull();
+    const verify=await fetch(origin+"/api/auth/email-otp/verify",{
+      method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({email:sentEmail,code:issuedCode}),
+    });
+    expect(verify.status).toBe(200);
+    const otpCookie=(verify.headers.get("set-cookie")??"").split(";")[0];
+    expect(otpCookie).toContain("bizportal_supabase_session=");
+    const receipt=await sendCanonical(undefined,1,otpCookie);
+    expect(receipt.status).toBe(200);
+    expect(receipt.body).toMatchObject({
+      status:"posted",source_journal_reused:true,journal_entry_id:314,
+    });
+    const reused=await sendCanonical(undefined,1,otpCookie);
+    expect(reused.status).toBe(409);
+    const replayOtp=await fetch(origin+"/api/auth/email-otp/verify",{
+      method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({email:sentEmail,code:issuedCode}),
+    });
+    expect(replayOtp.status).toBe(400);
+    expect(await counters()).toMatchObject({
+      journals:1,allocations:1,matches:1,audits:1,mutation_status:"posted",
+    });
+  });
+  it("OTP issues no finance write before verification, and wrong code cannot authenticate",async()=>{
+    const sent=await fetch(origin+"/api/auth/email-otp/send",{
+      method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({email:"owner@pr95.invalid"}),
+    });
+    expect(sent.status).toBe(202);
+    const denied=await fetch(origin+"/api/auth/email-otp/verify",{
+      method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({email:"owner@pr95.invalid",code:"000000"}),
+    });
+    expect(denied.status).toBe(400);
+    expect(await counters()).toMatchObject({
+      journals:1,allocations:0,matches:0,audits:0,mutation_status:"unmatched",
+    });
   });
   it("authenticates signed super_admin and executes real writer with one source journal",async()=>{
     const reply=await send();
