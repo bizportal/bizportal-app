@@ -40,7 +40,7 @@ describe("bank Sheet company-scoped HTTP authorization gate", () => {
     const app=express();
     app.use(express.json());
     app.use((req,_res,next)=>{
-      (req as typeof req & {log:unknown}).log={error:()=>undefined,warn:()=>undefined};
+      (req as unknown as {log:unknown}).log={error:()=>undefined,warn:()=>undefined};
       next();
     });
     app.use("/api",router);
