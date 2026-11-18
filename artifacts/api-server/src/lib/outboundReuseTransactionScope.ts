@@ -103,11 +103,22 @@ export async function lockOutboundSourceJournalReuseScope(
   // Exact persisted money evidence. Do not trust request-body amounts and do
   // not round numeric values to the nearest cent.
   const mutationMinor = minor(m.amount);
-  // CST-DEV canonical bank import stores OUT cash in credit_amount,
-  // despite the accounting journal itself CREDITing the bank COA. Never
-  // infer debit/credit direction from generic accounting conventions.
-  if(!/^0(?:\.0{1,2})?$/.test(String(m.debit_amount??""))
-    || minor(m.credit_amount)!==mutationMinor)
+  // Source Sheet headers may explicitly name either bank column "Keluar".
+  // The canonical importer already classifies direction='OUT' from those
+  // headers. Require one and only one positive imported side, exactly equal
+  // to the canonical bank mutation amount; never assume bank debit/credit
+  // orientation from the source-account type alone.
+  const sideMinor=(raw:unknown):number|null=>{
+    const value=String(raw??"");
+    if(!/^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/.test(value))return null;
+    const [whole,fraction=""]=value.split(".");
+    const result=Number(whole)*100+Number(fraction.padEnd(2,"0"));
+    return Number.isSafeInteger(result)?result:null;
+  };
+  const debitSide=sideMinor(m.debit_amount);
+  const creditSide=sideMinor(m.credit_amount);
+  if(!((debitSide===mutationMinor && creditSide===0)
+    || (creditSide===mutationMinor && debitSide===0)))
     throw new Error("PR95_OUTBOUND_BANK_DIRECTION_AMOUNTS_MISMATCH");
   const itemMinor = minor(sourceItems.rows[0].amount);
   const headerDebitMinor = minor(entry.rows[0].total_debit);
