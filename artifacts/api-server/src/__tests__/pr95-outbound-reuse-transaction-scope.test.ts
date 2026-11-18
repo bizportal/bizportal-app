@@ -11,7 +11,7 @@ function build(overrides: { mutation?: Record<string, unknown> | null; invoice?:
       seen.push({sql,params});
       const row = sql.includes("pg_advisory_xact_lock") ? [{}]
         : sql.includes("from public.bank_mutations where id=") ?
-          (overrides.mutation === null ? [] : [overrides.mutation ?? {id:90001,company_id:1,direction:"OUT",status:"unmatched",journal_entry_id:null,amount:overrides.amount??"100.00"}])
+          (overrides.mutation === null ? [] : [overrides.mutation ?? {id:90001,company_id:1,direction:"OUT",status:"unmatched",journal_entry_id:null,amount:overrides.amount??"100.00",debit_amount:"0.00",credit_amount:overrides.amount??"100.00"}])
         : sql.includes("from public.vendor_invoices") ? (overrides.invoice === false ? [] : [{id:7}])
         : sql.includes("from public.bank_disbursements") ? (overrides.bd ?? [{id:2,entry_id:314}])
         : sql.includes("from public.bank_disbursement_items") ? (overrides.sourceItems ?? [{vendor_invoice_id:7,amount:"100.00"}])
