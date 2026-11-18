@@ -59,6 +59,22 @@ export async function finalizeOutboundSourceReuseCandidate(
     throw Error("PR95_SOURCE_REUSE_PARTIAL_OR_TAX_UNSUPPORTED");
   }
 
+  // PR95 single-invoice source reuse deliberately excludes withholding
+  // and other line-level tax liabilities. Check persisted canonical lines
+  // rather than trusting an omitted request-body tax field. A dedicated
+  // tax-aware journal reuse lifecycle is required for these invoices.
+  const taxLines=await tx.query<{n:string}>(
+    `select count(*)::text as n
+       from public.vendor_invoice_line_taxes vit
+       join public.vendor_invoice_lines vil on vil.id=vit.invoice_line_id
+      where vil.invoice_id=$1 and vit.company_id=$2
+        and coalesce(vit.tax_amount,0)<>0`,
+    [input.invoiceId,input.companyId],
+  );
+  const taxCount=Number(taxLines.rows[0]?.n);
+  if(!Number.isSafeInteger(taxCount) || taxCount!==0)
+    throw Error("PR95_SOURCE_REUSE_TAX_LINES_UNSUPPORTED");
+
   const ap=await tx.query<{n:string;debit:string;credit:string}>(
     `select count(*)::text as n,
             coalesce(sum(el.debit),0)::text as debit,
