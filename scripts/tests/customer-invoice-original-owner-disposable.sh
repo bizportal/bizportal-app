@@ -158,3 +158,14 @@ for sql in customer-invoice-owner-lock.qa.sql \
    node "$ROOT/scripts/tests/$node_test"
 done
 echo ORIGINAL_PORTAL_SUPERADMIN_ROW_LOCK_AND_AUDIT_NOTIFICATIONS_PASS
+# Same PR214 approved-company SELECT ... FOR SHARE on two NO-BYPASS direct
+# company logins. Roles and grants exist only in the disposable PG16 service.
+test -f "$ROOT/scripts/tests/customer-invoice-independent-approval-lock.qa.sql"
+test -f "$ROOT/scripts/tests/customer-invoice-independent-approval-lock.qa.mjs"
+docker cp "$ROOT/scripts/tests/customer-invoice-independent-approval-lock.qa.sql" "$PG_NAME":/tmp/approved-company-qa.sql
+docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic \
+  -f /tmp/approved-company-qa.sql > "$WORK/approved-company-qa.log"
+APP_ENV=development \
+ CUSTOMER_INVOICE_DISPOSABLE_DB_URL="postgresql://postgres:disposable-only@127.0.0.1:$PORT/invoice_synthetic" \
+ node "$ROOT/scripts/tests/customer-invoice-independent-approval-lock.qa.mjs"
+echo ORIGINAL_PORTAL_APPROVED_COMPANY_RLS_ROW_LOCK_PASS
