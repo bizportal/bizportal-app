@@ -44,6 +44,14 @@ If the project-pinned dedicated `bizportal_payroll_dev` URL is absent or malform
 
 Existing DEV staging does **not yet have** `PAYROLL_DATABASE_URL_DEV`; enabling this diagnostic must not be mistaken for real credential provisioning or Payroll readiness. The route and original PROD compatibility are protected by targeted negative and positive HTTP tests in the existing Payroll PostgreSQL CI gate.
 
+## 18 Nov 2026 DEV database-readiness incident — Supavisor auth circuit breaker
+
+At 11:16 UTC, CST-DEV Supavisor recorded 13 failed `postgres` password authentications from an egress IP that matches VPS `srv1792369`; 57 error-level *authentication circuit breaker open* events followed during 11:16–11:18 UTC. The blocked attempts included `cst-bizportal` and `core-ai-foundation`. The active Payroll staging also returned HTTP 503 at 11:17–11:18 UTC. Later, 15 further password failures appeared at 11:31 and 11:34 UTC from the same egress IP, without another recorded breaker in that later window. This is a strongly supported upstream failure mechanism, **not proof of which VPS service/process supplied the bad password**. Do not rotate unrelated credentials or disable other workers without identifying that source.
+
+The existing public `/api/health/ready` now distinguishes a lazy pool's GCP credential resolution (`database-configuration`) from a PostgreSQL connection/query (`database-probe`) and PROD session signing (`session-signing`). On failure it returns only allowlisted `reasonCode` + `phase`, including `HEALTH_POOLER_AUTH_CIRCUIT_OPEN`, **never a raw URL, password, SQL or exception**. The endpoint still issues exactly one read-only SQL `select 1` and does not alter pool size, credentials, token handling, startup retries, role ACLs or financial posting. Synthetic tests cover cold-start secret failure, PostgreSQL timeout/auth/connection limit, Supavisor breaker, production signing, response redaction, and independence of liveness.
+
+During investigation the reverted `c20b8fc` staging remained active and demonstrated 27/27 HTTP 200 on 3-concurrent-worker read-only probes. The updated health diagnostic is **source-only until exact-head CI and controlled staging verification**. The VPS source of failed authentications must be investigated and the breaker must remain clear before declaring a new deployment operationally stable.
+
 ## Operational NO-GO
 
 The **disposable signed Calculate→approval→posting HTTP** path is tested, but this is **not** a live email-delivered OTP login nor a live DEV acceptance.
