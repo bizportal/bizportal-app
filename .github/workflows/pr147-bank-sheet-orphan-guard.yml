@@ -7,6 +7,7 @@ on:
       - "artifacts/api-server/scripts/tests/bank-sheet-cutover-orphan-fixture.sql"
       - ".github/workflows/pr147-bank-sheet-orphan-guard.yml"
       - "artifacts/api-server/scripts/tests/bank-sheet-cutover-positive-fixture.sql"
+      - "artifacts/api-server/scripts/tests/bank-sheet-reader-rls-disposable.sql"
   workflow_dispatch:
 
 permissions:
@@ -136,6 +137,23 @@ jobs:
           test "$(psql -Atqc "select count(*) from pg_trigger where tgname='trg_enforce_google_sheet_mutation_scope' and not tgisinternal")" = "1"
           test "$(psql -Atqc "select count(*) from public.bank_mutations")" = "2"
           echo "PASS: actual schema migration, idempotence, FK, trigger, and original rows"
+      - name: Verify NOLOGIN company-scoped read-only bank Sheet role (disposable)
+        run: |
+          psql -v ON_ERROR_STOP=1 -f artifacts/api-server/scripts/tests/bank-sheet-reader-rls-disposable.sql
+          test "$(psql -Atqc "select rolcanlogin from pg_roles where rolname='pr147_bank_sheet_reader_cst_dev'")" = "f"
+          test "$(psql -Atqc "select has_table_privilege('pr147_bank_sheet_reader_cst_dev','public.bank_sheet_configs','INSERT,UPDATE,DELETE')")" = "f"
+          test "$(psql -Atqc "select has_table_privilege('pr147_bank_sheet_reader_cst_dev','public.bank_mutations','SELECT')")" = "f"
+          actual="$(psql -Atqc "set session authorization pr147_bank_sheet_reader_cst_dev; select count(*) from public.bank_sheet_configs; select count(*) from public.company_bank_accounts; select count(*) from public.bank_sheet_configs where company_id=3;" | tail -3)"
+          expected="$(printf '2\n2\n0')"
+          test "$actual" = "$expected"
+          set +e
+          psql -v ON_ERROR_STOP=1 -c "set session authorization pr147_bank_sheet_reader_cst_dev; update public.bank_sheet_configs set is_active=true where id=2" >/tmp/pr147_rls_write_out 2>/tmp/pr147_rls_write_err
+          result=$?
+          set -e
+          test "$result" -ne 0
+          grep -q 'permission denied' /tmp/pr147_rls_write_err
+          echo "PASS: CST-only SELECT, cross-company hidden, NOLOGIN, writes denied"
+
       - name: Reject cross-company Google Sheet mutations and preserve historical rows
         run: |
           set +e
