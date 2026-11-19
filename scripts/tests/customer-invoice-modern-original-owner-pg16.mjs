@@ -43,9 +43,13 @@ const handoff=await import(pathToFileURL(
 const finance=await import(pathToFileURL(
  path.join(portalRoot,"dev-invoice-owner-review-snapshot.mjs")).href);
 const pool=new pg.Pool({connectionString:uri,ssl:false,max:2});
+// The currently active CST-DEV B2 user RLS allows the matched canonical
+// Owner to issue from their Portal Admin session. It DOES NOT permit a
+// separate regular staff Admin until separate B5 company policy is approved.
+// Use the same synthetic global Owner portal account for both companies.
 const issuers={
- 1:{id:501,email:"qa-issuer-cst@example.invalid",role:"admin",name:"Synthetic CST Admin"},
- 3:{id:503,email:"qa-issuer-diva@example.invalid",role:"admin",name:"Synthetic Diva Admin"}
+ 1:{id:501,email:"qa-owner@example.invalid",role:"admin",name:"Synthetic Global Owner as Portal Admin"},
+ 3:{id:501,email:"qa-owner@example.invalid",role:"admin",name:"Synthetic Global Owner as Portal Admin"}
 };
 async function rows(sql,params=[]){return (await pool.query(sql,params)).rows;}
 const app=express();
