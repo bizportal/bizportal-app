@@ -201,6 +201,18 @@ async function verifyPosted(id,companyId){
   "select id from public.financial_outbox_events where entry_id=$1 and company_id=$2",
   [entryId,companyId]);
  assert.equal(outbox.length,1);
+ // Exercise the ACTUAL Portal notification-service on the original
+ // company RLS client, not a synthetic notification mock. Every company's
+ // invoice must reach the authorized issuer but not an unassigned Admin.
+ const notif=await rows(
+  "select portal_customer_id,payload->>'audience' as audience from public.portal_customer_notifications where event_key=$1 order by portal_customer_id",
+  ["sales-invoice:"+id+":invoiced"]);
+ assert(notif.length>=1,"Issuer must receive an internal Invoice notification");
+ const ids=notif.map(x=>Number(x.portal_customer_id));
+ assert(ids.includes(501),"Matching global Owner as Portal issuer must be notified");
+ assert(!ids.includes(504),"Unassigned Portal Admin must not receive company Invoice");
+ if(companyId===1)assert(!ids.includes(503),"Diva-only Admin must not receive CST Invoice");
+ console.log("MODERN_ISSUER_SCOPED_INVOICE_NOTIFICATION_NO_UNASSIGNED_ADMIN_PASS",companyId,id);
  console.log("MODERN_ORIGINAL_GL_PPN_AR_AUDIT_OUTBOX_PASS",companyId,id);
 }
 async function verifyUnissued(id){
