@@ -1004,7 +1004,20 @@ async function syncConfig(config: SheetConfig): Promise<{
   }
 }
 
+/**
+ * Second safety boundary for DEV source-only deployments. HTTP protects
+ * authorized route calls; this protects any internal caller or future job.
+ * Never invoke Google Sheets or DB while the legacy schema is read-only.
+ */
+function assertDevBankSheetSyncAllowed(): void {
+  if (process.env.APP_ENV?.trim().toLowerCase() === "development"
+    && process.env.BANK_SHEET_DEV_WRITES_ENABLED !== "true") {
+    throw new Error("BANK_SHEET_DEV_SOURCE_ONLY_READ_ONLY");
+  }
+}
+
 export async function syncOneBankSheetConfig(configId: number) {
+  assertDevBankSheetSyncAllowed();
   const result = await pool.query<SheetConfig>(
     `select config.id, config.company_id, config.sheet_id, config.tab_name, config.label,
             cba.id as bank_account_id, config.bank_account_number,
@@ -1025,6 +1038,7 @@ export async function syncOneBankSheetConfig(configId: number) {
 }
 
 export async function syncAllBankSheetConfigs(companyId?: number) {
+  assertDevBankSheetSyncAllowed();
   const result = await pool.query<SheetConfig>(
     `select config.id, config.company_id, config.sheet_id, config.tab_name, config.label,
             cba.id as bank_account_id, config.bank_account_number,
