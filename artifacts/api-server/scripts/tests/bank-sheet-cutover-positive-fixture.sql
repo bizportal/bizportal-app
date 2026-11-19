@@ -13,7 +13,7 @@ CREATE TABLE public.bank_sheet_configs (
  bank_account_number text, bank_name text
 );
 CREATE TABLE public.accounting_entries (
- id integer PRIMARY KEY, status text NOT NULL
+ id integer PRIMARY KEY, status text NOT NULL, posted_at timestamptz
 );
 CREATE TABLE public.bank_mutations (
  id integer PRIMARY KEY, company_id integer, bank_account_id text,
