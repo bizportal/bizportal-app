@@ -7,6 +7,7 @@ on:
       - test/dev-customer-invoice-audit-column-permissions-20261119
       - test/dev-invoice-real-grant-parity-20261119
       - test/dev-customer-invoice-rls-policy-parity-20261119
+      - test/dev-customer-invoice-issuer-notification-qa-20261119
     paths:
       - 'scripts/dev-customer-invoice-audit-columns-20261119.sql'
       - 'scripts/dev-customer-invoice-audit-columns-rollback-20261119.sql'
@@ -31,11 +32,11 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-      - name: Pin Customer Portal PR 234 (company-scoped issuer notification)
+      - name: Pin Customer Portal PR 235 (company-scoped payment and invoice Admin notifications)
         uses: actions/checkout@v4
         with:
           repository: Travelintrips/CST-CUSTOMER-PORTAL
-          ref: 812f6d384c610f027f125e6d859644c6e0eae705
+          ref: b47b1e1fb559f0a51a8cdf3ac4df6a4a1e3ce63c
           path: vendor/customer-portal
           persist-credentials: false
       - name: Pin BizPortal signed Owner PR 155
@@ -47,7 +48,7 @@ jobs:
           persist-credentials: false
       - name: Assert exact verified sources
         run: |
-          test "$(git -C vendor/customer-portal rev-parse HEAD)" = 812f6d384c610f027f125e6d859644c6e0eae705
+          test "$(git -C vendor/customer-portal rev-parse HEAD)" = b47b1e1fb559f0a51a8cdf3ac4df6a4a1e3ce63c
           test "$(git -C vendor/bizportal-otp rev-parse HEAD)" = 9ade41f0ab3459841a7e3b154202357f9000496d
           test -f artifacts/api-server/src/lib/posting-engine/portalInvoiceAdapter.ts
       - uses: pnpm/action-setup@v4
@@ -68,5 +69,5 @@ jobs:
           OWNER_QA_STAGE_DIR="$STAGE_DIR" bash scripts/tests/customer-invoice-reviewed-owner-qa-stage.sh
           test ! -e /opt/cst-customer-invoice-owner-bundle-dev
           echo QA_OWNER_TEMP_BUNDLE_AUTOCLEAN_PASS
-      - name: Verify actual RLS, original Accounting and issuer-only internal Invoice notification
+      - name: Verify original Accounting and company-scoped payment Admin inbox notifications on disposable PG16
         run: bash scripts/tests/customer-invoice-modern-role-pg16.qa.sh

@@ -42,6 +42,8 @@ const handoff=await import(pathToFileURL(
  path.join(portalRoot,"dev-invoice-owner-handoff.mjs")).href);
 const finance=await import(pathToFileURL(
  path.join(portalRoot,"dev-invoice-owner-review-snapshot.mjs")).href);
+const {notifyAdmins}=await import(pathToFileURL(
+ path.join(ROOT,"vendor/customer-portal/server/notification-service.mjs")).href);
 const pool=new pg.Pool({connectionString:uri,ssl:false,max:2});
 // The currently active CST-DEV B2 user RLS allows the matched canonical
 // Owner to issue from their Portal Admin session. It DOES NOT permit a
@@ -215,6 +217,53 @@ async function verifyPosted(id,companyId){
  console.log("MODERN_ISSUER_SCOPED_INVOICE_NOTIFICATION_NO_UNASSIGNED_ADMIN_PASS",companyId,id);
  console.log("MODERN_ORIGINAL_GL_PPN_AR_AUDIT_OUTBOX_PASS",companyId,id);
 }
+async function verifyCompanyPaymentRecipients(id,companyId) {
+  // Only test internal Portal inbox routing with the original notification
+  // code and synthetic Portal-service DB client. No payment, email, WA or
+  // real bank state is changed here. Real payment mutation E2E is separate.
+  for(const [suffix,type,status] of [
+    ["submitted","sales_payment_submitted","pending"],
+    ["paid","sales_payment_status_changed","paid"],
+  ]) {
+    const key="sales-payment:"+id+":"+suffix;
+    const client=await pool.connect();
+    try {
+      await client.query("begin");
+      const db=client.query.bind(client);
+      const message=await notifyAdmins(db,{
+        scopeCompanyId:companyId,
+        eventKey:key,type,
+        title:"Synthetic payment company notification",
+        message:"Synthetic payment status "+status,
+        resourceType:"payment",resourceId:id,
+        payload:{paymentId:id,invoiceId:id,paymentStatus:status},
+      });
+      assert.equal(message,true);
+      // Replayed event must remain exactly-once in original inbox.
+      assert.equal(await notifyAdmins(db,{
+        scopeCompanyId:companyId,
+        eventKey:key,type,
+        title:"Synthetic payment company notification",
+        message:"Synthetic payment status "+status,
+        resourceType:"payment",resourceId:id,
+        payload:{paymentId:id,invoiceId:id,paymentStatus:status},
+      }),true);
+      await client.query("commit");
+    } catch(error) {
+      await client.query("rollback").catch(()=>{});
+      throw error;
+    } finally {client.release();}
+    const got=await rows(
+      "select portal_customer_id from public.portal_customer_notifications "+
+      "where event_key=$1 order by portal_customer_id",[key]);
+    const ids=got.map(r=>Number(r.portal_customer_id));
+    assert.deepEqual(ids,companyId===1?[501]:[501,503]);
+    assert(!ids.includes(504),"Unassigned admin must not see payment");
+    if(companyId===1)assert(!ids.includes(503),"Diva-only admin must not see CST payment");
+    console.log("MODERN_PAYMENT_SCOPED_OWNER_AND_COMPANY_STAFF_NOTIFICATION_PASS",
+      companyId,id,suffix);
+  }
+}
 async function verifyUnissued(id){
  const invoice=await rows("select invoice_status::text as status from public.sales_documents where id=$1",[id]);
  assert.equal(invoice.length,1);
@@ -258,6 +307,7 @@ try{
   assert.equal(issued.id,id);
   assert.equal(issued.invoiceStatus,"invoiced");
   await verifyPosted(id,companyId);
+  await verifyCompanyPaymentRecipients(id,companyId);
   const again=await signedApproval(id,companyId);
   await publish(id,companyId,again);
   await verifyPosted(id,companyId);
