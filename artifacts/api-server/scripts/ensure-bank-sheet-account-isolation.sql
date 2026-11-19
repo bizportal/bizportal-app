@@ -32,6 +32,22 @@ begin
       'BANK_SHEET_CUTOVER_BLOCKED: % orphan mutations, % journal-linked, % missing journals, % non-posted journals, % not accounting-posted. Recover verified source custody before FK validation.',
       orphan_total, journal_linked, missing_journal, unposted_journal, accounting_not_posted;
   end if;
+  -- Even if an orphaned Sheet config is subsequently restored, do not
+  -- mistake a bank mutation's status='posted' for a final accounting journal.
+  -- Journal custody is independently required for a safe cutover.
+  if exists (
+    select 1
+      from public.bank_mutations bm
+      left join public.accounting_entries ae on ae.id = bm.journal_entry_id
+     where bm.journal_entry_id is not null
+       and (bm.accounting_posted is distinct from true
+            or ae.id is null
+            or ae.status::text <> 'posted'
+            or ae.posted_at is null)
+  ) then
+    raise exception
+      'BANK_JOURNAL_CUTOVER_BLOCKED: journal-linked bank mutations lack independently verified final accounting posting';
+  end if;
 end
 $pr147_preflight$;
 
