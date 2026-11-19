@@ -30,7 +30,7 @@ for(const name of [
 ]) assert(env[name]==="true","MISSING_TEST_FLAG_"+name);
 env.SESSION_SECRET="only-disposable-portal-hmac-key-qa-with-32-bytes";
 env.BIZPORTAL_SESSION_SECRET="only-disposable-owner-signer-test-key-with-32-bytes";
-const {handleAdminInvoices}=await import(pathToFileURL(
+const {handleAdminInvoices,handleAdminPayments}=await import(pathToFileURL(
  path.join(ROOT,"artifacts/api-server/.qa-modern-invoice-handler.mjs")).href);
 const {postCustomerInvoiceWithOriginalOwner}=await import(pathToFileURL(ownerFile).href);
 const signer=await import(pathToFileURL(
@@ -279,6 +279,137 @@ async function verifyUnissued(id){
   assert.equal(result[0].n,0,"No "+table+" after rejected issue");
  }
 }
+// This QA calls the ACTUAL exported Admin payment endpoint handler from
+// Portal PR235+ on ephemeral PostgreSQL. No HTTP session, bank or WA source.
+async function adminPaymentStatus(paymentId,status,portalUser){
+  const result=[];
+  await handleAdminPayments({
+    request:{method:"POST",body:{status},headers:{}},
+    response:{},user:portalUser,paymentId,
+    sendJson:(_res,code,body)=>result.push({code,body}),
+    sendError:(_res,code,message)=>{
+      throw Object.assign(new Error(message),{statusCode:code});
+    },
+  });
+  assert.equal(result.length,1);
+  return result[0];
+}
+async function adminPaymentList(portalUser){
+  const result=[];
+  await handleAdminPayments({
+    request:{method:"GET",body:{},headers:{}},
+    response:{},user:portalUser,paymentId:null,
+    sendJson:(_res,code,body)=>result.push({code,body}),
+    sendError:(_res,code,message)=>{
+      throw Object.assign(new Error(message),{statusCode:code});
+    },
+  });
+  assert.equal(result.length,1);
+  assert.equal(result[0].code,200);
+  return result[0].body.items;
+}
+const divaStaff={
+  id:503,name:"Synthetic Diva Staff",role:"admin",
+  email:"qa-issuer-diva@example.invalid",
+};
+const unrelatedAdmin={
+  id:504,name:"Unassigned Admin",role:"admin",
+  email:"qa-unassigned@example.invalid",
+};
+async function paymentDatabaseSnapshot(paymentId,invoiceId){
+  const p=await rows("select id,status::text status,amount from public.payments where id=$1",[paymentId]);
+  const s=await rows("select amount_paid,payment_status::text payment_status from public.sales_documents where id=$1",[invoiceId]);
+  const ar=await rows("select paid_amount,outstanding_amount from public.ar_subledger where invoice_id=$1",[invoiceId]);
+  assert.equal(p.length,1);
+  assert.equal(s.length,1);
+  assert.equal(ar.length,1);
+  return {status:p[0].status,amountPaid:Number(s[0].amount_paid),
+    invoicePaymentStatus:s[0].payment_status,arPaid:Number(ar[0].paid_amount),
+    arOutstanding:Number(ar[0].outstanding_amount)};
+}
+async function verifyActualPaymentEndpoint(companyId,invoiceId) {
+  const id=companyId===1?7001:7003;
+  const owner=issuers[companyId];
+  const paymentStart=await paymentDatabaseSnapshot(id,invoiceId);
+  assert.equal(paymentStart.status,"pending");
+  assert.equal(paymentStart.amountPaid,0);
+  // This Admin was never authorized in CST, and must be denied before
+  // any UPDATE even on an already-paid replay.
+  if(companyId===1){
+    await assert.rejects(
+      ()=>adminPaymentStatus(id,"paid",divaStaff),
+      {statusCode:403},
+    );
+    assert.deepEqual(await paymentDatabaseSnapshot(id,invoiceId),paymentStart);
+    console.log("MODERN_PAYMENT_ACTUAL_ENDPOINT_FOREIGN_STAFF_DENIED_PASS",companyId,id);
+  }
+  // The super_admin owner may read both companies, while staff must not
+  // receive another company's payment list.
+  const ownerItems=await adminPaymentList(owner);
+  assert(ownerItems.some(item=>item.id===id));
+  const staffItems=await adminPaymentList(divaStaff);
+  assert(staffItems.every(item=>item.refId===203));
+  assert(!staffItems.some(item=>item.id===7001 || item.id===7005));
+  await assert.rejects(
+    ()=>adminPaymentList(unrelatedAdmin),{statusCode:403},
+  );
+  console.log("MODERN_PAYMENT_ACTUAL_ENDPOINT_ADMIN_LIST_COMPANY_FILTER_PASS",companyId);
+
+  // Operational company admin approval should not need Owner OTP;
+  // synthetic Diva staff can directly approve Diva's own payment.
+  const approver=companyId===3?divaStaff:owner;
+  const issued=await adminPaymentStatus(id,"paid",approver);
+  assert.equal(issued.code,200);
+  assert.equal(issued.body.replayed,false);
+  assert.equal(issued.body.payment.status,"paid");
+  const paid=await paymentDatabaseSnapshot(id,invoiceId);
+  assert.equal(paid.status,"paid");
+  assert.equal(paid.amountPaid,40);
+  assert.equal(paid.invoicePaymentStatus,"partial");
+  // The reviewed original AR trigger should project paid/outstanding
+  // when the original source status update commits.
+  assert.equal(paid.arPaid,40);
+  assert.equal(paid.arOutstanding,71);
+  console.log("MODERN_PAYMENT_ACTUAL_ENDPOINT_POSTED_AR_PAYMENT_PARTIAL_PASS",companyId,id);
+  const replay=await adminPaymentStatus(id,"paid",approver);
+  assert.equal(replay.body.replayed,true);
+  assert.deepEqual(await paymentDatabaseSnapshot(id,invoiceId),paid);
+  console.log("MODERN_PAYMENT_ACTUAL_ENDPOINT_PAID_REPLAY_NO_DOUBLE_APPLY_PASS",companyId,id);
+  await assert.rejects(
+    ()=>adminPaymentStatus(id,"failed",approver),{statusCode:409});
+  assert.deepEqual(await paymentDatabaseSnapshot(id,invoiceId),paid);
+  await assert.rejects(
+    ()=>adminPaymentStatus(id,"paid",unrelatedAdmin),{statusCode:403});
+  assert.deepEqual(await paymentDatabaseSnapshot(id,invoiceId),paid);
+  if(companyId===1){
+    await assert.rejects(
+      ()=>adminPaymentStatus(id,"paid",divaStaff),{statusCode:403});
+    assert.deepEqual(await paymentDatabaseSnapshot(id,invoiceId),paid);
+  }
+  const notifications=await rows(
+    "select portal_customer_id from public.portal_customer_notifications "+
+    "where event_key=$1 order by portal_customer_id",
+    ["sales-payment:"+id+":paid"],
+  );
+  const recipients=notifications.map(r=>Number(r.portal_customer_id));
+  assert(recipients.includes(501));
+  assert(!recipients.includes(504));
+  if(companyId===1)assert(!recipients.includes(503));
+  else assert(recipients.includes(503));
+  console.log("MODERN_PAYMENT_ACTUAL_ENDPOINT_NOTIFICATION_COMPANY_PASS",companyId,id);
+}
+async function verifyBadPaymentSources(){
+  const owner=issuers[1];
+  await assert.rejects(()=>adminPaymentStatus(7005,"paid",owner),{statusCode:409});
+  await assert.rejects(()=>adminPaymentStatus(7007,"paid",owner),{statusCode:409});
+  const rowsAfter=await rows(
+    "select id,status::text status from public.payments where id in (7005,7007) order by id",
+  );
+  assert.deepEqual(rowsAfter.map(r=>[Number(r.id),r.status]),
+    [[7005,"pending"],[7007,"pending"]]);
+  console.log("MODERN_PAYMENT_ACTUAL_ENDPOINT_BAD_SOURCE_MISMATCH_UNISSUED_DENIED_PASS");
+}
+
 try{
  for(const companyId of [1,3]){
   const id=companyId===1?201:203;
@@ -312,7 +443,9 @@ try{
   await publish(id,companyId,again);
   await verifyPosted(id,companyId);
   console.log("MODERN_SAME_SOURCE_REPLAY_IDEMPOTENT_PASS",companyId,id);
+  await verifyActualPaymentEndpoint(companyId,id);
  }
+ await verifyBadPaymentSources();
  assert.equal(await signedApproval(205,1,{denyRole:true}),null);
  await verifyUnissued(205);
  console.log("MODERN_NON_OWNER_OTP_ROLE_DENIED_PASS");
