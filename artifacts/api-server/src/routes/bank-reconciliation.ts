@@ -8008,6 +8008,22 @@ router.use(["/bank-reconciliation/sheet-configs", "/bank-reconciliation/sheet-sy
       return;
     }
   }
+  // Preserve cross-tenant 403 and invalid-company 400 on bulk Sheet sync
+  // even when this DEV candidate refuses all mutation/sync operations.
+  if (req.method === "POST" && requestPath.endsWith("/bank-reconciliation/sheet-sync")) {
+    const rawSyncCompany = req.query.company_id;
+    if (rawSyncCompany !== undefined && rawSyncCompany !== "" && rawSyncCompany !== "all") {
+      const syncCompanyId = parsePositiveInt(rawSyncCompany);
+      if (syncCompanyId === null) {
+        res.status(400).json({ error: "company_id tidak valid" });
+        return;
+      }
+      if (actor.companyId != null && syncCompanyId !== actor.companyId) {
+        res.status(403).json({ error: "Akses perusahaan ditolak" });
+        return;
+      }
+    }
+  }
   // Source-only DEV candidate retains legacy Sheet rows without DDL.
   // Until authenticated RLS + historical reconciliation gates pass, fail closed
   // on all Sheet config writes/imports. A connectivity test is read-only.
