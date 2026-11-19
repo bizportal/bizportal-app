@@ -23,11 +23,12 @@ const KEYS=[
 ];
 const originals=Object.fromEntries(KEYS.map(k=>[k,process.env[k]]));
 const email="qa-bizportal-super@example.invalid", id="qa-signed-bizportal-actor";
+const issuerEmail="qa-portal-staff-issuer@example.invalid";
 const issuedChallenge=(alter:Record<string,unknown>={})=>{
   const now=Date.now();
   const claim={
     v:1,purpose:"cst-portal-invoice-challenge",invoiceId:77,companyId:1,
-    portalUserId:15,portalEmail:email,iat:now,exp:now+90_000,
+    portalUserId:15,portalEmail:issuerEmail,iat:now,exp:now+90_000,
     nonce:"a".repeat(32),...alter,
   };
   return Buffer.from(JSON.stringify(claim)).toString("base64url")+"."+"a".repeat(43);
@@ -96,6 +97,9 @@ describe("existing signed OTP BizPortal Super Admin -> Customer Invoice attestat
       actorId:id,email,companyId:1,invoiceId:77,
       challengeDigest:createHash("sha256").update(challenge).digest("hex"),
     });
+    // A staff Admin opened the Portal challenge; an Owner signed it using
+    // a completely different independently authenticated BizPortal account.
+    expect(issuerEmail).not.toBe(email);
     const key=createPublicKey({
       key:Buffer.from(getCustomerInvoiceAttestationPublicKeyDev(),"base64"),
       format:"der",type:"spki",
@@ -106,9 +110,16 @@ describe("existing signed OTP BizPortal Super Admin -> Customer Invoice attestat
     expect(m.getProductionUser).toHaveBeenCalledTimes(1);
     expect(r.body).not.toContain("SESSION_SECRET");
   });
+  it("allows an Owner scoped to the same company to approve one Invoice",async()=>{
+    m.getProductionUser.mockResolvedValue({id,email,role:"super_admin",companyId:1});
+    const r=await get(issuedChallenge(),{accept:"application/json"});
+    expect(r.res.status).toBe(200);
+    const claims=JSON.parse(Buffer.from(JSON.parse(r.body).proof.split(".")[0],"base64url").toString());
+    expect(claims).toMatchObject({actorId:id,email,companyId:1,invoiceId:77});
+  });
   it.each([
     ["wrong role",{role:"admin"}],
-    ["company-limited",{companyId:3}],
+    ["wrong company scope",{companyId:3}],
     ["wrong email",{email:"other@example.invalid"}],
     ["different user ID",{id:"other"}],
   ])("refuses %s despite signed cookie",async(_label,change)=>{

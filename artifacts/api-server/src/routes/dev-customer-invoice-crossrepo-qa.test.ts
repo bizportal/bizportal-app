@@ -15,8 +15,8 @@ import {
   mintPortalInvoiceChallenge,verifyIndependentBizPortalSuperAdminProof,
 } from "../../../../vendor/customer-portal/server/dev-bizportal-invoice-attestation.mjs";
 
-const email="qa@example.invalid",actorId="qa-bizportal-owner";
-const context={portalUser:{id:12,role:"admin",email},invoiceId:77,companyId:1,canonicalActorId:actorId};
+const email="qa.owner@example.invalid",issuerEmail="qa.staff@example.invalid",actorId="qa-bizportal-owner";
+const context={portalUser:{id:12,role:"admin",email:issuerEmail},invoiceId:77,companyId:1,canonicalActorId:actorId};
 let server:Server,origin:string;
 
 describe("actual BizPortal HTTP issuer -> pinned original Customer Portal verifier",()=>{
@@ -54,7 +54,8 @@ describe("actual BizPortal HTTP issuer -> pinned original Customer Portal verifi
     const challenge=mintPortalInvoiceChallenge(context);
     const r=await request(challenge);
     expect(r.status).toBe(200);
-    expect(verifyIndependentBizPortalSuperAdminProof({...context,challenge,proof:r.body.proof})).toBe(true);
+    expect(issuerEmail).not.toBe(email);
+    expect(verifyIndependentBizPortalSuperAdminProof({...context,challenge,proof:r.body.proof})).toEqual({actorId,email});
     for(const change of [{companyId:3},{invoiceId:78},{canonicalActorId:"other"}]) {
       expect(verifyIndependentBizPortalSuperAdminProof({...context,...change,challenge,proof:r.body.proof})).toBe(false);
     }

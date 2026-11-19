@@ -121,9 +121,14 @@ router.get("/auth/dev/customer-invoice-attestation", async (
     // the original BizPortal user are checked via its original auth code.
     const session = getProductionSession(request);
     const actor = session ? await getProductionUser(session) : null;
+    // The Portal issuer can be a DIFFERENT person from the BizPortal Owner
+    // approving this exact challenge. Never equate Portal issuer email with
+    // the cryptographically authenticated Owner's email.
+    // The signed BizPortal session stays pinned to its own active DB account.
     if (!actor || actor.id !== session?.id ||
-        actor.email.trim().toLowerCase() !== claims.portalEmail ||
-        actor.role !== "super_admin" || actor.companyId !== null) {
+        actor.email.trim().toLowerCase() !== session.email ||
+        actor.role !== "super_admin" ||
+        (actor.companyId !== null && Number(actor.companyId) !== claims.companyId)) {
       response.status(401).json({error:"Signed BizPortal Super Admin session required"});
       return;
     }
