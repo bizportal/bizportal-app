@@ -29,12 +29,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Travelintrips/CST-CUSTOMER-PORTAL
-          ref: f3c21c0bc99fbabf53fb01171dd8b5228b383a00
+          ref: 691a9c23afdd927fdb1012891a7704233f553d62
           path: vendor/customer-portal
           persist-credentials: false
       - name: Assert pinned Portal verification source
         run: |
-          test "$(git -C vendor/customer-portal rev-parse HEAD)" = f3c21c0bc99fbabf53fb01171dd8b5228b383a00
+          test "$(git -C vendor/customer-portal rev-parse HEAD)" = 691a9c23afdd927fdb1012891a7704233f553d62
           test -f vendor/customer-portal/server/dev-bizportal-invoice-attestation.mjs
       - uses: pnpm/action-setup@v4
         with:
