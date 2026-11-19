@@ -8008,6 +8008,22 @@ router.use(["/bank-reconciliation/sheet-configs", "/bank-reconciliation/sheet-sy
       return;
     }
   }
+  // Source-only DEV candidate retains legacy Sheet rows without DDL.
+  // Until authenticated RLS + historical reconciliation gates pass, fail closed
+  // on all Sheet config writes/imports. A connectivity test is read-only.
+  const sheetConnectivityTest = req.method === "POST"
+    && /(?:^|\\/)bank-reconciliation\\/sheet-configs\\/\\d+\\/test$/.test(requestPath);
+  const sheetMutation = req.method !== "GET" && req.method !== "HEAD"
+    && !sheetConnectivityTest;
+  if (isDevelopmentEnvironment()
+      && process.env.BANK_SHEET_DEV_WRITES_ENABLED !== "true"
+      && sheetMutation) {
+    res.status(423).json({
+      code: "BANK_SHEET_DEV_SOURCE_ONLY_READ_ONLY",
+      error: "Konfigurasi dan sinkronisasi Google Sheet dinonaktifkan pada kandidat DEV read-only",
+    });
+    return;
+  }
   res.locals.sheetActor = actor;
   next();
 });
