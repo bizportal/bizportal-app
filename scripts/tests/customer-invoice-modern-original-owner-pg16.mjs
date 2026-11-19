@@ -197,6 +197,17 @@ async function verifyPosted(id,companyId){
   "select id from public.financial_outbox_events where entry_id=$1 and company_id=$2",
   [entryId,companyId]);
  assert.equal(outbox.length,1);
+ const notifications=await rows(
+  "select portal_customer_id,type,payload from public.portal_customer_notifications "+
+  "where event_key=$1 order by portal_customer_id",
+  ["sales-invoice:"+id+":invoiced"]
+ );
+ assert.equal(notifications.length,1,"Only canonical Invoice issuer should receive financial admin notification");
+ assert(notifications.every(n=>n.type==="sales_invoice_issued" &&
+   Number(n.payload?.invoiceId)===id),"Original notification mismatch");
+ assert.equal(Number(notifications[0].portal_customer_id),issuers[companyId].id,
+   "Original company issuer must be the only notified Admin");
+ console.log("ORIGINAL_PORTAL_NOTIFICATION_RLS_PASS",companyId,id,notifications.length);
  console.log("MODERN_ORIGINAL_GL_PPN_AR_AUDIT_OUTBOX_PASS",companyId,id);
 }
 async function verifyUnissued(id){

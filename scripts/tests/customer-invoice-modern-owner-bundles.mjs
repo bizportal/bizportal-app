@@ -54,14 +54,6 @@ await build({
        {path:"storage",namespace:"qa-storage"}:null);
      build.onLoad({filter:/.*/,namespace:"qa-storage"},()=>({
        contents:'export async function signedPaymentProofUrl(){return null;}',loader:"js"}));
-     build.onResolve({filter:/^\.\/notification-service\.mjs$/},
-       args=>args.importer.endsWith("billing-operations.mjs")?
-       {path:"notify",namespace:"qa-notify"}:null);
-     build.onLoad({filter:/.*/,namespace:"qa-notify"},()=>({contents:[
-       'export async function bestEffortNotificationWrite(){return true;}',
-       'export async function notifyAdmins(){return true;}',
-       'export async function notifyPortalCustomers(){return true;}'
-     ].join("\n"),loader:"js"}));
    },
  }]
 });
