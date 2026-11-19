@@ -74,6 +74,19 @@ jobs:
           test "$(psql -Atqc "select count(*) from public.bank_mutations where sheet_config_id=4 and accounting_posted=false")" = "21"
           echo "PASS: zero schema changes, zero historical mutation or journal changes on transaction rollback"
  
+      - name: Refuse inconsistent accounting journal even after synthetic Sheet 4 restoration
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "insert into public.bank_sheet_configs(id,company_id,bank_account_number) values (4,1,'synthetic-restored-only')"
+          set +e
+          psql -v ON_ERROR_STOP=1 -f /tmp/pr147_guard_candidate.sql > /tmp/pr147_journal_out 2> /tmp/pr147_journal_err
+          result=$?
+          set -e
+          test "$result" -ne 0
+          grep -q 'BANK_JOURNAL_CUTOVER_BLOCKED' /tmp/pr147_journal_err
+          test "$(psql -Atqc "select count(*) from information_schema.columns where table_schema='public' and table_name='bank_sheet_configs' and column_name='bank_account_id'")" = "0"
+          test "$(psql -Atqc "select count(*) from public.bank_mutations where sheet_config_id=4")" = "21"
+          echo "PASS: restoring source config alone never authorizes inconsistent journal custody"
+
   isolated-success-and-rollback:
     name: Full migration success, idempotence, and rollback on disposable PG
     runs-on: ubuntu-latest
