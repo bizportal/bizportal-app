@@ -8012,7 +8012,8 @@ router.use(["/bank-reconciliation/sheet-configs", "/bank-reconciliation/sheet-sy
   // Until authenticated RLS + historical reconciliation gates pass, fail closed
   // on all Sheet config writes/imports. A connectivity test is read-only.
   const sheetConnectivityTest = req.method === "POST"
-    && /(?:^|\\/)bank-reconciliation\\/sheet-configs\\/\\d+\\/test$/.test(requestPath);
+    && requestPath.includes("/bank-reconciliation/sheet-configs/")
+    && requestPath.endsWith("/test");
   const sheetMutation = req.method !== "GET" && req.method !== "HEAD"
     && !sheetConnectivityTest;
   if (isDevelopmentEnvironment()
