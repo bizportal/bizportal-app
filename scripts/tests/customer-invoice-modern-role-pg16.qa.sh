@@ -141,10 +141,41 @@ echo ORIGINAL_DIVA_SYNTHETIC_11_PERCENT_DEFAULT_RESET_PASS
 # company-scoped RLS-only smoke fixture. No HTTP or real identity.
 docker cp "$ROOT/scripts/tests/customer-invoice-portal-handler-disposable-extra.sql" "$PG_NAME":/tmp/portal-extra.sql
 docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic -f /tmp/portal-extra.sql > "$WORK/portal-extra.log"
+docker cp "$ROOT/scripts/tests/customer-invoice-modern-hosted-portal-tables.sql" "$PG_NAME":/tmp/qa-hosted-portal.sql
+docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic -f /tmp/qa-hosted-portal.sql > "$WORK/hosted-portal.log"
+echo ORIGINAL_PORTAL_SCHEMA_MISSING_TABLES_QA_PARITY_PASS
 docker cp "$ROOT/scripts/tests/customer-invoice-modern-otp-synthetic-rls.sql" "$PG_NAME":/tmp/modern-rls.sql
 docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic -f /tmp/modern-rls.sql > "$WORK/modern-rls.log"
+# Reset earlier broad synthetic grants to the actual hosted CST-DEV
+# table/column/sequence grants (read-only introspection snapshot).
+docker cp "$ROOT/scripts/tests/customer-invoice-hosted-20261119-grant-parity.sql" "$PG_NAME":/tmp/hosted-qa-acl.sql
+docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic -f /tmp/hosted-qa-acl.sql > "$WORK/acl-parity.log"
+echo HOSTED_CSTDEV_WRITER_COLUMN_GRANT_SNAPSHOT_LOADED_PASS
+for company in cst diva; do
+  role="$(printf 'bizportal_customer_invoice_%s_writer_dev' "$company")"
+  denied="$(docker exec "$PG_NAME" psql -U postgres -d invoice_synthetic -Atc "select has_column_privilege('$role','public.audit_accounting_events','after_state','INSERT')::text || ':' || has_column_privilege('$role','public.audit_accounting_events','change_reason','INSERT')::text")"
+  test "$denied" = "false:false" || { echo "HOSTED_AUDIT_GRANT_SNAPSHOT_NOT_STRICT:$denied";exit 1; }
+done
+echo HOSTED_CSTDEV_AUDIT_MISSING_COLUMNS_PROVEN_PASS
+for company in cst diva; do
+  role="$(printf 'bizportal_customer_invoice_%s_writer_dev' "$company")"
+  if [ "$company" = cst ]; then tax_id=1;company_id=1;else tax_id=3;company_id=3;fi
+  if docker exec "$PG_NAME" psql -U "$role" -d invoice_synthetic -v ON_ERROR_STOP=1 -Atc "select id from public.accounting_taxes where id=$tax_id and company_id=$company_id for share" >/dev/null 2>&1;then
+    echo "HOSTED_TAX_SOURCE_FOR_SHARE_UNEXPECTEDLY_ALLOWED_$company";exit 1
+  fi
+  echo "HOSTED_CSTDEV_TAX_ROWLOCK_MISSING_PRIVILEGE_PROVEN_$company"_PASS
+done
+
+# Opt in exact B6 source policy and two missing audit columns ONLY on the
+# throwaway database, never hosted CST-DEV.
 docker cp "$ROOT/vendor/customer-portal/scripts/dev-invoice-tax-source-lock-20261119.sql" "$PG_NAME":/tmp/tax-lock.sql
 docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic -f /tmp/tax-lock.sql > "$WORK/taxlock.log"
+grep -Fq 'GRANT INSERT(change_reason,after_state)' "$ROOT/scripts/dev-customer-invoice-audit-columns-20261119.sql"
+sed -n '/^GRANT INSERT(change_reason,after_state)/,+2p' "$ROOT/scripts/dev-customer-invoice-audit-columns-20261119.sql" > "$WORK/audit-cols-only.sql"
+test "$(wc -l < "$WORK/audit-cols-only.sql")" -eq 3
+docker cp "$WORK/audit-cols-only.sql" "$PG_NAME":/tmp/audit-cols-only.sql
+docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic -f /tmp/audit-cols-only.sql > "$WORK/audit-grant.log"
+echo HOSTED_CSTDEV_ONLY_REVIEWED_B6_AND_TWO_AUDIT_COLUMNS_OPTIN_PASS
 echo MODERN_DISPOSABLE_COMPANY_SCOPED_ROLES_READY
 
 for company in cst diva; do
