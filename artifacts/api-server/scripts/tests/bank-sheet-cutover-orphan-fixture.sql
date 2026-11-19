@@ -9,7 +9,7 @@ CREATE TABLE public.bank_mutations (
   journal_entry_id integer, accounting_posted boolean not null default false
 );
 CREATE TABLE public.accounting_entries (
-  id integer primary key, status text not null
+  id integer primary key, status text not null, posted_at timestamptz
 );
 INSERT INTO public.bank_sheet_configs VALUES (2,1,'1640006707220'),(3,1,'1234567890');
 -- The historical seven journal references include five draft entries
