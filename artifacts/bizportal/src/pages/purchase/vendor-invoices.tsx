@@ -464,8 +464,8 @@ export function VendorInvoicesListPage() {
           <>
         {isFinanceScopedDevPreview && (
           <p className="text-sm text-muted-foreground" role="status">
-            Finance DEV: hanya menampilkan Vendor Invoice yang terhubung ke PO canonical.
-            Data pembayaran, PPh, dan jurnal tidak dihitung pada daftar baca-saja ini.
+            Finance DEV: menampilkan Invoice perusahaan terverifikasi, termasuk Invoice historis
+            tanpa relasi PO. Data pembayaran, PPh, dan jurnal tidak dihitung pada daftar baca-saja ini.
           </p>
         )}
         {/* Dialog konfirmasi hapus */}
@@ -673,7 +673,16 @@ export function VendorInvoicesListPage() {
                   <tbody>
                     {vis.map((vi: Record<string, unknown>) => (
                       <tr key={String(vi.id)} className="border-b hover:bg-muted/50">
-                        <td className="py-2 px-3 font-mono text-xs">{String(vi.invoiceNumber)}</td>
+                        <td className="py-2 px-3 font-mono text-xs">
+                          <div>{String(vi.invoiceNumber)}</div>
+                          {isFinanceScopedDevPreview && (
+                            <div className="text-[10px] text-muted-foreground">
+                              {vi.invoiceSource === "legacy_unlinked" ? "Historis — tanpa PO" :
+                               vi.invoiceSource === "canonical_po" ? "PO canonical" :
+                               "Relasi PO belum terverifikasi"}
+                            </div>
+                          )}
+                        </td>
                         <td className="py-2 px-3">{String(vi.supplierName)}</td>
                         <td className="py-2 px-3">
                           <Badge variant={vi.status === "paid" ? "default" : vi.status === "cancelled" ? "destructive" : vi.status === "posted" || vi.status === "matched" ? "secondary" : "outline"}>

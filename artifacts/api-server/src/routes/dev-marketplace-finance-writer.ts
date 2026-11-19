@@ -209,20 +209,23 @@ router.get("/mkt/admin/vendor-invoices", async (req, res) => {
   const offset = (page - 1) * pageSize;
   try {
     const result = await withMarketplaceFinanceDevReadOnlyTransaction(actor.companyId, async scopedDb => {
-      // Canonical PO-backed invoices only; no privileged auth-DB fallback.
+      // Include historical invoices without Marketplace PO links. The same
+      // scoped company-role, READ ONLY and company predicate still apply.
+      // Unlinked invoices remain explicitly legacy; never invent PO/GR ties.
       const count = await scopedDb.execute(sql`
         select count(*)::integer total from public.vendor_invoices vi
-        join public.mkt_purchase_orders po on po.id=vi.mkt_purchase_order_id
-        where vi.company_id=${actor.companyId} and po.company_id=${actor.companyId}
-          and po.vendor_id=vi.supplier_id`);
+        where vi.company_id=${actor.companyId}`);
       const rows = await scopedDb.execute(sql`
         select vi.id, vi.invoice_number, vi.vendor_invoice_ref, vi.supplier_name,
           vi.status::text status, vi.grand_total, vi.three_way_match_status,
-          vi.company_id, vi.invoice_date
+          vi.company_id, vi.invoice_date,
+          case when vi.mkt_purchase_order_id is null then 'legacy_unlinked'
+            when exists (select 1 from public.mkt_purchase_orders po
+              where po.id=vi.mkt_purchase_order_id and po.company_id=vi.company_id
+                and po.vendor_id=vi.supplier_id) then 'canonical_po'
+            else 'unverified_po_link' end as invoice_source
         from public.vendor_invoices vi
-        join public.mkt_purchase_orders po on po.id=vi.mkt_purchase_order_id
-        where vi.company_id=${actor.companyId} and po.company_id=${actor.companyId}
-          and po.vendor_id=vi.supplier_id
+        where vi.company_id=${actor.companyId}
         order by vi.created_at desc nulls last, vi.id desc
         limit ${pageSize} offset ${offset}`);
       return { total: Number(count.rows[0]?.total ?? 0), rows: rows.rows };
@@ -234,11 +237,12 @@ router.get("/mkt/admin/vendor-invoices", async (req, res) => {
         supplierName:r.supplier_name, status:r.status, grandTotal:Number(r.grand_total),
         amountPaid:null, reconciledAmountPaid:null, threeWayMatchStatus:r.three_way_match_status,
         companyId:r.company_id, invoiceDate:r.invoice_date,
+        invoiceSource:r.invoice_source,
         journalStatus:null, withholdingTaxAmount:null, withholdingTaxType:null,
         invoiceBreakdown:null, pphPaidAmount:null,
       })),
       page, pageSize, total: result.total, hasMore:offset+result.rows.length<result.total,
-      mode:"canonical_finance_dev_read_only",
+      mode:"company_finance_dev_read_only",
     });
   } catch (error) {
     req.log?.error?.({ errorCode: "FINANCE_LIST_READ_FAILED" }, "Finance company invoice list unavailable");
