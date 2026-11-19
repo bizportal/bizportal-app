@@ -5,6 +5,7 @@ on:
     branches:
       - test/dev-customer-invoice-modern-original-owner-pg16-e2e-20261119
       - test/dev-customer-invoice-audit-column-permissions-20261119
+      - test/dev-invoice-real-grant-parity-20261119
     paths:
       - 'scripts/dev-customer-invoice-audit-columns-20261119.sql'
       - 'scripts/dev-customer-invoice-audit-columns-rollback-20261119.sql'
