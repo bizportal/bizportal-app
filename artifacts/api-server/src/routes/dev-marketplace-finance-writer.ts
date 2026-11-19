@@ -181,6 +181,71 @@ async function verifiedAp(id: number, companyId: number, scopedDb: typeof db) {
   return ap;
 }
 
+// Exact GET-only Finance DEV list. Unlike the legacy Purchase workflow list,
+// this uses the signed Finance scope cookie and the restricted company DB role.
+router.get("/mkt/admin/vendor-invoices", async (req, res) => {
+  const actor = await authorize(req, res, true);
+  if (!actor) return;
+  const allowed = new Set(["company", "page", "pageSize"]);
+  const values = Object.entries(req.query);
+  if (values.some(([key, val]) => !allowed.has(key) || typeof val !== "string")) {
+    res.status(400).json({ error: "Invalid invoice list parameters" }); return;
+  }
+  const requestedCompany = req.query.company;
+  if (requestedCompany !== undefined && requestedCompany !== String(actor.companyId)) {
+    res.status(403).json({ error: "Finance company scope mismatch" }); return;
+  }
+  const parseBounded = (input: unknown, fallback: number, max: number): number | null => {
+    if (input === undefined) return fallback;
+    if (typeof input !== "string" || !/^[1-9][0-9]*$/.test(input)) return null;
+    const n = Number(input);
+    return Number.isSafeInteger(n) && n <= max ? n : null;
+  };
+  const page = parseBounded(req.query.page, 1, 10000);
+  const pageSize = parseBounded(req.query.pageSize, 50, 100);
+  if (page === null || pageSize === null) {
+    res.status(400).json({ error: "Invalid invoice pagination" }); return;
+  }
+  const offset = (page - 1) * pageSize;
+  try {
+    const result = await withMarketplaceFinanceDevReadOnlyTransaction(actor.companyId, async scopedDb => {
+      // Canonical PO-backed invoices only; no privileged auth-DB fallback.
+      const count = await scopedDb.execute(sql`
+        select count(*)::integer total from public.vendor_invoices vi
+        join public.mkt_purchase_orders po on po.id=vi.mkt_purchase_order_id
+        where vi.company_id=${actor.companyId} and po.company_id=${actor.companyId}
+          and po.vendor_id=vi.supplier_id`);
+      const rows = await scopedDb.execute(sql`
+        select vi.id, vi.invoice_number, vi.vendor_invoice_ref, vi.supplier_name,
+          vi.status::text status, vi.grand_total, vi.three_way_match_status,
+          vi.company_id, vi.invoice_date
+        from public.vendor_invoices vi
+        join public.mkt_purchase_orders po on po.id=vi.mkt_purchase_order_id
+        where vi.company_id=${actor.companyId} and po.company_id=${actor.companyId}
+          and po.vendor_id=vi.supplier_id
+        order by vi.created_at desc nulls last, vi.id desc
+        limit ${pageSize} offset ${offset}`);
+      return { total: Number(count.rows[0]?.total ?? 0), rows: rows.rows };
+    });
+    res.setHeader("Cache-Control", "no-store");
+    res.json({
+      data: result.rows.map((r: any) => ({
+        id:r.id, invoiceNumber:r.invoice_number, vendorInvoiceRef:r.vendor_invoice_ref,
+        supplierName:r.supplier_name, status:r.status, grandTotal:Number(r.grand_total),
+        amountPaid:null, reconciledAmountPaid:null, threeWayMatchStatus:r.three_way_match_status,
+        companyId:r.company_id, invoiceDate:r.invoice_date,
+        journalStatus:null, withholdingTaxAmount:null, withholdingTaxType:null,
+        invoiceBreakdown:null, pphPaidAmount:null,
+      })),
+      page, pageSize, total: result.total, hasMore:offset+result.rows.length<result.total,
+      mode:"canonical_finance_dev_read_only",
+    });
+  } catch (error) {
+    req.log?.error?.({ errorCode: "FINANCE_LIST_READ_FAILED" }, "Finance company invoice list unavailable");
+    res.status(503).json({ error:"Finance invoice list unavailable" });
+  }
+});
+
 router.get("/mkt/admin/vendor-invoices/:id", async (req, res) => {
   const actor = await authorize(req, res, true);
   if (!actor) return;

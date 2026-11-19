@@ -215,6 +215,7 @@ function parseVendorInvoicePage(payload: unknown): VendorInvoicePage {
 export function VendorInvoicesListPage() {
   // Only the isolated GET-only preview hides legacy invoice writer UI and routes.
   const isFinanceReadOnlyPreview = import.meta.env.VITE_BIZPORTAL_FINANCE_READONLY_PREVIEW_DEV === "true";
+  const isFinanceScopedDevPreview = import.meta.env.VITE_BIZPORTAL_FINANCE_GLOBAL_SCOPE_UI_DEV === "true";
   const { activeCompanyId, isLoading: isCompanyLoading, refetch: refetchCompanies } = useCompany();
   const qcClient = useQueryClient();
   const [page, setPage] = useState(1);
@@ -231,7 +232,10 @@ export function VendorInvoicesListPage() {
   const { data: invoicePage, isLoading, isFetching, isError, error } = useQuery<VendorInvoicePage>({
     queryKey: ["/api/purchase-workflow/vendor-invoices", activeCompanyId, page],
     queryFn: async () => {
-      const response = await vendorInvoiceFetch(`/api/purchase-workflow/vendor-invoices?company=${activeCompanyId}&page=${page}&pageSize=${pageSize}`, {
+      const listPath = import.meta.env.VITE_BIZPORTAL_FINANCE_GLOBAL_SCOPE_UI_DEV === "true"
+        ? `/api/mkt/admin/vendor-invoices?company=${activeCompanyId}&page=${page}&pageSize=${pageSize}`
+        : `/api/purchase-workflow/vendor-invoices?company=${activeCompanyId}&page=${page}&pageSize=${pageSize}`;
+      const response = await vendorInvoiceFetch(listPath, {
         credentials: "include",
       });
       const payload = await response.json().catch(() => null);
@@ -444,6 +448,12 @@ export function VendorInvoicesListPage() {
           </Card>
         ) : (
           <>
+        {isFinanceScopedDevPreview && (
+          <p className="text-sm text-muted-foreground" role="status">
+            Finance DEV: hanya menampilkan Vendor Invoice yang terhubung ke PO canonical.
+            Data pembayaran, PPh, dan jurnal tidak dihitung pada daftar baca-saja ini.
+          </p>
+        )}
         {/* Dialog konfirmasi hapus */}
         {confirmDeleteId !== null && confirmTarget && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
@@ -659,7 +669,7 @@ export function VendorInvoicesListPage() {
                         <td className="py-2 px-3"><Badge variant={vi.threeWayMatchStatus === "matched" ? "default" : vi.threeWayMatchStatus === "partial" ? "secondary" : "outline"} className="text-xs">{String(vi.threeWayMatchStatus)}</Badge></td>
                         <td className="py-2 px-3 text-right font-mono">{idr(canonicalGrandTotal(vi))}</td>
                         <td className="py-2 px-3 text-right">
-                          <div className="font-mono text-amber-600">{idr(vendorInvoicePphPayment(vi).total)}</div>
+                          <div className="font-mono text-amber-600">{isFinanceScopedDevPreview ? "—" : idr(vendorInvoicePphPayment(vi).total)}</div>
                           {vendorInvoicePphBreakdown(vi).map((part) => (
                             <div key={part.type} className="mt-0.5 whitespace-nowrap text-[10px] text-muted-foreground">
                               {part.type}: {idr(part.amount)}
@@ -667,18 +677,19 @@ export function VendorInvoicesListPage() {
                           ))}
                         </td>
                         <td className="py-2 px-3 text-right font-mono text-emerald-600">
-                          {idr(vendorInvoicePphPayment(vi).paid)}
+                          {isFinanceScopedDevPreview ? "—" : idr(vendorInvoicePphPayment(vi).paid)}
                         </td>
                         <td className="py-2 px-3 text-right">
-                          <div className="font-mono text-red-600">{idr(vendorInvoicePphPayment(vi).outstanding)}</div>
-                          {vendorInvoicePphPayment(vi).outstanding > 0.01 && (
+                          <div className="font-mono text-red-600">{isFinanceScopedDevPreview ? "—" : idr(vendorInvoicePphPayment(vi).outstanding)}</div>
+                          {!isFinanceScopedDevPreview && vendorInvoicePphPayment(vi).outstanding > 0.01 && (
                             <div className="mt-0.5 text-[10px] font-medium text-red-600">Harus dibayar</div>
                           )}
                         </td>
-                        <td className="py-2 px-3 text-right font-mono text-muted-foreground">{idr(canonicalAmountPaid(vi))}</td>
-                        <td className="py-2 px-3 text-right font-mono text-red-600">{idr(outstandingNetPayment(vi))}</td>
+                        <td className="py-2 px-3 text-right font-mono text-muted-foreground">{isFinanceScopedDevPreview ? "—" : idr(canonicalAmountPaid(vi))}</td>
+                        <td className="py-2 px-3 text-right font-mono text-red-600">{isFinanceScopedDevPreview ? "—" : idr(outstandingNetPayment(vi))}</td>
                         <td className="py-2 px-3">
                           <div className="flex items-center justify-end gap-1">
+                            {isFinanceScopedDevPreview ? <span className="text-xs text-muted-foreground">Baca saja</span> : <>
                             {vi.status === "draft" && (
                               <Button
                                 size="sm"
@@ -725,6 +736,7 @@ export function VendorInvoicesListPage() {
                                 <Trash2 className="h-4 w-4" />
                               </Button>
                             )}
+                            </>}
                           </div>
                         </td>
                       </tr>

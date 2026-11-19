@@ -99,7 +99,7 @@ router.use((req, res, next) => {
 // Canonical vendor invoice/AP services: DEV-only, feature flags OFF by default.
 // Standalone runtime does not create GL journals or execute payments.
 router.use((req,res,next) => {
-  if (req.path.startsWith('/mkt/admin/vendor-invoices/') || req.path.startsWith('/mkt/admin/ap-preparations/') || req.path === '/mkt/admin/finance-company-selection') {
+  if (req.path.startsWith('/mkt/admin/vendor-invoices/') || (req.method === 'GET' && req.path === '/mkt/admin/vendor-invoices') || req.path.startsWith('/mkt/admin/ap-preparations/') || req.path === '/mkt/admin/finance-company-selection') {
     void import('./dev-marketplace-finance-writer').then(({default: handler})=>handler(req,res,next)).catch(error=>{
       req.log?.error({error},'Canonical Marketplace finance router unavailable');
       if (!res.headersSent) res.status(503).json({error:'Marketplace finance temporarily unavailable'});
