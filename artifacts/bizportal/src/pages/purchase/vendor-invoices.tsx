@@ -415,7 +415,21 @@ export function VendorInvoicesListPage() {
         </div>
 
         {import.meta.env.VITE_BIZPORTAL_FINANCE_GLOBAL_SCOPE_UI_DEV === "true" && (
-          <FinanceCompanyScopeCard />
+          <FinanceCompanyScopeCard
+            onVerificationStart={() => {
+              void qcClient.cancelQueries({
+                queryKey: ["/api/purchase-workflow/vendor-invoices", activeCompanyId],
+              });
+            }}
+            onVerified={(companyId) => {
+              // The list request may have returned 403 before the signed scope
+              // cookie was issued. Revalidate only this tenant's list after
+              // the server confirms the scope; do not retry any writer action.
+              void qcClient.invalidateQueries({
+                queryKey: ["/api/purchase-workflow/vendor-invoices", companyId],
+              });
+            }}
+          />
         )}
 
         {isFinanceReadOnlyPreview ? (
