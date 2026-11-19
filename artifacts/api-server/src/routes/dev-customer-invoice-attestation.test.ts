@@ -21,6 +21,7 @@ const KEYS=[
   "APP_ENV","SESSION_SECRET","BIZPORTAL_SESSION_SECRET",
   "BIZPORTAL_CUSTOMER_INVOICE_ATTEST_DEV","BIZPORTAL_CUSTOMER_PORTAL_ORIGIN_DEV",
   "BIZPORTAL_CUSTOMER_INVOICE_HANDOFF_DEV",
+  "BIZPORTAL_CUSTOMER_INVOICE_SIGNED_REVIEW_SNAPSHOT_DEV",
 ];
 const originals=Object.fromEntries(KEYS.map(k=>[k,process.env[k]]));
 const email="qa-bizportal-super@example.invalid", id="qa-signed-bizportal-actor";
@@ -36,6 +37,23 @@ const issuedChallenge=(alter:Record<string,unknown>={})=>{
 };
 const PROOF_DOMAIN="CST_BIZPORTAL_CUSTOMER_INVOICE_DEV_V1\n";
 let base:string,server:Server;
+const sampleReview=(customerName="QA Customer")=>({
+  schemaVersion:1,companyId:1,companyName:"PT Cahaya Sejati Teknologi",
+  invoiceId:77,documentNumber:"SO-QA-77",customerName,currency:"IDR",
+  subtotal:"100.00",ppn:"11.00",total:"111.00",
+  ppnRatePercent:"11.000",taxId:1,taxAccountId:49109,
+  taxTreatment:"taxable",documentStatus:"confirmed",invoiceStatus:"to_invoice",
+});
+let reviewResult={snapshot:sampleReview(),digest:""};
+function setupOwnerReview(customerName="QA Customer") {
+  const snapshot=sampleReview(customerName);
+  const digest=createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
+  reviewResult={snapshot,digest};
+  process.env.BIZPORTAL_CUSTOMER_INVOICE_HANDOFF_DEV="true";
+  process.env.BIZPORTAL_CUSTOMER_INVOICE_SIGNED_REVIEW_SNAPSHOT_DEV="true";
+  process.env.BIZPORTAL_CUSTOMER_PORTAL_ORIGIN_DEV=base;
+  return digest;
+}
 async function get(challenge:string,options:{signed?:boolean;accept?:string}={}) {
   const u=base+"/api/auth/dev/customer-invoice-attestation?challenge="+encodeURIComponent(challenge);
   const res=await fetch(u,{headers:{
@@ -49,6 +67,8 @@ describe("existing signed OTP BizPortal Super Admin -> Customer Invoice attestat
     const app=express();
     app.use((req,_res,next)=>{(req as any).log={error:vi.fn()};next();});
     app.use("/api",route);
+    app.get("/api/portal/dev/invoice-owner-handoff/:ticket/review",
+      (_req,res)=>res.json(reviewResult));
     server=app.listen(0,"127.0.0.1");
     await new Promise<void>(resolve=>server.once("listening",resolve));
     const address=server.address();
@@ -158,36 +178,67 @@ describe("existing signed OTP BizPortal Super Admin -> Customer Invoice attestat
     const r=await get(issuedChallenge());
     expect(r.res.status).toBe(503);
   });
-  it("requires explicit Owner consent on own device for a 43-character handoff ticket",async()=>{
-    process.env.BIZPORTAL_CUSTOMER_INVOICE_HANDOFF_DEV="true";
+  it("requires explicit Owner consent on own device for a signed source-specific handoff",async()=>{
+    const digest=setupOwnerReview();
     const handoff="A".repeat(43);
-    const challenge=issuedChallenge();
+    const challenge=issuedChallenge({reviewDigest:digest});
     const u=base+"/api/auth/dev/customer-invoice-attestation?challenge="+
       encodeURIComponent(challenge)+"&handoff="+handoff;
     const res=await fetch(u,{headers:{Cookie:"bizportal_supabase_session=SIGNED_QA"}});
     const html=await res.text();
     expect(res.status).toBe(200);
-    expect(res.headers.get("Content-Security-Policy")).toContain(
-      "form-action https://portal-qa.example.invalid");
+    expect(res.headers.get("Content-Security-Policy")).toContain("form-action "+base);
     expect(html).toContain("Setujui satu kali");
+    expect(html).toContain("QA Customer");
+    expect(html).toContain("Rp 111,00");
+    expect(html).toContain("PPN 11.000%");
     expect(html).toContain("/api/portal/dev/invoice-owner-handoff/"+handoff);
     expect(html).toContain("method=\"POST\"");
     expect(html).not.toContain("postMessage");
     expect(html).not.toContain("SESSION_SECRET");
     expect(html).not.toContain("bizportal_supabase_session");
   });
-  it("rejects cross-device handoff unless its own explicit DEV flag is ON",async()=>{
-    delete process.env.BIZPORTAL_CUSTOMER_INVOICE_HANDOFF_DEV;
-    const challenge=issuedChallenge();
+  it("fails closed if signed review flag or source digest is missing",async()=>{
+    const digest=setupOwnerReview();
+    const handoff="A".repeat(43);
+    delete process.env.BIZPORTAL_CUSTOMER_INVOICE_SIGNED_REVIEW_SNAPSHOT_DEV;
+    let u=base+"/api/auth/dev/customer-invoice-attestation?challenge="+
+      encodeURIComponent(issuedChallenge({reviewDigest:digest}))+"&handoff="+handoff;
+    expect((await fetch(u,{headers:{Cookie:"bizportal_supabase_session=SIGNED_QA"}})).status).toBe(404);
+    process.env.BIZPORTAL_CUSTOMER_INVOICE_SIGNED_REVIEW_SNAPSHOT_DEV="true";
+    u=base+"/api/auth/dev/customer-invoice-attestation?challenge="+
+      encodeURIComponent(issuedChallenge())+"&handoff="+handoff;
+    expect((await fetch(u,{headers:{Cookie:"bizportal_supabase_session=SIGNED_QA"}})).status).toBe(404);
+  });
+  it("blocks old bare OTP popup when source review is mandatory",async()=>{
+    setupOwnerReview();
+    const res=await get(issuedChallenge(),{accept:"application/json"});
+    expect(res.res.status).toBe(409);
+    expect(res.body).not.toContain("eyJ2");
+  });
+  it("rejects modified or untrusted source amount before consent form",async()=>{
+    const digest=setupOwnerReview();
+    reviewResult.snapshot={...reviewResult.snapshot,total:"999.00"};
     const u=base+"/api/auth/dev/customer-invoice-attestation?challenge="+
-      encodeURIComponent(challenge)+"&handoff="+"A".repeat(43);
+      encodeURIComponent(issuedChallenge({reviewDigest:digest}))+"&handoff="+"A".repeat(43);
     const res=await fetch(u,{headers:{Cookie:"bizportal_supabase_session=SIGNED_QA"}});
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(503);
+    expect(await res.text()).not.toContain("Setujui satu kali");
+  });
+  it("escapes customer name from the original Portal source before displaying on Owner device",async()=>{
+    const digest=setupOwnerReview("<img src=x onerror=alert(1)>");
+    const u=base+"/api/auth/dev/customer-invoice-attestation?challenge="+
+      encodeURIComponent(issuedChallenge({reviewDigest:digest}))+"&handoff="+"A".repeat(43);
+    const res=await fetch(u,{headers:{Cookie:"bizportal_supabase_session=SIGNED_QA"}});
+    const html=await res.text();
+    expect(res.status).toBe(200);
+    expect(html).toContain("&lt;img src=x onerror=alert(1)&gt;");
+    expect(html).not.toContain("<img src=x onerror=alert(1)>");
   });
   it("rejects malformed or query-injected handoff tickets",async()=>{
-    process.env.BIZPORTAL_CUSTOMER_INVOICE_HANDOFF_DEV="true";
+    const digest=setupOwnerReview();
     const u=base+"/api/auth/dev/customer-invoice-attestation?challenge="+
-      encodeURIComponent(issuedChallenge())+"&handoff="+encodeURIComponent("x<script>alert(1)");
+      encodeURIComponent(issuedChallenge({reviewDigest:digest}))+"&handoff="+encodeURIComponent("x<script>alert(1)");
     const res=await fetch(u,{headers:{Cookie:"bizportal_supabase_session=SIGNED_QA"}});
     expect(res.status).toBe(404);
   });

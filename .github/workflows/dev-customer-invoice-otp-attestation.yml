@@ -6,10 +6,12 @@ on:
       - test/base-payroll-otp-caaef80-20261118
       - test/dev-customer-invoice-otp-attestation-20261118
       - test/dev-customer-invoice-different-issuer-owner-20261119
+      - test/dev-customer-invoice-owner-device-handoff-20261119
     paths:
       - 'artifacts/api-server/src/routes/dev-customer-invoice-attestation.ts'
       - 'artifacts/api-server/src/routes/dev-customer-invoice-attestation.test.ts'
       - 'artifacts/api-server/src/routes/dev-customer-invoice-crossrepo-qa.test.ts'
+      - 'artifacts/api-server/src/routes/dev-customer-invoice-handoff-crossrepo.test.ts'
       - 'artifacts/api-server/src/routes/index.ts'
       - '.github/workflows/dev-customer-invoice-otp-attestation.yml'
   workflow_dispatch:
@@ -27,12 +29,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Travelintrips/CST-CUSTOMER-PORTAL
-          ref: abee964a2a5d0e632ca7f306b84d5c5b04c4b4dc
+          ref: 691a9c23afdd927fdb1012891a7704233f553d62
           path: vendor/customer-portal
           persist-credentials: false
       - name: Assert pinned Portal verification source
         run: |
-          test "$(git -C vendor/customer-portal rev-parse HEAD)" = abee964a2a5d0e632ca7f306b84d5c5b04c4b4dc
+          test "$(git -C vendor/customer-portal rev-parse HEAD)" = 691a9c23afdd927fdb1012891a7704233f553d62
           test -f vendor/customer-portal/server/dev-bizportal-invoice-attestation.mjs
       - uses: pnpm/action-setup@v4
         with:
