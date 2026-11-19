@@ -176,6 +176,12 @@ test "$(wc -l < "$WORK/audit-cols-only.sql")" -eq 3
 docker cp "$WORK/audit-cols-only.sql" "$PG_NAME":/tmp/audit-cols-only.sql
 docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic -f /tmp/audit-cols-only.sql > "$WORK/audit-grant.log"
 echo HOSTED_CSTDEV_ONLY_REVIEWED_B6_AND_TWO_AUDIT_COLUMNS_OPTIN_PASS
+
+# Replay the 24 real read-only pg_policies definitions on 4 Portal/notify
+# tables in disposable PG16. Do not create/update policies on CST-DEV/PROD.
+docker cp "$ROOT/scripts/tests/customer-invoice-hosted-notification-rls-20261119.sql" "$PG_NAME":/tmp/hosted-notify-rls.sql
+docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic -f /tmp/hosted-notify-rls.sql > "$WORK/hosted-notify-rls.log"
+echo HOSTED_CSTDEV_NOTIFICATION_RLS_24_POLICIES_LOADED_PASS
 echo MODERN_DISPOSABLE_COMPANY_SCOPED_ROLES_READY
 
 for company in cst diva; do
