@@ -1,0 +1,53 @@
+name: DEV Customer Invoice - modern signed Owner to original Accounting PostgreSQL
+
+on:
+  pull_request:
+    branches:
+      - test/dev-customer-invoice-atomic-ppn-20261118
+    paths:
+      - 'scripts/tests/customer-invoice-modern-*.mjs'
+      - 'scripts/tests/customer-invoice-modern-*.sql'
+      - 'scripts/tests/customer-invoice-modern-*.sh'
+      - '.github/workflows/customer-invoice-modern-owner-disposable-pg16.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  original-owner-modern-signed-qa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exact reviewed Customer Portal source PR 231
+        uses: actions/checkout@v4
+        with:
+          repository: Travelintrips/CST-CUSTOMER-PORTAL
+          ref: 691a9c23afdd927fdb1012891a7704233f553d62
+          path: vendor/customer-portal
+          persist-credentials: false
+      - name: Exact signed Owner / OTP source BizPortal PR 155
+        uses: actions/checkout@v4
+        with:
+          repository: bizportal/bizportal-app
+          ref: 9ade41f0ab3459841a7e3b154202357f9000496d
+          path: vendor/bizportal-otp
+          persist-credentials: false
+      - name: Verify exact source refs
+        run: |
+          test "$(git -C vendor/customer-portal rev-parse HEAD)" = 691a9c23afdd927fdb1012891a7704233f553d62
+          test "$(git -C vendor/bizportal-otp rev-parse HEAD)" = 9ade41f0ab3459841a7e3b154202357f9000496d
+          test -f vendor/customer-portal/server/dev-invoice-tax-source-rowlock.mjs
+          test -f vendor/bizportal-otp/artifacts/api-server/src/routes/dev-customer-invoice-attestation.ts
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Install original immutable dependency graph
+        run: pnpm install --frozen-lockfile
+      - name: Original owner + new scoped RLS + Owner-signed HTTP flow on disposable PG16
+        run: bash scripts/tests/customer-invoice-modern-role-pg16.qa.sh
