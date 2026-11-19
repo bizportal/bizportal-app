@@ -146,6 +146,9 @@ docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic 
 echo ORIGINAL_PORTAL_SCHEMA_MISSING_TABLES_QA_PARITY_PASS
 docker cp "$ROOT/scripts/tests/customer-invoice-modern-otp-synthetic-rls.sql" "$PG_NAME":/tmp/modern-rls.sql
 docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic -f /tmp/modern-rls.sql > "$WORK/modern-rls.log"
+docker cp "$ROOT/scripts/tests/customer-invoice-admin-payment-status-disposable.sql" "$PG_NAME":/tmp/qa-payment-status.sql
+docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic -f /tmp/qa-payment-status.sql > "$WORK/payment-fixture.log"
+echo ADMIN_PAYMENT_STATUS_SYNTHETIC_SOURCE_SCHEMA_PASS
 # Reset earlier broad synthetic grants to the actual hosted CST-DEV
 # table/column/sequence grants (read-only introspection snapshot).
 docker cp "$ROOT/scripts/tests/customer-invoice-hosted-20261119-grant-parity.sql" "$PG_NAME":/tmp/hosted-qa-acl.sql
