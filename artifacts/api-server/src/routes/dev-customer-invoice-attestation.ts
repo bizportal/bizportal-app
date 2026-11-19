@@ -53,6 +53,7 @@ export function getCustomerInvoiceAttestationPublicKeyDev(): string {
 
 function canonicalChallenge(raw: string): {
   companyId: number; invoiceId: number; portalEmail: string;
+  documentNumber: string|null; amountCents: string|null;
 } | null {
   if (typeof raw !== "string" || raw.length < 60 || raw.length > 1600 ||
       !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(raw)) return null;
@@ -75,7 +76,13 @@ function canonicalChallenge(raw: string): {
         typeof data.iat !== "number" || typeof data.exp !== "number" ||
         data.exp <= Date.now() || data.exp > Date.now() + MAX_AGE_MS ||
         data.iat > Date.now() + 5_000 || data.exp - data.iat > MAX_AGE_MS) return null;
-    return {companyId, invoiceId, portalEmail:data.portalEmail.trim().toLowerCase()};
+    const documentNumber=typeof data.documentNumber==="string"?data.documentNumber:null;
+    const amountCents=typeof data.amountCents==="string"?data.amountCents:null;
+    if((documentNumber!=null||amountCents!=null) &&
+       (!documentNumber || !/^[a-zA-Z0-9_./-]{1,90}$/.test(documentNumber) ||
+        !amountCents || !/^[0-9]{1,15}$/.test(amountCents)))return null;
+    return {companyId, invoiceId, portalEmail:data.portalEmail.trim().toLowerCase(),
+      documentNumber,amountCents};
   } catch { return null; }
 }
 
@@ -132,6 +139,45 @@ router.get("/auth/dev/customer-invoice-attestation", async (
       response.status(401).json({error:"Signed BizPortal Super Admin session required"});
       return;
     }
+    // Remote-device flow never signs on GET. A visible Owner confirmation
+    // is required before one fresh signed proof can be delivered by HTTPS.
+    // The local popup flow remains byte-compatible when remote is absent.
+    if(request.query.remote === "1") {
+      if(!claims.documentNumber || !claims.amountCents){
+        response.status(400).json({error:"Invoice amount and document evidence required"});return;
+      }
+      if(process.env.BIZPORTAL_CUSTOMER_INVOICE_REMOTE_OWNER_DEV!=="true") {
+        response.status(404).json({error:"Not found"});return;
+      }
+      const nonce=randomBytes(16).toString("base64url");
+      response.setHeader("Content-Security-Policy",
+        "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; "+
+        "form-action 'none'; connect-src 'self'; script-src 'nonce-"+nonce+"'");
+      response.status(200).type("html").send(
+        "<!doctype html><html lang='id'><meta charset='utf-8'>"+
+        "<title>Persetujuan Invoice DEV</title><body>"+
+        "<h2>Setujui penerbitan Invoice DEV?</h2>"+
+        "<p>Perusahaan: "+(claims.companyId===1?"PT CST":"PT Diva Servis")+
+        " | Invoice ID: "+claims.invoiceId+"</p>"+
+        "<p>Dokumen: "+claims.documentNumber+
+        " | Nilai: "+new Intl.NumberFormat("id-ID",{style:"currency",currency:"IDR"})
+          .format(Number(claims.amountCents)/100)+"</p>"+
+        "<p>Admin pemohon: "+claims.portalEmail.replace(/[&<>"']/g,"")+"</p>"+
+        "<p>Persetujuan hanya berlaku satu Invoice dan memerlukan sesi OTP Owner/Super Admin.</p>"+
+        "<button id='approve'>Setujui satu kali</button><p id='status'></p>"+
+        "<script nonce='"+nonce+"'>"+
+        "document.getElementById('approve').onclick=async()=>{"+
+        "const button=document.getElementById('approve');button.disabled=true;"+
+        "try{const r=await fetch('/api/auth/dev/customer-invoice-attestation/remote',"+
+        "{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},"+
+        "body:JSON.stringify({challenge:"+JSON.stringify(challenge)+"})});"+
+        "if(!r.ok)throw Error('Persetujuan tidak dapat dikirim.');"+
+        "document.getElementById('status').textContent='Persetujuan telah dikirim ke Admin. Anda dapat menutup halaman ini.';"+
+        "}catch(e){document.getElementById('status').textContent='Gagal mengirim persetujuan. Coba lagi.';button.disabled=false;}"+
+        "};</script></body></html>"
+      );
+      return;
+    }
     const proof = createProof({
       actorId:actor.id,email:actor.email.trim().toLowerCase(),
       challenge,companyId:claims.companyId,invoiceId:claims.invoiceId,
@@ -166,6 +212,69 @@ router.get("/auth/dev/customer-invoice-attestation", async (
   } catch (error) {
     request.log?.error?.({error},"DEV independent BizPortal session attestation failed");
     response.status(503).json({error:"BizPortal verification temporarily unavailable"});
+  }
+});
+
+// Explicit Owner one-click acceptance from a separate device. The Owner
+// authenticates with the EXISTING signed BizPortal OTP cookie; Portal stores
+// only a short-lived Ed25519 proof and still requires the Admin issuance POST.
+router.post("/auth/dev/customer-invoice-attestation/remote", async (
+  request:Request,response:Response,
+):Promise<void> => {
+  response.setHeader("Cache-Control","no-store");
+  response.setHeader("Referrer-Policy","no-referrer");
+  if(!isCustomerInvoiceAttestationDevEnabled() ||
+     process.env.BIZPORTAL_CUSTOMER_INVOICE_REMOTE_OWNER_DEV!=="true") {
+    response.status(404).json({error:"Not found"});return;
+  }
+  const originText=(process.env.BIZPORTAL_API_ORIGIN_DEV??"").trim();
+  const origin=request.headers.origin??"";
+  const site=request.headers["sec-fetch-site"];
+  if(!originText || origin!==originText ||
+      (site!=null && site!=="same-origin")) {
+    response.status(403).json({error:"Origin not authorized"});return;
+  }
+  const challenge=typeof request.body?.challenge==="string"
+    ? request.body.challenge:"";
+  const claims=canonicalChallenge(challenge);
+  if(!claims || !claims.documentNumber || !claims.amountCents) {
+    response.status(400).json({error:"Invalid signed Invoice summary"});return;}
+  try {
+    const session=getProductionSession(request);
+    const actor=session?await getProductionUser(session):null;
+    if(!actor || actor.id!==session?.id ||
+       actor.email.trim().toLowerCase()!==session.email ||
+       actor.role!=="super_admin" ||
+       (actor.companyId!==null && Number(actor.companyId)!==claims.companyId)) {
+      response.status(401).json({error:"Signed Owner OTP session required"});return;
+    }
+    // Both endpoints restrict the destination to one operator-pinned origin.
+    const destination=(process.env.BIZPORTAL_CUSTOMER_PORTAL_ORIGIN_DEV??"").trim();
+    let portal:URL;
+    try {portal=new URL(destination);} catch {
+      response.status(503).json({error:"Portal destination unavailable"});return;
+    }
+    if(portal.origin!==destination ||portal.username||portal.password ||
+       portal.pathname!=="/"||portal.search||portal.hash||
+       !(portal.protocol==="https:" ||
+          (portal.protocol==="http:" && portal.hostname==="127.0.0.1"))) {
+      response.status(503).json({error:"Portal destination unavailable"});return;
+    }
+    const proof=createProof({actorId:actor.id,email:actor.email.trim().toLowerCase(),
+      challenge,companyId:claims.companyId,invoiceId:claims.invoiceId});
+    // No credentials, session cookies or Owner OTP are sent to Portal.
+    const delivered=await fetch(
+      destination+"/api/portal/dev/remote-owner-invoice/receipt",
+      {method:"POST",headers:{"Content-Type":"application/json"},
+       body:JSON.stringify({challenge,proof}),redirect:"manual",
+       signal:AbortSignal.timeout(4000)},
+    );
+    if(delivered.status!==202) {
+      response.status(503).json({error:"Portal rejected signed approval"});return;
+    }
+    response.status(200).json({approved:true});
+  } catch {
+    response.status(503).json({error:"Owner approval delivery unavailable"});
   }
 });
 
