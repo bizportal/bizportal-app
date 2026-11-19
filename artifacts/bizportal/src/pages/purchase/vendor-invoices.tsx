@@ -265,7 +265,7 @@ export function VendorInvoicesListPage() {
       }
       return payload.data as LegacyRepairQueueItem[];
     },
-    enabled: !isFinanceReadOnlyPreview && activeCompanyId != null,
+    enabled: !isFinanceReadOnlyPreview && !isFinanceScopedDevPreview && activeCompanyId != null,
   });
   const { data: repairPreview, isLoading: repairPreviewLoading } = useQuery<LegacyRepairPreview>({
     queryKey: ["/api/purchase-workflow/vendor-invoices/legacy-withholding-repair", repairInvoiceId, activeCompanyId],
@@ -277,7 +277,7 @@ export function VendorInvoicesListPage() {
       if (!response.ok) throw new Error(formatPostingError(payload, "Preview perbaikan PPh gagal dimuat."));
       return payload as LegacyRepairPreview;
     },
-    enabled: !isFinanceReadOnlyPreview && repairInvoiceId != null && activeCompanyId != null,
+    enabled: !isFinanceReadOnlyPreview && !isFinanceScopedDevPreview && repairInvoiceId != null && activeCompanyId != null,
   });
   const { data: repairAccounts = [] } = useQuery<LiabilityAccount[]>({
     queryKey: ["/api/purchase-workflow/vendor-invoices/liability-accounts", activeCompanyId],
@@ -287,7 +287,7 @@ export function VendorInvoicesListPage() {
       if (!response.ok || !Array.isArray(payload)) throw new Error("Akun liabilitas gagal dimuat.");
       return payload as LiabilityAccount[];
     },
-    enabled: !isFinanceReadOnlyPreview && repairInvoiceId != null && activeCompanyId != null,
+    enabled: !isFinanceReadOnlyPreview && !isFinanceScopedDevPreview && repairInvoiceId != null && activeCompanyId != null,
   });
   const totalPages = Math.max(1, Math.ceil((invoicePage?.total ?? 0) / pageSize));
 
@@ -400,7 +400,7 @@ export function VendorInvoicesListPage() {
             <h1 className="text-2xl font-bold">Vendor Invoice (AP)</h1>
             <p className="text-sm text-muted-foreground">Pusat tagihan supplier & 3-way matching</p>
           </div>
-          {!isFinanceReadOnlyPreview && (
+          {!isFinanceReadOnlyPreview && !isFinanceScopedDevPreview && (
             <div className="flex gap-2 flex-wrap">
               <Link href="/finance/recon-config?tab=invoice-sources"><Button variant="outline"><RefreshCw className="mr-2 h-4 w-4" />Sumber Gmail / Sync Now</Button></Link>
               <Link href="/purchase/vendor-invoices/import"><Button variant="outline"><Bot className="mr-2 h-4 w-4 text-indigo-500" />Import via AI</Button></Link>
