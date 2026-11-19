@@ -20,6 +20,7 @@ import route,{
 const KEYS=[
   "APP_ENV","SESSION_SECRET","BIZPORTAL_SESSION_SECRET",
   "BIZPORTAL_CUSTOMER_INVOICE_ATTEST_DEV","BIZPORTAL_CUSTOMER_PORTAL_ORIGIN_DEV",
+  "BIZPORTAL_CUSTOMER_INVOICE_HANDOFF_DEV",
 ];
 const originals=Object.fromEntries(KEYS.map(k=>[k,process.env[k]]));
 const email="qa-bizportal-super@example.invalid", id="qa-signed-bizportal-actor";
@@ -156,6 +157,39 @@ describe("existing signed OTP BizPortal Super Admin -> Customer Invoice attestat
     process.env.BIZPORTAL_CUSTOMER_PORTAL_ORIGIN_DEV="https://evil.invalid/path";
     const r=await get(issuedChallenge());
     expect(r.res.status).toBe(503);
+  });
+  it("requires explicit Owner consent on own device for a 43-character handoff ticket",async()=>{
+    process.env.BIZPORTAL_CUSTOMER_INVOICE_HANDOFF_DEV="true";
+    const handoff="A".repeat(43);
+    const challenge=issuedChallenge();
+    const u=base+"/api/auth/dev/customer-invoice-attestation?challenge="+
+      encodeURIComponent(challenge)+"&handoff="+handoff;
+    const res=await fetch(u,{headers:{Cookie:"bizportal_supabase_session=SIGNED_QA"}});
+    const html=await res.text();
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Security-Policy")).toContain(
+      "form-action https://portal-qa.example.invalid");
+    expect(html).toContain("Setujui satu kali");
+    expect(html).toContain("/api/portal/dev/invoice-owner-handoff/"+handoff);
+    expect(html).toContain("method=\"POST\"");
+    expect(html).not.toContain("postMessage");
+    expect(html).not.toContain("SESSION_SECRET");
+    expect(html).not.toContain("bizportal_supabase_session");
+  });
+  it("rejects cross-device handoff unless its own explicit DEV flag is ON",async()=>{
+    delete process.env.BIZPORTAL_CUSTOMER_INVOICE_HANDOFF_DEV;
+    const challenge=issuedChallenge();
+    const u=base+"/api/auth/dev/customer-invoice-attestation?challenge="+
+      encodeURIComponent(challenge)+"&handoff="+"A".repeat(43);
+    const res=await fetch(u,{headers:{Cookie:"bizportal_supabase_session=SIGNED_QA"}});
+    expect(res.status).toBe(404);
+  });
+  it("rejects malformed or query-injected handoff tickets",async()=>{
+    process.env.BIZPORTAL_CUSTOMER_INVOICE_HANDOFF_DEV="true";
+    const u=base+"/api/auth/dev/customer-invoice-attestation?challenge="+
+      encodeURIComponent(issuedChallenge())+"&handoff="+encodeURIComponent("x<script>alert(1)");
+    const res=await fetch(u,{headers:{Cookie:"bizportal_supabase_session=SIGNED_QA"}});
+    expect(res.status).toBe(404);
   });
   it("never issues proof on PROD even with a valid signed cookie",async()=>{
     process.env.APP_ENV="production";
