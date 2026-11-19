@@ -9,6 +9,7 @@ on:
       - test/dev-customer-invoice-rls-policy-parity-20261119
       - test/dev-customer-invoice-issuer-notification-qa-20261119
       - test/dev-payment-company-notification-original-accounting-e2e-20261119
+      - test/dev-payment-status-endpoint-company-auth-pg16-20261119
     paths:
       - 'scripts/dev-customer-invoice-audit-columns-20261119.sql'
       - 'scripts/dev-customer-invoice-audit-columns-rollback-20261119.sql'
@@ -34,11 +35,11 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-      - name: Pin Customer Portal PR 236 (canonical Admin payment endpoint authorization)
+      - name: Pin Customer Portal PR 237 (original AR payment and replay proof)
         uses: actions/checkout@v4
         with:
           repository: Travelintrips/CST-CUSTOMER-PORTAL
-          ref: 54e5813207d05c34260a9643813c870bf78f9674
+          ref: cd7e6cd03219a8689db4a69279410d1e6482d309
           path: vendor/customer-portal
           persist-credentials: false
       - name: Pin BizPortal signed Owner PR 155
@@ -50,7 +51,7 @@ jobs:
           persist-credentials: false
       - name: Assert exact verified sources
         run: |
-          test "$(git -C vendor/customer-portal rev-parse HEAD)" = 54e5813207d05c34260a9643813c870bf78f9674
+          test "$(git -C vendor/customer-portal rev-parse HEAD)" = cd7e6cd03219a8689db4a69279410d1e6482d309
           test "$(git -C vendor/bizportal-otp rev-parse HEAD)" = 9ade41f0ab3459841a7e3b154202357f9000496d
           test -f artifacts/api-server/src/lib/posting-engine/portalInvoiceAdapter.ts
       - uses: pnpm/action-setup@v4
@@ -71,5 +72,5 @@ jobs:
           OWNER_QA_STAGE_DIR="$STAGE_DIR" bash scripts/tests/customer-invoice-reviewed-owner-qa-stage.sh
           test ! -e /opt/cst-customer-invoice-owner-bundle-dev
           echo QA_OWNER_TEMP_BUNDLE_AUTOCLEAN_PASS
-      - name: Verify real Admin payment status handler, AR source and tenant access on disposable PG16
+      - name: Verify actual Admin payment and original AR trigger fail/rollback/replay on disposable PG16
         run: bash scripts/tests/customer-invoice-modern-role-pg16.qa.sh

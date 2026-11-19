@@ -358,6 +358,28 @@ async function verifyActualPaymentEndpoint(companyId,invoiceId) {
   // Operational company admin approval should not need Owner OTP;
   // synthetic Diva staff can directly approve Diva's own payment.
   const approver=companyId===3?divaStaff:owner;
+  // Deliberately disable ONLY the original deferred AR source trigger
+  // in this throwaway PG16 database. The handler's payment UPDATE would
+  // otherwise commit with AR still outstanding=111. DEV financial mode
+  // must catch that and rollback the entire payment transaction.
+  await pool.query(
+    "alter table public.sales_documents "+
+    "disable trigger customer_ar_sales_source_dev",
+  );
+  try {
+    await assert.rejects(
+      ()=>adminPaymentStatus(id,"paid",approver),
+      {statusCode:422},
+    );
+    assert.deepEqual(await paymentDatabaseSnapshot(id,invoiceId),paymentStart);
+    console.log("MODERN_PAYMENT_ACTUAL_ENDPOINT_AR_TRIGGER_MISSING_ROLLBACK_PASS",
+      companyId,id);
+  } finally {
+    await pool.query(
+      "alter table public.sales_documents "+
+      "enable trigger customer_ar_sales_source_dev",
+    );
+  }
   const issued=await adminPaymentStatus(id,"paid",approver);
   assert.equal(issued.code,200);
   assert.equal(issued.body.replayed,false);
@@ -375,6 +397,32 @@ async function verifyActualPaymentEndpoint(companyId,invoiceId) {
   assert.equal(replay.body.replayed,true);
   assert.deepEqual(await paymentDatabaseSnapshot(id,invoiceId),paid);
   console.log("MODERN_PAYMENT_ACTUAL_ENDPOINT_PAID_REPLAY_NO_DOUBLE_APPLY_PASS",companyId,id);
+  // Deliberately corrupt ONLY the disposable source document, leaving
+  // the committed payments paid=40 intact. Original reviewed AR trigger
+  // will project its temporary mismatch. An already-paid replay must
+  // NOT return 200 while Payment and AR disagree.
+  await pool.query(
+    "update public.sales_documents set amount_paid=0, "+
+    "payment_status='unpaid' where id=$1 and company_id=$2",
+    [invoiceId,companyId],
+  );
+  const inconsistent=await paymentDatabaseSnapshot(id,invoiceId);
+  assert.equal(inconsistent.status,"paid");
+  assert.equal(inconsistent.amountPaid,0);
+  await assert.rejects(
+    ()=>adminPaymentStatus(id,"paid",approver),{statusCode:422});
+  assert.deepEqual(await paymentDatabaseSnapshot(id,invoiceId),inconsistent);
+  console.log("MODERN_PAYMENT_ACTUAL_ENDPOINT_STALE_AR_PAID_REPLAY_DENIED_PASS",companyId,id);
+  // Restore the synthetic source through the original Sales document
+  // update/AR projection, then prove same handler accepts honest replay.
+  await pool.query(
+    "update public.sales_documents set amount_paid=40, "+
+    "payment_status='partial' where id=$1 and company_id=$2",
+    [invoiceId,companyId],
+  );
+  assert.deepEqual(await paymentDatabaseSnapshot(id,invoiceId),paid);
+  assert.equal((await adminPaymentStatus(id,"paid",approver)).body.replayed,true);
+  console.log("MODERN_PAYMENT_ACTUAL_ENDPOINT_RESTORED_AR_REPLAY_PASS",companyId,id);
   await assert.rejects(
     ()=>adminPaymentStatus(id,"failed",approver),{statusCode:409});
   assert.deepEqual(await paymentDatabaseSnapshot(id,invoiceId),paid);
