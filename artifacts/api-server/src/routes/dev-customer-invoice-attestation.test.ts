@@ -210,6 +210,12 @@ describe("existing signed OTP BizPortal Super Admin -> Customer Invoice attestat
       encodeURIComponent(issuedChallenge())+"&handoff="+handoff;
     expect((await fetch(u,{headers:{Cookie:"bizportal_supabase_session=SIGNED_QA"}})).status).toBe(404);
   });
+  it("blocks old bare OTP popup when source review is mandatory",async()=>{
+    setupOwnerReview();
+    const res=await get(issuedChallenge(),{accept:"application/json"});
+    expect(res.res.status).toBe(409);
+    expect(res.body).not.toContain("eyJ2");
+  });
   it("rejects modified or untrusted source amount before consent form",async()=>{
     const digest=setupOwnerReview();
     reviewResult.snapshot={...reviewResult.snapshot,total:"999.00"};

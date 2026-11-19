@@ -189,6 +189,12 @@ router.get("/auth/dev/customer-invoice-attestation", async (
     });
     const handoff = typeof request.query.handoff === "string"
       ? request.query.handoff : "";
+    // When signed financial review is mandatory, the original bare popup
+    // must not mint a financial authorization without showing source details.
+    if (!handoff && process.env.BIZPORTAL_CUSTOMER_INVOICE_SIGNED_REVIEW_SNAPSHOT_DEV === "true") {
+      response.status(409).json({error:"Ringkasan Invoice Owner wajib diverifikasi sebelum persetujuan."});
+      return;
+    }
     if (handoff) {
       if (process.env.BIZPORTAL_CUSTOMER_INVOICE_HANDOFF_DEV !== "true" ||
           process.env.BIZPORTAL_CUSTOMER_INVOICE_SIGNED_REVIEW_SNAPSHOT_DEV !== "true" ||
