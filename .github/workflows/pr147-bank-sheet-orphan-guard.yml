@@ -6,6 +6,7 @@ on:
       - "artifacts/api-server/scripts/ensure-bank-sheet-account-isolation.sql"
       - "artifacts/api-server/scripts/tests/bank-sheet-cutover-orphan-fixture.sql"
       - ".github/workflows/pr147-bank-sheet-orphan-guard.yml"
+      - "artifacts/api-server/scripts/tests/bank-sheet-cutover-positive-fixture.sql"
   workflow_dispatch:
 
 permissions:
@@ -72,3 +73,64 @@ jobs:
           test "$(psql -Atqc "select count(*) from public.accounting_entries where status='draft'")" = "5"
           test "$(psql -Atqc "select count(*) from public.bank_mutations where sheet_config_id=4 and accounting_posted=false")" = "21"
           echo "PASS: zero schema changes, zero historical mutation or journal changes on transaction rollback"
+ 
+  isolated-success-and-rollback:
+    name: Full migration success, idempotence, and rollback on disposable PG
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: pr147_ephemeral_only
+          POSTGRES_DB: pr147_ci
+        ports:
+          - 65435:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d pr147_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: "65435"
+      PGUSER: postgres
+      PGPASSWORD: pr147_ephemeral_only
+      PGDATABASE: pr147_ci
+    steps:
+      - uses: actions/checkout@v4
+      - name: Seed isolated valid source fixture
+        run: psql -v ON_ERROR_STOP=1 -f artifacts/api-server/scripts/tests/bank-sheet-cutover-positive-fixture.sql
+      - name: Rehearse full migration with transaction rollback
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path("artifacts/api-server/scripts/ensure-bank-sheet-account-isolation.sql").read_text()
+          assert src.rstrip().lower().endswith("commit;")
+          rollback_sql=src.rstrip()[:-len("commit;")]+"ROLLBACK;\n"
+          Path("/tmp/pr147_full_rollback.sql").write_text(rollback_sql)
+          PY
+          psql -v ON_ERROR_STOP=1 -f /tmp/pr147_full_rollback.sql
+          test "$(psql -Atqc "select count(*) from information_schema.columns where table_schema='public' and table_name='bank_sheet_configs' and column_name='bank_account_id'")" = "0"
+          test "$(psql -Atqc "select count(*) from pg_constraint where conname='bank_mutations_sheet_config_id_fkey'")" = "0"
+          test "$(psql -Atqc "select count(*) from public.bank_mutations")" = "2"
+          echo "PASS: full transactional rollback preserves source schema and rows"
+      - name: Execute actual migration twice and verify company/account scope
+        run: |
+          psql -v ON_ERROR_STOP=1 -f artifacts/api-server/scripts/ensure-bank-sheet-account-isolation.sql
+          psql -v ON_ERROR_STOP=1 -f artifacts/api-server/scripts/ensure-bank-sheet-account-isolation.sql
+          test "$(psql -Atqc "select count(*) from public.bank_sheet_configs where (id=2 and bank_account_id=17 and is_active=false) or (id=3 and bank_account_id=2 and is_active=true)")" = "2"
+          test "$(psql -Atqc "select count(*) from pg_constraint where conname='bank_mutations_sheet_config_id_fkey' and convalidated")" = "1"
+          test "$(psql -Atqc "select count(*) from pg_trigger where tgname='trg_enforce_google_sheet_mutation_scope' and not tgisinternal")" = "1"
+          test "$(psql -Atqc "select count(*) from public.bank_mutations")" = "2"
+          echo "PASS: actual schema migration, idempotence, FK, trigger, and original rows"
+      - name: Reject cross-company Google Sheet mutations and preserve historical rows
+        run: |
+          set +e
+          psql -v ON_ERROR_STOP=1 -c "insert into public.bank_mutations(id,company_id,bank_account_id,source,sheet_config_id,status) values (99,3,'31','google_sheet',3,'pending')" >/tmp/pr147_cross_company_out 2>/tmp/pr147_cross_company_err
+          code=$?
+          set -e
+          test "$code" -ne 0
+          grep -q 'Google Sheet mutation scope mismatch' /tmp/pr147_cross_company_err
+          test "$(psql -Atqc "select count(*) from public.bank_mutations")" = "2"
+          test "$(psql -Atqc "select count(*) from public.bank_mutations where id=99")" = "0"
+          echo "PASS: cross-company insertion denied without data changes"
