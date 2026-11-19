@@ -53,8 +53,10 @@ jobs:
         run: bash scripts/tests/customer-invoice-audit-columns-least-privilege.qa.sh
       - name: Rebuild five SHA-pinned original Accounting files in QA-only path
         run: |
-          OWNER_QA_STAGE_DIR="/tmp/cst-reviewed-owner-qa-${GITHUB_RUN_ID}" bash scripts/tests/customer-invoice-reviewed-owner-qa-stage.sh
+          STAGE_DIR="/tmp/cst-reviewed-owner-qa-${GITHUB_RUN_ID}"
+          trap 'chmod u+w "$STAGE_DIR" 2>/dev/null || :; rm -rf -- "$STAGE_DIR"' EXIT
+          OWNER_QA_STAGE_DIR="$STAGE_DIR" bash scripts/tests/customer-invoice-reviewed-owner-qa-stage.sh
           test ! -e /opt/cst-customer-invoice-owner-bundle-dev
-          rm -rf -- "/tmp/cst-reviewed-owner-qa-${GITHUB_RUN_ID}"
+          echo QA_OWNER_TEMP_BUNDLE_AUTOCLEAN_PASS
       - name: Confirm original Accounting integration still passes
         run: bash scripts/tests/customer-invoice-modern-role-pg16.qa.sh
