@@ -136,6 +136,43 @@ router.get("/auth/dev/customer-invoice-attestation", async (
       actorId:actor.id,email:actor.email.trim().toLowerCase(),
       challenge,companyId:claims.companyId,invoiceId:claims.invoiceId,
     });
+    const handoff = typeof request.query.handoff === "string"
+      ? request.query.handoff : "";
+    if (handoff) {
+      if (process.env.BIZPORTAL_CUSTOMER_INVOICE_HANDOFF_DEV !== "true" ||
+          !/^[A-Za-z0-9_-]{43}$/.test(handoff)) {
+        response.status(404).json({error:"Invoice handoff not available"});
+        return;
+      }
+      // A signed-in Owner can review the transaction on their OWN device.
+      // Explicit button press sends only the short-lived signed proof, not
+      // the Owner's cookie, session token, password or email OTP.
+      const target = (process.env.BIZPORTAL_CUSTOMER_PORTAL_ORIGIN_DEV ?? "").trim();
+      let origin:URL;
+      try {origin=new URL(target);}
+      catch {response.status(503).json({error:"Portal origin not configured"});return;}
+      if (origin.origin !== target ||
+          !(origin.protocol === "https:" ||
+            (origin.protocol === "http:" && origin.hostname === "127.0.0.1"))) {
+        response.status(503).json({error:"Portal origin not trusted"});
+        return;
+      }
+      response.setHeader("Content-Security-Policy",
+        "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; "+
+        "form-action "+target);
+      response.status(200).type("html").send(
+        "<!doctype html><html lang=\"id\"><meta charset=\"utf-8\">"+
+        "<title>Persetujuan Invoice</title><body>"+
+        "<h1>Persetujuan Invoice</h1>"+
+        "<p>Perusahaan: "+claims.companyId+" | Dokumen: "+claims.invoiceId+"</p>"+
+        "<p>Pastikan detail Invoice sesuai sebelum menyetujui.</p>"+
+        "<form method=\"POST\" action=\""+target+
+          "/api/portal/dev/invoice-owner-handoff/"+handoff+"\">"+
+        "<input type=\"hidden\" name=\"proof\" value=\""+proof+"\">"+
+        "<button type=\"submit\">Setujui satu kali</button></form>"+
+        "</body></html>");
+      return;
+    }
     if (request.headers.accept?.includes("application/json")) {
       response.json({proof,expiresInSeconds:60});
       return;
