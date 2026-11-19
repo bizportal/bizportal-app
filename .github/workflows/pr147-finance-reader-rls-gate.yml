@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "artifacts/api-server/scripts/pr147-finance-sheet-scoped-reader-staged-only.sql"
+      - "artifacts/api-server/scripts/pr147-finance-sheet-scoped-reader-rollback-staged-only.sql"
       - "artifacts/api-server/scripts/tests/pr147-finance-reader-isolated-fixture.sql"
       - ".github/workflows/pr147-finance-reader-rls-gate.yml"
   workflow_dispatch:
@@ -55,3 +56,16 @@ jobs:
           test "$rc" -ne 0
           grep -q 'permission denied' /tmp/pr147_write_err
           echo "PASS: CST=2, Diva=1, cross-company hidden, update denied, synthetic records unchanged"
+
+      - name: Verify rollback restores pre-policy privileges and leaves data intact
+        run: |
+          set -eu
+          psql -v ON_ERROR_STOP=1 -f artifacts/api-server/scripts/pr147-finance-sheet-scoped-reader-rollback-staged-only.sql
+          test "$(psql -Atqc "select count(*) from pg_policies where schemaname='public' and policyname like 'pr147_finance_%_sheet_read_dev'")" = "0"
+          test "$(psql -Atqc "select count(*) from pg_policies where schemaname='public' and policyname like 'pr147_finance_%_bank_read_dev'")" = "0"
+          test "$(psql -Atqc "select count(*) from public.bank_sheet_configs")" = "3"
+          test "$(psql -Atqc "select count(*) from public.company_bank_accounts")" = "3"
+          test "$(psql -Atqc "select has_table_privilege('bizportal_finance_cst_login_dev','public.bank_sheet_configs','SELECT')")" = "f"
+          test "$(psql -Atqc "select has_table_privilege('bizportal_finance_diva_login_dev','public.company_bank_accounts','SELECT')")" = "f"
+          test "$(psql -Atqc "select has_table_privilege('bizportal_finance_cst_login_dev','public.chart_of_accounts','SELECT')")" = "t"
+          echo "PASS: rollback removes PR147 policies/SELECT grants, preserves prior COA grant and synthetic rows"
