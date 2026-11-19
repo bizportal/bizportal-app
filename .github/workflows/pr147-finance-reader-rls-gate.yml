@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "artifacts/api-server/scripts/pr147-finance-sheet-scoped-reader-staged-only.sql"
+      - "artifacts/api-server/scripts/pr147-sheet-reader-rls-readiness-readonly.sql"
       - "artifacts/api-server/scripts/pr147-finance-sheet-scoped-reader-rollback-staged-only.sql"
       - "artifacts/api-server/scripts/tests/pr147-finance-reader-isolated-fixture.sql"
       - ".github/workflows/pr147-finance-reader-rls-gate.yml"
@@ -41,6 +42,17 @@ jobs:
         run: psql -v ON_ERROR_STOP=1 -f artifacts/api-server/scripts/tests/pr147-finance-reader-isolated-fixture.sql
       - name: Apply staged policy to disposable PostgreSQL only
         run: psql -v ON_ERROR_STOP=1 -f artifacts/api-server/scripts/pr147-finance-sheet-scoped-reader-staged-only.sql
+      - name: Runtime principal readiness must fail closed unless explicitly verified
+        run: |
+          set -eu
+          SCRIPT=artifacts/api-server/scripts/pr147-sheet-reader-rls-readiness-readonly.sql
+          psql -At -v ON_ERROR_STOP=1 -f "$SCRIPT" | grep -q 'BLOCKED_RUNTIME_PRINCIPAL_UNVERIFIED'
+          {
+            printf "BEGIN;\\nSET LOCAL app.pr147_expected_runtime_role = 'bizportal_finance_cst_login_dev';\\n"
+            cat "$SCRIPT"
+            printf "\\nROLLBACK;\\n"
+          } | psql -At -v ON_ERROR_STOP=1 | grep -q 'REVIEW_SIGNED_E2E'
+          echo "PASS: unknown principal blocked; explicitly verified role can only advance to signed E2E review"
       - name: Verify CST-only read, Diva-only read and zero write permission
         run: |
           set -eu
