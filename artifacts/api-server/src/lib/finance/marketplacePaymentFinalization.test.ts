@@ -113,7 +113,7 @@ beforeEach(async()=>{
  insert into public.mkt_ap_preparations(id,company_id,vendor_invoice_id,supplier_id,status)
  values (88,1,77,5,'waiting_payment');
  insert into public.vendor_invoices(id,company_id,supplier_id,status,three_way_match_status)
- values (77,1,5,'posted','passed');
+ values (77,1,5,'ready_for_ap','passed');
  insert into public.bank_mutations
  (id,company_id,direction,status,accounting_posted,reconciliation_status,
  journal_entry_id,import_row_id,source_table,source_module,source_id,amount,
@@ -219,9 +219,9 @@ describe("Marketplace AP posted bank atomic finalization, disposable PostgreSQL 
    await admin.query("insert into public.payment_allocations values(602,301,1,78,999,1,true)");
    await expect(run()).rejects.toThrow("SHARED_PAYMENT_GROUP_UNSUPPORTED");
  });
- it("refuses unposted invoice instead of inventing a posted transition",async()=>{
-   await admin.query("update public.vendor_invoices set status='ready_for_ap' where id=77");
-   await expect(run()).rejects.toThrow("INVOICE_NOT_CANONICALLY_POSTED");
+ it("rejects a manually changed Invoice state after the guarded AP allocation",async()=>{
+   await admin.query("update public.vendor_invoices set status='draft' where id=77");
+   await expect(run()).rejects.toThrow("AP_INVOICE_NOT_READY");
  });
  it("rejects inactive bank mapping and cross-company COA",async()=>{
    await admin.query("update public.company_bank_accounts set is_active=false where id=11");

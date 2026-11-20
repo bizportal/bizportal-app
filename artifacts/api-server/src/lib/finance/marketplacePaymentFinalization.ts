@@ -57,9 +57,10 @@ export async function finalizePostedMarketplacePayment(
     requireState(ap.status==="waiting_payment" && ap.vendor_invoice_id===vi.id &&
       handoff.ap_preparation_id===ap.id && handoff.vendor_invoice_id===vi.id &&
       ap.supplier_id===p.supplier_id && vi.supplier_id===p.supplier_id,"AP_REFERENCE_MISMATCH");
-    // Existing bank allocation accepts legitimately posted invoices only.
-    // Never forge posted from the Marketplace ready_for_ap status.
-    requireState(vi.status==="posted" && vi.three_way_match_status==="passed","INVOICE_NOT_CANONICALLY_POSTED");
+    // Marketplace AP retains ready_for_ap. The separately opt-in bank adapter
+    // must have verified signed approval and this exact canonical AP chain.
+    // Finalization requires a later posted bank mutation and native allocation.
+    requireState(vi.status==="ready_for_ap" && vi.three_way_match_status==="passed","AP_INVOICE_NOT_READY");
     requireState(handoff.payload_fingerprint===p.payload_fingerprint &&
       /^[a-f0-9]{64}$/.test(String(handoff.payload_fingerprint)) &&
       handoff.handoff_key===p.idempotency_key,"HANDOFF_FINGERPRINT_INVALID");

@@ -78,3 +78,33 @@ Disposable PostgreSQL regression: 79/79 combined tests PASS (includes
 native allocation proof, concurrency, replay, audit-failure rollback,
 CST/Diva authorization and the existing AP tests). API typecheck PASS.
 These are staged candidate tests, not a real signed-owner HTTP E2E.
+
+## Reviewed Marketplace status adapter candidate — 20 November
+
+The existing Purchase UI references a legacy Vendor Invoice POST action, but
+no matching posting route was found in the scoped API source reviewed here.
+We do NOT create a fake posting operation or change the Marketplace status.
+
+A narrowly gated branch in the existing bank-reconciliation
+vendor-invoice-payment-batch writer now permits a *single* Marketplace
+ready_for_ap Invoice only if:
+- APP_ENV=development and BIZPORTAL_MARKETPLACE_AP_BANK_STATUS_ADAPTER_DEV=true
+  (default OFF, never enabled by this PR);
+- the authenticated request carries an actual server-verified signed Super Admin
+  session, including approved Finance company scope;
+- the existing imported outgoing bank mutation, canonical AP, Payment Request,
+  verified Finance/Treasury approval, Handoff, supplier, amount and immutable
+  fingerprint all match within the existing bank writer transaction.
+Other statuses and multi-invoice batches are refused; the original legacy
+posted-Invoice allocation path is preserved.
+
+The unmounted atomic finalizer has also been aligned to expect the actual
+Marketplace ready_for_ap Invoice, after canonical single-invoice bank evidence
+and GL have been posted. It does not mark the Invoice posted, initiate a
+transfer, or fabricate proof.
+
+Evidence: 94/94 combined tests PASS covering the status adapter, canonical
+bank evidence, atomic finalization, replay/rollback, authorization and existing
+posting contracts, with real disposable PostgreSQL queries for the adapters.
+API typecheck PASS. The test container was stopped and must be removed.
+This is not a real signed Owner HTTP E2E and remains NO-GO for real payments.
