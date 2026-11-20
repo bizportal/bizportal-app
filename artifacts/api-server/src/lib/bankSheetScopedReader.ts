@@ -105,16 +105,18 @@ export async function getDevBankSheetReaderFromConfiguredSource(
   const identity = identities[companyId];
   if (!identity) throw new Error("PR147_DEV_SHEET_READER_COMPANY_UNSUPPORTED");
   const direct = process.env[identity.key]?.trim();
-  const secretName = process.env[identity.secretKey]?.trim();
-  if (direct && secretName) {
-    throw new Error("PR147_DEV_SHEET_READER_CREDENTIAL_SOURCE_AMBIGUOUS");
-  }
-  if (!direct && !secretName) {
-    throw new Error("PR147_DEV_SHEET_READER_NOT_CONFIGURED");
-  }
-  if (secretName && secretName !== identity.secretName) {
+  const dedicatedName = process.env[identity.secretKey]?.trim();
+  const bundleName = process.env.PR147_BANK_SHEET_COMPANIES_GCP_SECRET_NAME_DEV?.trim();
+  const sources = Number(Boolean(direct)) + Number(Boolean(dedicatedName)) + Number(Boolean(bundleName));
+  if (sources > 1) throw new Error("PR147_DEV_SHEET_READER_CREDENTIAL_SOURCE_AMBIGUOUS");
+  if (sources === 0) throw new Error("PR147_DEV_SHEET_READER_NOT_CONFIGURED");
+  if (dedicatedName && dedicatedName !== identity.secretName) {
     throw new Error("PR147_DEV_SHEET_READER_SECRET_NAME_INVALID");
   }
+  if (bundleName && bundleName !== "bizportal-marketplace-finance-dev-companies") {
+    throw new Error("PR147_DEV_SHEET_READER_BUNDLE_NAME_INVALID");
+  }
+  const secretName = dedicatedName || bundleName;
   let raw = direct;
   if (secretName) {
     const cached = secretCache.get(companyId);
@@ -123,7 +125,24 @@ export async function getDevBankSheetReaderFromConfiguredSource(
     } else {
       const fromSecret = (await secretReader(secretName)).trim();
       if (!fromSecret) throw new Error("PR147_DEV_SHEET_READER_SECRET_EMPTY");
-      raw = fromSecret;
+      if (bundleName) {
+        let bundle: unknown;
+        try { bundle = JSON.parse(fromSecret); }
+        catch { throw new Error("PR147_DEV_SHEET_READER_BUNDLE_INVALID"); }
+        // The existing Finance company bundle is keyed by canonical company
+        // IDs. Never choose the first available role, use a fallback company,
+        // or log any payload fields.
+        const data = bundle as { companies?: Record<string, { role?: unknown; databaseUrl?: unknown }> };
+        const entry = data?.companies?.[String(companyId)];
+        if (entry?.role !== identity.username.split(".")[0]
+            || typeof entry.databaseUrl !== "string"
+            || !entry.databaseUrl.trim()) {
+          throw new Error("PR147_DEV_SHEET_READER_BUNDLE_COMPANY_IDENTITY_MISMATCH");
+        }
+        raw = entry.databaseUrl.trim();
+      } else {
+        raw = fromSecret;
+      }
       // Pool creation validates role, region, project and strict TLS first.
       const reader = createDevBankSheetReader(companyId, raw);
       secretCache.set(companyId, {
