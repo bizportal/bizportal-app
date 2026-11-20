@@ -1,0 +1,75 @@
+name: CST-DEV Invoice — one existing signed Owner OTP (source-only)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'artifacts/api-server/src/routes/dev-customer-invoice-attestation.ts'
+      - 'artifacts/api-server/src/routes/dev-customer-invoice-attestation.test.ts'
+      - 'artifacts/api-server/src/routes/dev-customer-invoice-crossrepo-qa.test.ts'
+      - 'artifacts/api-server/src/routes/dev-customer-invoice-handoff-crossrepo.test.ts'
+      - 'artifacts/api-server/src/routes/index.ts'
+      - '.github/workflows/dev-invoice-one-owner-otp-source-qa.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exact-signed-otp-source-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    steps:
+      - name: Check out official BizPortal candidate
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check out exact deployed DEV Portal verifier (public code only)
+        uses: actions/checkout@v4
+        with:
+          repository: Travelintrips/CST-CUSTOMER-PORTAL
+          ref: e81fbd92ae485caa054dd9c0d433c9336dc3bc74
+          path: vendor/customer-portal
+          persist-credentials: false
+      - name: Verify pinned original Portal challenge and handoff
+        run: |
+          set -euo pipefail
+          test "$(git -C vendor/customer-portal rev-parse HEAD)" = e81fbd92ae485caa054dd9c0d433c9336dc3bc74
+          test -f vendor/customer-portal/server/dev-bizportal-invoice-attestation.mjs
+          test -f vendor/customer-portal/server/dev-invoice-owner-handoff.mjs
+          test -f vendor/customer-portal/server/dev-invoice-owner-review-snapshot.mjs
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Install immutable dependency graph
+        run: pnpm install --frozen-lockfile
+      - name: Verify only existing signed OTP, DEV-only and no generic fallback
+        shell: bash
+        run: |
+          set -euo pipefail
+          f=artifacts/api-server/src/routes/dev-customer-invoice-attestation.ts
+          grep -Fq 'isSignedOtpDevEnabled()' "$f"
+          grep -Fq 'getProductionSession(request)' "$f"
+          grep -Fq 'getProductionUser(session)' "$f"
+          grep -Fq 'actor.role !== "super_admin"' "$f"
+          grep -Fq 'BIZPORTAL_CUSTOMER_INVOICE_ATTEST_DEV === "true"' "$f"
+          grep -Fq 'BIZPORTAL_CUSTOMER_INVOICE_SIGNED_REVIEW_SNAPSHOT_DEV === "true"' "$f"
+          ! grep -Fq 'getDevSession(request)' "$f"
+          ! grep -Fq 'isSignedPasswordDevEnabled()' "$f"
+          grep -Fq 'router.use(devCustomerInvoiceAttestationRouter)' artifacts/api-server/src/routes/index.ts
+      - name: Original signer, current Portal verifier, one-Owner consent regression
+        run: |
+          pnpm --dir artifacts/api-server exec vitest run \
+            src/routes/dev-customer-invoice-attestation.test.ts \
+            src/routes/dev-customer-invoice-crossrepo-qa.test.ts \
+            src/routes/dev-customer-invoice-handoff-crossrepo.test.ts \
+            src/routes/dev-auth.test.ts \
+            src/routes/local-production-auth.test.ts
+      - name: Canonical API TypeScript typecheck
+        run: pnpm --dir artifacts/api-server run typecheck
+      - name: No source mutation from tests
+        run: git diff --exit-code -- artifacts/api-server/src/routes
