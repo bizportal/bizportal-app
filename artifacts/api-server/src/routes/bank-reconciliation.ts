@@ -7993,7 +7993,7 @@ router.use(["/bank-reconciliation/sheet-configs", "/bank-reconciliation/sheet-sy
     return;
   }
   const idMatch = requestPath.match(/(?:^|\/)bank-reconciliation\/sheet-configs\/(\d+)(?:\/(?:sync|test))?$/);
-  if (idMatch && actor.companyId != null && !(isDevelopmentEnvironment() && requestPath.endsWith("/test"))) {
+  if (idMatch && actor.companyId != null && !(isDevelopmentEnvironment() && (requestPath.endsWith("/test") || process.env.BANK_SHEET_DEV_WRITES_ENABLED !== "true"))) {
     try {
       const owner = await pool.query<{ company_id: number | null }>(
         "select company_id from public.bank_sheet_configs where id=$1", [Number(idMatch[1])],
