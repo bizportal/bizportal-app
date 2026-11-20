@@ -58,7 +58,7 @@ async function main() {
         || u.pathname!=="/postgres"
         || !u.password
         || u.searchParams.get("sslmode")!=="verify-full"
-        || [...u.searchParams.keys()].some(x=>x!=="sslmode")) {
+        || [...u.searchParams.keys()].some(x=>x!=="sslmode" && x!=="sslrootcert")) {
       console.log("COMPANY_"+company+"=BLOCKED_URL_POLICY");
       console.log("COMPANY_"+company+"_POLICY_FLAGS="+[
         ["protocol",u.protocol==="postgresql:"],
