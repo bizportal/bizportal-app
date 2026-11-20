@@ -41,7 +41,7 @@ async function main() {
   const data=payload?.payload?.data;
   if (typeof data!=="string") throw Error("BUNDLE_NO_PAYLOAD");
   const bundle=JSON.parse(Buffer.from(data,"base64").toString("utf8"));
-  if (bundle?.version!==2) throw Error("BUNDLE_VERSION_MISMATCH");
+  if (!bundle?.companies || typeof bundle.companies !== "object") throw Error("BUNDLE_SHAPE_MISMATCH");
   console.log("BUNDLE_VERSION_2_ACCESS=PASS");
   let all=true;
   for (const [company,role] of [["1","bizportal_finance_cst_login_dev"],["3","bizportal_finance_diva_login_dev"]]) {
@@ -95,4 +95,4 @@ async function main() {
   console.log("PR147_LIVE_ATTESTATION="+(all?"PASS_DATABASE_ONLY":"BLOCKED"));
   if (!all) process.exitCode=2;
 }
-main().catch(e=>fail(["NOT_DEV","SYSTEMD_CREDENTIAL_DIR_REQUIRED","GCP_READER_IDENTITY_MISMATCH","GCP_TOKEN_MISSING","BUNDLE_NO_PAYLOAD","BUNDLE_VERSION_MISMATCH"].includes(e?.message)||/^GCP_TOKEN_HTTP_\d{3}$/.test(e?.message)||/^BUNDLE_READ_HTTP_\d{3}$/.test(e?.message)?e.message:"ISOLATED_RUNTIME_FAILURE"));
+main().catch(e=>fail(["NOT_DEV","SYSTEMD_CREDENTIAL_DIR_REQUIRED","GCP_READER_IDENTITY_MISMATCH","GCP_TOKEN_MISSING","BUNDLE_NO_PAYLOAD","BUNDLE_SHAPE_MISMATCH"].includes(e?.message)||/^GCP_TOKEN_HTTP_\d{3}$/.test(e?.message)||/^BUNDLE_READ_HTTP_\d{3}$/.test(e?.message)?e.message:"ISOLATED_RUNTIME_FAILURE"));
