@@ -71,6 +71,7 @@ export function GojekRentalApprovalCard() {
       <CardContent className="space-y-4">
         {query.isLoading && <p role="status">Memeriksa akun dan sesi persetujuan...</p>}
         {query.isError && <p role="alert" className="text-amber-300">Belum siap: {query.error.message}. Tombol tidak dapat digunakan sampai layanan DEV siap.</p>}
+        {!info && <Button disabled data-testid="approve-gojek-rental-mapping">Setujui Pemetaan Akuntansi Gojek</Button>}
         {info && (
           <>
             <div className="overflow-x-auto">
