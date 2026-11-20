@@ -23,12 +23,18 @@ const companies = [
 
 const rows = [];
 let blocked = false;
+const bundle = process.env.PR147_BANK_SHEET_COMPANIES_GCP_SECRET_NAME_DEV?.trim();
+const expectedBundle = "bizportal-marketplace-finance-dev-companies";
 for (const c of companies) {
   const hasDirect = Boolean(process.env[c.direct]?.trim());
   const configuredSecret = process.env[c.gcp]?.trim();
   let status;
-  if (hasDirect && configuredSecret) status = "AMBIGUOUS_SOURCES";
-  else if (configuredSecret && configuredSecret !== c.approvedSecret) status = "UNAPPROVED_SECRET_NAME";
+  if ((Number(hasDirect) + Number(Boolean(configuredSecret)) + Number(Boolean(bundle))) > 1) status = "AMBIGUOUS_SOURCES";
+  else if (bundle && bundle !== expectedBundle) status = "UNAPPROVED_BUNDLE_NAME";
+  else if (bundle) {
+    status = process.env.GCP_SECRET_MANAGER_BOOTSTRAP_JSON?.trim()
+      ? "EXISTING_COMPANY_BUNDLE_PRESENT_UNVERIFIED" : "GCP_BOOTSTRAP_MISSING";
+  } else if (configuredSecret && configuredSecret !== c.approvedSecret) status = "UNAPPROVED_SECRET_NAME";
   else if (configuredSecret) {
     status = process.env.GCP_SECRET_MANAGER_BOOTSTRAP_JSON?.trim()
       ? "GCP_CONFIG_PRESENT_UNVERIFIED" : "GCP_BOOTSTRAP_MISSING";
