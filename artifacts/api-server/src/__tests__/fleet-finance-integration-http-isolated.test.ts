@@ -70,7 +70,9 @@ beforeEach(async()=>{
   state.nextId=900;state.source={id:55,company_id:3,status:"confirmed",amount:100,payment_date:"2026-11-17"};
   state.journalCompany=3;
   process.env.FLEET_FINANCE_SERVICE_TOKEN="dev-test-only-synthetic-token";
-  const app=express();app.use(express.json());app.use("/integrations/fleet",router);
+  const app=express();app.use(express.json());
+  app.use((req,_res,next)=>{ (req as typeof req & {log:{error:(...args:unknown[])=>void}}).log={error:()=>undefined}; next(); });
+  app.use("/integrations/fleet",router);
   server=await new Promise<Server>(resolve=>{const srv=app.listen(0,"127.0.0.1",()=>resolve(srv));});
   const addr=server.address();if(!addr||typeof addr==="string")throw Error("Missing port");
   root="http://127.0.0.1:"+addr.port+"/integrations/fleet";
