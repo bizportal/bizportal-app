@@ -34,3 +34,22 @@ A transfer cannot be marked paid based on a draft handoff or caller-supplied sta
 
 Status: existing AP-to-Accounting Draft GO; real disbursement/final GL NO-GO
 until the bridge and real signed-session E2E are verified.
+
+## Atomic posted-bank finalizer candidate
+marketplacePaymentFinalization.ts is an UNMOUNTED transaction service. It never
+sends a transfer or posts a GL entry. After an actual bank reconciliation has
+already posted an outgoing mutation, it verifies a bank-import record, immutable
+AP/request/handoff identifiers and fingerprint, signed Super Admin authorization,
+existing approval and Treasury fields, canonical payment-request bank match,
+journal balance, matching active company bank account/COA, and duplicate matching.
+It then atomically marks ONLY that Payment Request paid, updates the Handoff to
+posted, and inserts an audit record. Failures trigger full ROLLBACK; replay
+requires exact same posted bank/journal evidence. It blocks foreign company data.
+
+Disposable PostgreSQL tests cover success, replay, concurrent requests,
+mismatched company, wrong references, invalid status, failed audit after
+updates, broken journal balance, and bank/COA mismatches. This is not real
+signed-session HTTP E2E and does not prove the existing canonical bank
+reconciliation can produce its required payment-request-specific match/source
+tags. These two integration gaps remain release blockers. Do not deploy or
+enable a POST until the match adapter and signed HTTP acceptance are verified.
