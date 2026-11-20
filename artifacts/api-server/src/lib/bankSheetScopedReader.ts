@@ -1,15 +1,20 @@
 import { Pool } from "pg";
+import { readSecret } from "@workspace/db";
 
 type SheetReaderPool = Pool;
 const readers = new Map<number, { url: string; pool: SheetReaderPool }>();
 
-const identities: Record<number, { key: string; username: string }> = {
+const identities: Record<number, { key: string; username: string; secretKey: string; secretName: string }> = {
   1: {
     key: "PR147_BANK_SHEET_CST_DATABASE_URL_DEV",
+    secretKey: "PR147_BANK_SHEET_CST_GCP_SECRET_NAME_DEV",
+    secretName: "bizportal-pr147-bank-sheet-cst-dev",
     username: "bizportal_finance_cst_login_dev.xssrfshdrtdfupgqwfdw",
   },
   3: {
     key: "PR147_BANK_SHEET_DIVA_DATABASE_URL_DEV",
+    secretKey: "PR147_BANK_SHEET_DIVA_GCP_SECRET_NAME_DEV",
+    secretName: "bizportal-pr147-bank-sheet-diva-dev",
     username: "bizportal_finance_diva_login_dev.xssrfshdrtdfupgqwfdw",
   },
 };
@@ -20,13 +25,12 @@ const identities: Record<number, { key: string; username: string }> = {
  * This function does not grant DB permissions; the scoped RLS policy must
  * be approved and applied separately after the isolated migration gates pass.
  */
-export function getDevBankSheetReader(companyId: number): SheetReaderPool {
+function createDevBankSheetReader(companyId: number, raw: string): SheetReaderPool {
   if (process.env.APP_ENV?.trim().toLowerCase() !== "development") {
     throw new Error("PR147_DEV_SHEET_READER_ENVIRONMENT_REQUIRED");
   }
   const identity = identities[companyId];
   if (!identity) throw new Error("PR147_DEV_SHEET_READER_COMPANY_UNSUPPORTED");
-  const raw = process.env[identity.key];
   if (!raw) throw new Error("PR147_DEV_SHEET_READER_NOT_CONFIGURED");
   let parsed: URL;
   try {
@@ -78,9 +82,63 @@ export function getDevBankSheetReader(companyId: number): SheetReaderPool {
   return pool;
 }
 
+/** Existing protected direct DEV environment path, with no fallback. */
+export function getDevBankSheetReader(companyId: number): SheetReaderPool {
+  return createDevBankSheetReader(companyId, process.env[identities[companyId]?.key] ?? "");
+}
+
+const secretCache = new Map<number, { name: string; value: string; expiresAt: number }>();
+
+/**
+ * Use exactly one credential source per company: a dedicated DEV Secret
+ * Manager secret (preferred) OR an existing protected server environment URL.
+ * No use of shared app, OTP, Finance Marketplace or production secrets.
+ * A missing GCP bootstrap, secret or credential fails closed.
+ */
+export async function getDevBankSheetReaderFromConfiguredSource(
+  companyId: number,
+  secretReader: (name: string) => Promise<string> = readSecret,
+): Promise<SheetReaderPool> {
+  if (process.env.APP_ENV?.trim().toLowerCase() !== "development") {
+    throw new Error("PR147_DEV_SHEET_READER_ENVIRONMENT_REQUIRED");
+  }
+  const identity = identities[companyId];
+  if (!identity) throw new Error("PR147_DEV_SHEET_READER_COMPANY_UNSUPPORTED");
+  const direct = process.env[identity.key]?.trim();
+  const secretName = process.env[identity.secretKey]?.trim();
+  if (direct && secretName) {
+    throw new Error("PR147_DEV_SHEET_READER_CREDENTIAL_SOURCE_AMBIGUOUS");
+  }
+  if (!direct && !secretName) {
+    throw new Error("PR147_DEV_SHEET_READER_NOT_CONFIGURED");
+  }
+  if (secretName && secretName !== identity.secretName) {
+    throw new Error("PR147_DEV_SHEET_READER_SECRET_NAME_INVALID");
+  }
+  let raw = direct;
+  if (secretName) {
+    const cached = secretCache.get(companyId);
+    if (cached && cached.name === secretName && cached.expiresAt > Date.now()) {
+      raw = cached.value;
+    } else {
+      const fromSecret = (await secretReader(secretName)).trim();
+      if (!fromSecret) throw new Error("PR147_DEV_SHEET_READER_SECRET_EMPTY");
+      raw = fromSecret;
+      // Pool creation validates role, region, project and strict TLS first.
+      const reader = createDevBankSheetReader(companyId, raw);
+      secretCache.set(companyId, {
+        name: secretName, value: raw, expiresAt: Date.now() + 60_000,
+      });
+      return reader;
+    }
+  }
+  return createDevBankSheetReader(companyId, raw ?? "");
+}
+
 /** Test/isolated shutdown only. */
 export async function closeDevBankSheetReaders(): Promise<void> {
   const current = [...readers.values()];
   readers.clear();
+  secretCache.clear();
   await Promise.all(current.map(async (reader) => reader.pool.end()));
 }
