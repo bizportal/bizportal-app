@@ -31,13 +31,13 @@ async function currentApprover(req: Request): Promise<{ id: string; email: strin
   return { id: String(user.id), email: user.email };
 }
 
-async function examine(client: any) {
+async function examine(client: any, lock = false) {
   const rows = (await client.query(
     `SELECT id,code,name,type::text AS account_type,normal_balance,
             is_active,is_postable,is_header,status,approved_by,approved_at
        FROM public.chart_of_accounts
       WHERE company_id=$1 AND code=ANY($2::text[])
-      ORDER BY code FOR UPDATE`,
+      ORDER BY code` + (lock ? " FOR UPDATE" : "") + ``,
     [3, CODES.map(c => c[0])],
   )).rows as Array<Record<string,unknown>>;
   const valid = rows.length === CODES.length && CODES.every(([code,type,balance]) => {
@@ -102,7 +102,7 @@ router.post("/accounting/gojek-rental-approval",async(req:Request,res:Response):
     const actor = await currentApprover(req);
     if (!actor) {res.status(403).json({error:"Hanya Super Admin dengan sesi OTP terverifikasi."});return;}
     const result = await withFleetFinanceDevTransaction(SCOPE,async(client)=>{
-      const info = await examine(client);
+      const info = await examine(client, true);
       if (!info.valid) throw new Error("INVALID_COMPANY3_COA");
       if (info.allApproved) return {approved:true,idempotent:true,accounts:info.rows.length};
       if (!info.noneApproved) throw new Error("PARTIAL_APPROVAL_REQUIRES_REVIEW");
