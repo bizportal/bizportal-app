@@ -6,7 +6,7 @@ import { PgDialect } from "drizzle-orm/pg-core";
 const mock=vi.hoisted(()=>({
   session:vi.fn(),user:vi.fn(),isDev:vi.fn(),query:vi.fn(),roleCheck:vi.fn(),finance:vi.fn(),financeReadOnly:vi.fn(),
   companyQuery:vi.fn(),globalAllowed:vi.fn(),allowedCompany:vi.fn(),globalEnabled:vi.fn(),signedScope:vi.fn(),setScopeCookie:vi.fn(),
-  getInvoice:vi.fn(),submitInvoice:vi.fn(),createAp:vi.fn(),getAp:vi.fn(),reviewAp:vi.fn(),waitingAp:vi.fn(),handoffAp:vi.fn(),
+  getInvoice:vi.fn(),submitInvoice:vi.fn(),createAp:vi.fn(),getAp:vi.fn(),reviewAp:vi.fn(),waitingAp:vi.fn(),handoffAp:vi.fn(),approvePay:vi.fn(),
 }));
 vi.mock("./dev-auth",()=>({getProductionSession:mock.session,getProductionUser:mock.user,isDevelopmentEnvironment:mock.isDev,
   isApprovedFinanceGlobalSuperAdmin:mock.globalAllowed,isApprovedFinanceGlobalCompany:mock.allowedCompany,
@@ -19,6 +19,7 @@ vi.mock("@workspace/db",()=>({
 }));
 vi.mock("../lib/services/mktVendorInvoiceService.js",()=>({getMarketplaceVendorInvoice:mock.getInvoice,submitMarketplaceVendorInvoice:mock.submitInvoice,safeMarketplaceVendorInvoiceView:vi.fn(()=>({id:77}))}));
 vi.mock("../lib/services/mktApPreparationService.js",()=>({createApPreparation:mock.createAp,getApPreparation:mock.getAp,reviewApPreparation:mock.reviewAp,markApPreparationWaitingPayment:mock.waitingAp,createMarketplaceAccountingHandoff:mock.handoffAp,safeApView:vi.fn(()=>({id:88}))}));
+vi.mock("../lib/finance/marketplacePaymentApproval.js",()=>({approveMarketplacePaymentRequest:mock.approvePay}));
 import route from "./dev-marketplace-finance-writer";
 let server:Server,base:string;
 beforeAll(async()=>{const app=express();app.use(express.json());app.use("/api",route);server=app.listen(0);await new Promise<void>(r=>server.once("listening",r));base="http://127.0.0.1:"+(server.address() as AddressInfo).port});
@@ -51,6 +52,7 @@ beforeEach(()=>{
   process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV="true";
   delete process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV;
   delete process.env.BIZPORTAL_MARKETPLACE_ACCOUNTING_HANDOFF_ENABLED_DEV;
+  delete process.env.BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV;
 });
 const get=(path:string)=>fetch(base+path);
 const post=(path:string,body:any={})=>fetch(base+path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
@@ -395,4 +397,45 @@ describe("DEV-only restored canonical vendor invoice/AP runtime gates",()=>{
    expect((await post("/api/mkt/admin/ap-preparations/88/finance-review")).status).toBe(404);
    expect(mock.reviewAp).not.toHaveBeenCalled();
  });
+});
+
+describe("DEV Marketplace real Payment Request approval protected HTTP boundary",()=>{
+  it("is invisible while the real payment-approval flag is OFF",async()=>{
+    expect((await post("/api/mkt/admin/payment-requests/41/approve")).status).toBe(404);
+    expect(mock.approvePay).not.toHaveBeenCalled();
+  });
+  it("rejects anonymous, mismatched company and non-superadmin",async()=>{
+    process.env.BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV="true";
+    mock.session.mockReturnValue(null);
+    expect((await post("/api/mkt/admin/payment-requests/41/approve")).status).toBe(401);
+    mock.session.mockReturnValue({id:"signed",email:"admin@test.dev",issuedAt:100,expiresAt:Date.now()+600000});
+    mock.user.mockResolvedValue({email:"other@test.dev",role:"admin",companyId:1});
+    expect((await post("/api/mkt/admin/payment-requests/41/approve")).status).toBe(403);
+    expect(mock.approvePay).not.toHaveBeenCalled();
+  });
+  it("rejects invalid body and cross-site origin before any financial operation",async()=>{
+    process.env.BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV="true";
+    const origin="https://"+new URL(base).host;
+    const path="/api/mkt/admin/payment-requests/41/approve";
+    expect((await post(path,{approve:true})).status).toBe(422);
+    const bad=await fetch(base+path,{method:"POST",
+      headers:{"Content-Type":"application/json","Origin":"https://evil.invalid"},
+      body:"{}"});
+    expect(bad.status).toBe(403);
+    expect(mock.approvePay).not.toHaveBeenCalled();
+  });
+  it("uses existing signed Super Admin, company role and writer transaction",async()=>{
+    process.env.BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV="true";
+    mock.approvePay.mockResolvedValue({requestId:41,companyId:1,status:"approved",
+      replay:false,bankTransfer:false,glPosted:false});
+    const path="/api/mkt/admin/payment-requests/41/approve";
+    const response=await fetch(base+path,{method:"POST",
+      headers:{"Content-Type":"application/json","Origin":"https://"+new URL(base).host,
+        "Sec-Fetch-Site":"same-origin"},body:"{}"});
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ok:true,requestId:41,status:"approved",
+      bankTransfer:false,glPosted:false});
+    expect(mock.approvePay).toHaveBeenCalledOnce();
+    expect(mock.finance).toHaveBeenCalledOnce();
+  });
 });

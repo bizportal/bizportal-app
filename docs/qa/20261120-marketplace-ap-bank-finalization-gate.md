@@ -186,3 +186,30 @@ rollback to pending with no audit. The trigger is removed in test cleanup.
 6/6 approval HTTP tests PASS; no production cookies or real Owner credentials
 were generated or read. This remains a synthetic authenticated harness,
 not the genuine Owner browser acceptance and not the bank/GL E2E.
+
+## Real Marketplace Payment Request approval candidate (CST-DEV 2026-11-20)
+The new marketplacePaymentApproval.ts service targets the real Marketplace AP
+Payment Request draft through the existing company-scoped Finance transaction.
+It verifies signed Super Admin identity, CST/Diva company, the immutable
+AP/Invoice/Handoff relationship, three-way match, and amount snapshots.
+Only draft to approved and single Super Admin Treasury readiness are recorded.
+It does not pay, transfer, reconcile or post any journal.
+Replay creates no new audit. An audit INSERT failure rolls back the status.
+
+The dedicated POST candidate path is
+/api/mkt/admin/payment-requests/:id/approve and the release flag is
+BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV=true (OFF by default).
+Same-origin JSON, role, company and valid ID are required.
+
+The narrow SQL migration was applied only to CST-DEV after disposable
+PostgreSQL QA. Only approval columns are writable by the company Finance
+roles. Both roles still cannot UPDATE total_amount, paid_amount or journal
+ID, nor INSERT GL entries. The RLS-protected audit table accepts exactly one
+approval per request. The rollback SQL is included.
+
+Evidence: isolated PostgreSQL approval tests 7/7 PASS; existing and new
+HTTP writer tests 37/37 PASS; combined targeted 44/44 PASS; API typecheck
+PASS. CST-DEV postflight: 0 active Payment Requests/Handoffs, 0 new approval
+audit, historical CST Invoice fingerprint unchanged. Active Finance DEV
+runtime is still c1abee7, and the business-approval path is NOT enabled.
+Authentic Owner E2E and the real bank/GL pipeline are still NO-GO.

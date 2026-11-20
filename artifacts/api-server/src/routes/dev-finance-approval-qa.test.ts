@@ -56,7 +56,7 @@ describe("signed Super Admin real HTTP to isolated QA approval",()=>{
   const [first,second]=await Promise.all([post(),post()]);
   expect(first.status).toBe(200);
   expect(second.status).toBe(200);
-  const statuses=[await first.json(),await second.json()];
+  const statuses=[await first.json(),await second.json()] as Array<{replay:boolean}>;
   expect(statuses.map(x=>x.replay).sort()).toEqual([false,true]);
   const a=await admin.query("select count(*)::int as n from public.qa_approval_audit where scenario_id=9001");
   expect(a.rows[0].n).toBe(1);
