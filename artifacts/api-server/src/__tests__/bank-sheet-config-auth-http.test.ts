@@ -31,6 +31,18 @@ vi.mock("@workspace/db", () => ({
   },
 }));
 
+vi.mock("../lib/bankSheetScopedReader", () => ({
+  getDevBankSheetReader: (companyId: number) => ({
+    query: async (sql: string, params: unknown[] = []) => {
+      mock.queries.push({sql, params});
+      if (Number(companyId) !== Number(params[0])) throw Error("COMPANY_SCOPE_MISMATCH");
+      return {rowCount:2,rows:[
+        {id:2,company_id:1,label:"mutasi dev",tab_name:"mutasidev",bank_account_id:17,is_active:false},
+        {id:3,company_id:1,label:"kas besar",tab_name:"kasbesar",bank_account_id:2,is_active:true},
+      ]};
+    },
+  }),
+}));
 import router from "../routes/bank-reconciliation";
 
 describe("bank Sheet company-scoped HTTP authorization gate", () => {
@@ -77,7 +89,12 @@ describe("bank Sheet company-scoped HTTP authorization gate", () => {
     ]});
     expect(mock.queries).toHaveLength(1);
     expect(mock.queries[0].params).toEqual([1]);
-    expect(mock.queries[0].sql).toContain("where config.company_id = $1");
+    expect(mock.queries[0].sql).toContain("where config.company_id=$1");
+  });
+  it("requires explicit company for unscoped Super Admin DEV Sheet listing", async()=>{
+    mock.actor={email:"owner@pr95.invalid",companyId:null,role:"super_admin"};
+    expect((await get("/bank-reconciliation/sheet-configs")).status).toBe(400);
+    expect(mock.queries).toHaveLength(0);
   });
   it("forbids company crossover with no query",async()=>{
     mock.actor={email:"owner@pr95.invalid",companyId:1,role:"super_admin"};
