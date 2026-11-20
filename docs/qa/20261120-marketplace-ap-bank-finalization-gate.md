@@ -53,3 +53,28 @@ signed-session HTTP E2E and does not prove the existing canonical bank
 reconciliation can produce its required payment-request-specific match/source
 tags. These two integration gaps remain release blockers. Do not deploy or
 enable a POST until the match adapter and signed HTTP acceptance are verified.
+
+## Canonical native Vendor Invoice allocation adapter (2026-11-20)
+The unchanged Bank Reconciliation implementation emits one approved
+vendor_invoice match, active payment_allocations and payment_matching_groups,
+and linked_transaction_type vendor_invoice_batch. It does NOT emit the
+payment_request candidate/source identifiers assumed by the initial draft.
+The proposed unmounted nativeVendorBankEvidence.ts now verifies those
+existing records with row locks and with the locked AP/Handoff/PaymentRequest
+chain, requiring identical company, invoice, mutation, approved match,
+exact monetary amount and one active allocation in one matching group.
+It refuses shared groups, batches spanning multiple invoices, and a second
+posted mutation with an active allocation for the same invoice.
+There is NO fabricated Payment Request match or bank mutation source tag.
+
+Current Bank Reconciliation pays only a legitimately posted Vendor Invoice.
+The candidate finalizer therefore requires invoice status posted; it will NOT
+automatically turn Marketplace ready_for_ap into posted. A genuine, reviewed
+Invoice posting step and bank-confirmation workflow remain requirements.
+No HTTP routes are mounted; no bank transfers or accounting postings are
+initiated by these components.
+
+Disposable PostgreSQL regression: 79/79 combined tests PASS (includes
+native allocation proof, concurrency, replay, audit-failure rollback,
+CST/Diva authorization and the existing AP tests). API typecheck PASS.
+These are staged candidate tests, not a real signed-owner HTTP E2E.

@@ -15,6 +15,8 @@ beforeAll(async()=>{
    drop table if exists public.chart_of_accounts;
    drop table if exists public.accounting_entry_lines;
    drop table if exists public.accounting_entries;
+   drop table if exists public.payment_allocations;
+   drop table if exists public.payment_matching_groups;
    drop table if exists public.bank_reconciliation_matches;
    drop table if exists public.bank_mutations;
    drop table if exists public.mkt_accounting_handoffs;
@@ -44,7 +46,17 @@ beforeAll(async()=>{
      id integer primary key,company_id integer,direction text,status text,
      accounting_posted boolean,reconciliation_status text,journal_entry_id integer,
      import_row_id integer,import_batch_id integer,source_table text,source_module text,
-     source_id integer,amount numeric,bank_account_id text,approved_at timestamptz
+     source_id integer,linked_transaction_type text,linked_transaction_id integer,
+     amount numeric,bank_account_id text,approved_at timestamptz
+   );
+   create table public.payment_matching_groups(
+     id integer primary key, company_id integer,status text,
+     total_allocated numeric,remaining_amount numeric
+   );
+   create table public.payment_allocations(
+     id integer primary key,group_id integer,company_id integer,
+     invoice_id integer,mutation_id integer,allocated_amount numeric,
+     is_active boolean
    );
    create table public.bank_reconciliation_matches(
      id integer primary key,mutation_id integer,candidate_type text,
@@ -83,7 +95,8 @@ afterAll(async()=>{await admin.end()});
 beforeEach(async()=>{
  await admin.query(`truncate public.company_bank_accounts,public.chart_of_accounts,
  public.audit_logs,public.accounting_entry_lines,
- public.accounting_entries,public.bank_reconciliation_matches,public.bank_mutations,
+ public.accounting_entries,public.payment_allocations,public.payment_matching_groups,
+ public.bank_reconciliation_matches,public.bank_mutations,
  public.vendor_invoices,public.mkt_ap_preparations,public.mkt_accounting_handoffs,
  public.payment_requests restart identity`);
  await admin.query(`
@@ -100,16 +113,20 @@ beforeEach(async()=>{
  insert into public.mkt_ap_preparations(id,company_id,vendor_invoice_id,supplier_id,status)
  values (88,1,77,5,'waiting_payment');
  insert into public.vendor_invoices(id,company_id,supplier_id,status,three_way_match_status)
- values (77,1,5,'ready_for_ap','passed');
+ values (77,1,5,'posted','passed');
  insert into public.bank_mutations
  (id,company_id,direction,status,accounting_posted,reconciliation_status,
  journal_entry_id,import_row_id,source_table,source_module,source_id,amount,
- bank_account_id,approved_at)
- values(101,1,'OUT','posted',true,'reconciled',201,11,'payment_requests',
- 'marketplace_ap',41,100.00,'BANK-1',now());
+ bank_account_id,approved_at,linked_transaction_type,linked_transaction_id)
+ values(101,1,'OUT','posted',true,'reconciled',201,11,'public.vendor_invoices',
+ 'bank_reconciliation',77,100.00,'BANK-1',now(),'vendor_invoice_batch',77);
  insert into public.bank_reconciliation_matches
  (id,mutation_id,candidate_type,candidate_source,candidate_id,status)
- values(501,101,'payment_request','public.payment_requests','41','approved');
+ values(501,101,'vendor_invoice','public.vendor_invoices','77','approved');
+ insert into public.payment_matching_groups(id,company_id,status,total_allocated,remaining_amount)
+ values(301,1,'active',100,0);
+ insert into public.payment_allocations(id,group_id,company_id,invoice_id,mutation_id,allocated_amount,is_active)
+ values(601,301,1,77,101,100,true);
  insert into public.accounting_entries
  (id,company_id,source,source_id,status,total_debit,total_credit)
  values(201,1,'bank_reconciliation',101,'posted',100,100);
@@ -163,9 +180,9 @@ describe("Marketplace AP posted bank atomic finalization, disposable PostgreSQL 
   expect((await snapshot()).audit_count).toBe(0);
  });
  it("rejects wrong bank identity, and rejects a non-imported bank row",async()=>{
-  await admin.query("update public.bank_mutations set source_id=42 where id=101");
-  await expect(run()).rejects.toThrow("BANK_NOT_BOUND_TO_REQUEST");
-  await admin.query("update public.bank_mutations set source_id=41,import_row_id=null where id=101");
+  await admin.query("update public.bank_mutations set linked_transaction_id=42 where id=101");
+  await expect(run()).rejects.toThrow("NATIVE_VENDOR_BANK_LINK_INVALID");
+  await admin.query("update public.bank_mutations set linked_transaction_id=77,import_row_id=null where id=101");
   await expect(run()).rejects.toThrow("BANK_NOT_POSTED_FROM_IMPORT");
   expect((await snapshot()).audit_count).toBe(0);
  });
@@ -177,14 +194,34 @@ describe("Marketplace AP posted bank atomic finalization, disposable PostgreSQL 
   await expect(run()).rejects.toThrow("SIGNED_APPROVAL_MISSING");
   await admin.query("update public.payment_requests set approved_at=now() where id=41");
   await admin.query("delete from public.bank_reconciliation_matches where id=501");
-  await expect(run()).rejects.toThrow("CANONICAL_REQUEST_MATCH_REQUIRED");
+  await expect(run()).rejects.toThrow("NATIVE_VENDOR_MATCH_INVALID");
  });
  it("rejects competing final bank matches and changed amount",async()=>{
-  await admin.query("insert into public.bank_reconciliation_matches values (502,999,'payment_request','public.payment_requests','41','approved')");
-  await expect(run()).rejects.toThrow("COMPETING_PAYMENT_MATCH");
-  await admin.query("delete from public.bank_reconciliation_matches where id=502");
+  await admin.query("insert into public.payment_matching_groups values (302,1,'active',100,0)");
+  await admin.query("insert into public.payment_allocations values (602,302,1,77,999,100,true)");
+  await admin.query(`insert into public.bank_mutations
+    (id,company_id,direction,status,accounting_posted,reconciliation_status,journal_entry_id,amount)
+    values(999,1,'OUT','posted',true,'reconciled',999,100)`);
+  await expect(run()).rejects.toThrow("COMPETING_VENDOR_ALLOCATION");
+  await admin.query("delete from public.payment_allocations where id=602");
+  await admin.query("delete from public.bank_mutations where id=999");
   await admin.query("update public.bank_mutations set amount=101 where id=101");
-  await expect(run()).rejects.toThrow("AMOUNT_MISMATCH");
+  await expect(run()).rejects.toThrow("NATIVE_BANK_ALLOCATION_MISMATCH");
+ });
+ it("rejects multi-invoice allocation and mismatched matching group",async()=>{
+   await admin.query("insert into public.payment_allocations values(602,301,1,78,101,100,true)");
+   await expect(run()).rejects.toThrow("MULTI_INVOICE_PAYMENT_BATCH_UNSUPPORTED");
+   await admin.query("delete from public.payment_allocations where id=602");
+   await admin.query("update public.payment_matching_groups set company_id=3 where id=301");
+   await expect(run()).rejects.toThrow("NATIVE_BANK_ALLOCATION_MISMATCH");
+ });
+ it("rejects a payment matching group shared with a second mutation",async()=>{
+   await admin.query("insert into public.payment_allocations values(602,301,1,78,999,1,true)");
+   await expect(run()).rejects.toThrow("SHARED_PAYMENT_GROUP_UNSUPPORTED");
+ });
+ it("refuses unposted invoice instead of inventing a posted transition",async()=>{
+   await admin.query("update public.vendor_invoices set status='ready_for_ap' where id=77");
+   await expect(run()).rejects.toThrow("INVOICE_NOT_CANONICALLY_POSTED");
  });
  it("rejects inactive bank mapping and cross-company COA",async()=>{
    await admin.query("update public.company_bank_accounts set is_active=false where id=11");

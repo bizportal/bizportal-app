@@ -7,6 +7,7 @@
  */
 import type { Client } from "pg";
 import type { VerifiedActor } from "./marketplacePaymentReleaseGate";
+import { verifyNativeVendorBankEvidence } from "./nativeVendorBankEvidence";
 
 export type FinalizeResult = {status:"CONFIRMED"|"REPLAY";paymentRequestId:number;bankMutationId:number;journalEntryId:number};
 export class PaymentFinalizationDenied extends Error {
@@ -56,7 +57,9 @@ export async function finalizePostedMarketplacePayment(
     requireState(ap.status==="waiting_payment" && ap.vendor_invoice_id===vi.id &&
       handoff.ap_preparation_id===ap.id && handoff.vendor_invoice_id===vi.id &&
       ap.supplier_id===p.supplier_id && vi.supplier_id===p.supplier_id,"AP_REFERENCE_MISMATCH");
-    requireState(vi.status==="ready_for_ap" && vi.three_way_match_status==="passed","AP_INVOICE_NOT_READY");
+    // Existing bank allocation accepts legitimately posted invoices only.
+    // Never forge posted from the Marketplace ready_for_ap status.
+    requireState(vi.status==="posted" && vi.three_way_match_status==="passed","INVOICE_NOT_CANONICALLY_POSTED");
     requireState(handoff.payload_fingerprint===p.payload_fingerprint &&
       /^[a-f0-9]{64}$/.test(String(handoff.payload_fingerprint)) &&
       handoff.handoff_key===p.idempotency_key,"HANDOFF_FINGERPRINT_INVALID");
@@ -68,21 +71,15 @@ export async function finalizePostedMarketplacePayment(
     requireState(bank.direction==="OUT" && bank.status==="posted" && bank.accounting_posted===true &&
       bank.reconciliation_status==="reconciled" && bank.journal_entry_id!==null &&
       (bank.import_row_id!==null || bank.import_batch_id!==null),"BANK_NOT_POSTED_FROM_IMPORT");
-    requireState(bank.source_table==="payment_requests" && bank.source_id===requestId &&
-      bank.source_module==="marketplace_ap","BANK_NOT_BOUND_TO_REQUEST");
+    // Verify the existing canonical Vendor Invoice allocation chain (one
+    // invoice only). A Payment Request link is derived from locked AP/Handoff;
+    // do not trust a caller-supplied bank source tag.
+    const nativeProof=await verifyNativeVendorBankEvidence(
+      client,company,bankId,Number(vi.id),p.total_amount);
+    requireState(nativeProof.groupId>0 && nativeProof.allocationId>0,"BANK_NATIVE_PROOF_MISSING");
     const amount=exactMoney(String(p.total_amount));
     requireState(amount!==null && amount>0n && amount===exactMoney(String(bank.amount)) &&
       amount===exactMoney(String(handoff.amount)),"AMOUNT_MISMATCH");
-    const proofs=await client.query(`select id from public.bank_reconciliation_matches
-      where mutation_id=$1 and candidate_type='payment_request' and
-      candidate_source='public.payment_requests' and candidate_id=$2::text
-      and status in ('approved','posted') for update`,[bankId,requestId]);
-    requireState(proofs.rows.length===1,"CANONICAL_REQUEST_MATCH_REQUIRED");
-    const competitors=await client.query(`select id from public.bank_reconciliation_matches
-      where candidate_type='payment_request' and candidate_source='public.payment_requests'
-      and candidate_id=$1::text and mutation_id<>$2 and status in ('approved','posted')
-      limit 1 for update`,[requestId,bankId]);
-    requireState(competitors.rows.length===0,"COMPETING_PAYMENT_MATCH");
     const journal=await one(client,`select * from public.accounting_entries
        where id=$1 and company_id=$2 and source='bank_reconciliation' and source_id=$3
        and status='posted' for update`,
