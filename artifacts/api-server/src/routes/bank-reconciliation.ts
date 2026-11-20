@@ -9,6 +9,7 @@ import {
 } from "../lib/reconciliation/qrisReviewDiagnostics";
 import { inspectSpreadsheet } from "../lib/google-sheets";
 import { bankSheetConfigAccountJoin } from "../lib/bankSheetConfigAccountJoin";
+import { getDevBankSheetReader } from "../lib/bankSheetScopedReader";
 import {
   syncAllBankSheetConfigs,
   syncOneBankSheetConfig,
@@ -8069,7 +8070,37 @@ router.get("/bank-reconciliation/sheet-configs", async (req, res): Promise<void>
     return;
   }
   const companyId = actor.companyId ?? requestedCompanyId;
+  // In DEV never expose all-company finance settings from the shared OTP pool.
+  // Requiring an explicit company also prevents an unscoped Super Admin list.
+  if (isDevelopmentEnvironment() && companyId === null) {
+    res.status(400).json({ error: "company_id wajib dipilih untuk membaca konfigurasi DEV" });
+    return;
+  }
   try {
+    if (isDevelopmentEnvironment()) {
+      // This separate restricted credential can only see its own company
+      // through PostgreSQL RLS; OTP/general app pool is never a fallback.
+      const reader = getDevBankSheetReader(companyId!);
+      const result = await reader.query<SheetConfigRow>(
+        `select config.id, config.company_id,
+                null::text as company_name,
+                config.label, config.sheet_id, config.tab_name,
+                cba.id as bank_account_id,
+                config.bank_account_number, config.bank_name,
+                cba.name as account_name,
+                coa.code as account_coa_code, coa.name as account_coa_name,
+                config.is_active, config.last_synced_at,
+                config.last_sync_status, config.last_sync_error
+           from public.bank_sheet_configs config
+           ${bankSheetConfigAccountJoin}
+           left join public.chart_of_accounts coa on coa.id=cba.coa_id
+          where config.company_id=$1
+          order by config.is_active desc, config.label, config.id`,
+        [companyId],
+      );
+      res.json({ configs: result.rows });
+      return;
+    }
     const result = await pool.query<SheetConfigRow>(
       `${selectSheetConfigs}
        ${companyId === null ? "" : "where config.company_id = $1"}
