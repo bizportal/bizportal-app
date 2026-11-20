@@ -101,6 +101,30 @@ async function resolvePostingSettings(client: any, companyId: number) {
   return { cashId, receivableId, journalId };
 }
 
+async function verifyFleetCashPaymentSource(client: any, args: {
+  paymentId: number;
+  companyId: number;
+  amount: number;
+  paymentDate?: string;
+}) {
+  // Both services share the canonical Fleet source DB. Never allow an
+  // arbitrary companyId supplied by a bearer-token caller to redirect a
+  // source payment into another company's accounting books.
+  const result = await client.query(
+    `SELECT id,status
+       FROM public.fleet_cash_payments
+      WHERE id=$1 AND company_id=$2 AND amount=$3
+        AND ($4::date IS NULL OR payment_date=$4::date)
+        AND status IN ('confirmed','posted','cancelled')
+      FOR UPDATE`,
+    [args.paymentId, args.companyId, args.amount, args.paymentDate ?? null],
+  );
+  if (!result.rows[0]) {
+    throw new Error("Sumber pembayaran Fleet tidak cocok dengan perusahaan, nominal, atau tanggal.");
+  }
+  return String(result.rows[0].status);
+}
+
 async function postCashPayment(client: any, args: {
   paymentId: number;
   companyId: number;
@@ -110,6 +134,11 @@ async function postCashPayment(client: any, args: {
   referenceNo?: string | null;
   actor?: string | null;
 }) {
+  const sourceStatus = await verifyFleetCashPaymentSource(client, args);
+  if (sourceStatus === "cancelled") {
+    throw new Error("Pembayaran Fleet sudah dibatalkan; posting ditolak.");
+  }
+
   const existing = await client.query(
     `SELECT id,status::text
        FROM public.accounting_entries
@@ -207,6 +236,7 @@ async function reverseCashPayment(client: any, args: {
   driverName: string;
   actor?: string | null;
 }) {
+  await verifyFleetCashPaymentSource(client, args);
   // Reversal must point to exactly this company's original posted Fleet
   // payment. A valid journal ID from another company or another payment is
   // never sufficient authority to reverse cash or receivables.
