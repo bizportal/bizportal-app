@@ -35,6 +35,9 @@ vi.mock("../lib/bankSheetScopedReader", () => ({
   getDevBankSheetReader: (companyId: number) => ({
     query: async (sql: string, params: unknown[] = []) => {
       mock.queries.push({sql, params});
+      if (sql.includes("select sheet_id, tab_name from public.bank_sheet_configs")) {
+        return { rowCount:0, rows:[] };
+      }
       if (Number(companyId) !== Number(params[0])) throw Error("COMPANY_SCOPE_MISMATCH");
       return {rowCount:2,rows:[
         {id:2,company_id:1,label:"mutasi dev",tab_name:"mutasidev",bank_account_id:17,is_active:false},
@@ -112,10 +115,23 @@ describe("bank Sheet company-scoped HTTP authorization gate", () => {
   });
   it("denies cross-company Sheet test and sync before Google calls",async()=>{
     mock.actor={email:"owner@pr95.invalid",companyId:1,role:"super_admin"};
-    expect((await post("/bank-reconciliation/sheet-configs/3/test")).status).toBe(403);
+    expect((await post("/bank-reconciliation/sheet-configs/3/test?company_id=3")).status).toBe(403);
     expect((await post("/bank-reconciliation/sheet-configs/3/sync")).status).toBe(403);
-    expect(mock.queries).toHaveLength(2);
-    expect(mock.queries.every(x=>x.sql.includes("select company_id from public.bank_sheet_configs"))).toBe(true);
+    expect(mock.queries).toHaveLength(1);
+    expect(mock.queries[0].sql).toContain("select company_id from public.bank_sheet_configs");
+  });
+  it("reads test config only through the company reader, not OTP pool",async()=>{
+    mock.actor={email:"owner@pr95.invalid",companyId:1,role:"super_admin"};
+    const r=await post("/bank-reconciliation/sheet-configs/2/test");
+    expect(r.status).toBe(404);
+    expect(mock.queries).toHaveLength(1);
+    expect(mock.queries[0].sql).toContain("where id=$1 and company_id=$2");
+    expect(mock.queries[0].params).toEqual([2,1]);
+  });
+  it("requires company for unscoped Super Admin test before DB access",async()=>{
+    mock.actor={email:"owner@pr95.invalid",companyId:null,role:"super_admin"};
+    expect((await post("/bank-reconciliation/sheet-configs/2/test")).status).toBe(400);
+    expect(mock.queries).toHaveLength(0);
   });
   it("defaults source-only DEV to deny Sheet create and bulk sync with zero SQL",async()=>{
     mock.actor={email:"owner@pr95.invalid",companyId:1,role:"super_admin"};
