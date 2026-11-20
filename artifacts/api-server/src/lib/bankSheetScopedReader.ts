@@ -49,11 +49,11 @@ function createDevBankSheetReader(companyId: number, raw: string): SheetReaderPo
     || !parsed.password) {
     throw new Error("PR147_DEV_SHEET_READER_IDENTITY_MISMATCH");
   }
-  // Reject query overrides; SSL is pinned in explicit Pool options below.
+  // Reject query overrides. Legacy sslrootcert is an inert hint: never resolve\n  // its path or pass it to pg. SSL is pinned to system trust and hostname below.
   // A visible verify-full requirement prevents accidentally accepting URLs
   // that elsewhere would permit plaintext, disabled verification or overrides.
   if (parsed.searchParams.get("sslmode") !== "verify-full"
-      || [...parsed.searchParams.keys()].some((key) => key !== "sslmode")) {
+      || [...parsed.searchParams.keys()].some((key) => key !== "sslmode" && key !== "sslrootcert")) {
     throw new Error("PR147_DEV_SHEET_READER_TLS_REQUIRED");
   }
   const existing = readers.get(companyId);
