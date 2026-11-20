@@ -12,6 +12,9 @@ Verified:
 Unproven:
 - Bank execution evidence is not linked to the originating Payment Request.
 - The AP-to-bank-to-GL finalization path is not deployed nor E2E proven.
+- Marketplace invoices remain ready_for_ap while the existing vendor-invoice bank allocation
+  requires posted status. A documented and tested canonical adapter is mandatory. Never
+  silently promote ready_for_ap to posted to make the test pass.
 - Genuine signed Super Admin HTTP bank-posting acceptance is not proven.
 
 The newly added pure release admission module is not mounted to any HTTP route.

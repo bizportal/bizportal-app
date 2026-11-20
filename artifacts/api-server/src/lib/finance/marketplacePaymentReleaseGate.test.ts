@@ -20,6 +20,7 @@ const evidence=():FinancialEvidence=>({
     {companyId:1,accountId:301,debit:"0.00",credit:"100.00"}]},
  reconciliation:{companyId:1,bankMutationId:101,invoiceId:77,
   finalized:false,activeDuplicates:0,allocationAmount:"100.00"},
+ bankAdapter:{marketplaceStatusContractProven:true,canonicalBindingVerified:true},
 });
 describe("CST DEV Marketplace AP payment release preflight (no writes)",()=>{
  it("accepts complete signed evidence as a CANDIDATE only, never posts",()=>{
@@ -51,6 +52,13 @@ describe("CST DEV Marketplace AP payment release preflight (no writes)",()=>{
   const e=evidence();change(e);
   const actual=evaluateMarketplacePaymentRelease(actor,e);
   expect(actual.status).toBe("NO_GO");expect(actual.blockers).toContain(code);
+ });
+ it("blocks the present ready_for_ap vs legacy posted contract gap",()=>{
+  const e=evidence();
+  e.bankAdapter={marketplaceStatusContractProven:false,canonicalBindingVerified:false};
+  const actual=evaluateMarketplacePaymentRelease(actor,e);
+  expect(actual.status).toBe("NO_GO");
+  expect(actual.blockers).toContain("MARKETPLACE_BANK_ADAPTER_UNPROVEN");
  });
  it("rejects the exact currently delivered AP handoff draft state",()=>{
   const e=evidence();

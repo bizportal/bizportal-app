@@ -29,6 +29,9 @@ export type FinancialEvidence = {
     lines: Array<{ companyId: number; accountId: number; debit: string; credit: string }> };
   reconciliation: { companyId: number; bankMutationId: number; invoiceId: number;
     finalized: boolean; activeDuplicates: number; allocationAmount: string };
+  // This can only be true after a reviewed, deployed canonical adapter proves
+  // that Marketplace ready_for_ap is reconciled without forging legacy posted.
+  bankAdapter: { marketplaceStatusContractProven: boolean; canonicalBindingVerified: boolean };
 };
 export type ReleaseCheck = { status: "GO_CANDIDATE" | "NO_GO"; blockers: string[] };
 function cents(input: string): bigint | null {
@@ -85,5 +88,7 @@ export function evaluateMarketplacePaymentRelease(
     debit<=0n || debit!==credit || debit!==sum(0) || credit!==sum(1));
   fail("RECONCILIATION_NOT_READY",r.bankMutationId!==b.id || r.invoiceId!==inv.id ||
     r.finalized || r.activeDuplicates!==0);
+  fail("MARKETPLACE_BANK_ADAPTER_UNPROVEN",
+    !e.bankAdapter.marketplaceStatusContractProven || !e.bankAdapter.canonicalBindingVerified);
   return {status:blockers.length?"NO_GO":"GO_CANDIDATE",blockers};
 }
