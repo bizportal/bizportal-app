@@ -70,6 +70,7 @@ async function main() {
         ["verify_full",u.searchParams.get("sslmode")==="verify-full"],
         ["query_only_sslmode",![...u.searchParams.keys()].some(x=>x!=="sslmode")]
       ].map(([name,ok])=>name+":"+(ok?"PASS":"FAIL")).join(","));
+      console.log("COMPANY_"+company+"_NON_SSL_QUERY_KEYS="+[...u.searchParams.keys()].filter(k=>k!=="sslmode").map(k=>/^[a-z0-9_]{1,32}$/i.test(k)?k:"UNSAFE_KEY_NAME").join(","));
       all=false;continue;
     }
     const client=new Client({host:u.hostname,port:Number(u.port),user:decodeURIComponent(u.username),password:decodeURIComponent(u.password),database:"postgres",ssl:{rejectUnauthorized:true,servername:u.hostname},connectionTimeoutMillis:8000,query_timeout:12000,application_name:"pr147-temporary-read-only-attestation"});
