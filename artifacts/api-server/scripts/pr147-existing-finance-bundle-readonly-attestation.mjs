@@ -59,7 +59,18 @@ async function main() {
         || !u.password
         || u.searchParams.get("sslmode")!=="verify-full"
         || [...u.searchParams.keys()].some(x=>x!=="sslmode")) {
-      console.log("COMPANY_"+company+"=BLOCKED_URL_POLICY");all=false;continue;
+      console.log("COMPANY_"+company+"=BLOCKED_URL_POLICY");
+      console.log("COMPANY_"+company+"_POLICY_FLAGS="+[
+        ["protocol",u.protocol==="postgresql:"],
+        ["username",decodeURIComponent(u.username)===role+".xssrfshdrtdfupgqwfdw"],
+        ["hostname",u.hostname==="aws-1-ap-southeast-2.pooler.supabase.com"],
+        ["port",["5432","6543"].includes(u.port)],
+        ["database",u.pathname==="/postgres"],
+        ["password_present",Boolean(u.password)],
+        ["verify_full",u.searchParams.get("sslmode")==="verify-full"],
+        ["query_only_sslmode",![...u.searchParams.keys()].some(x=>x!=="sslmode")]
+      ].map(([name,ok])=>name+":"+(ok?"PASS":"FAIL")).join(","));
+      all=false;continue;
     }
     const client=new Client({host:u.hostname,port:Number(u.port),user:decodeURIComponent(u.username),password:decodeURIComponent(u.password),database:"postgres",ssl:{rejectUnauthorized:true,servername:u.hostname},connectionTimeoutMillis:8000,query_timeout:12000,application_name:"pr147-temporary-read-only-attestation"});
     try {
