@@ -51,13 +51,21 @@ jobs:
           wrong=$?
           env -i PATH="$PATH" APP_ENV=development PR147_BANK_SHEET_CST_GCP_SECRET_NAME_DEV=bizportal-pr147-bank-sheet-cst-dev PR147_BANK_SHEET_DIVA_GCP_SECRET_NAME_DEV=bizportal-pr147-bank-sheet-diva-dev GCP_SECRET_MANAGER_BOOTSTRAP_JSON=fixture node "$GATE" >/tmp/pr147_cfg_synthetic 2>&1
           synthetic=$?
+          env -i PATH="$PATH" APP_ENV=development PR147_BANK_SHEET_COMPANIES_GCP_SECRET_NAME_DEV=bizportal-marketplace-finance-dev-companies GCP_SECRET_MANAGER_BOOTSTRAP_JSON=fixture node "$GATE" >/tmp/pr147_cfg_bundle 2>&1
+          bundle=$?
+          env -i PATH="$PATH" APP_ENV=development PR147_BANK_SHEET_COMPANIES_GCP_SECRET_NAME_DEV=bizportal-marketplace-finance-dev-companies PR147_BANK_SHEET_CST_GCP_SECRET_NAME_DEV=bizportal-pr147-bank-sheet-cst-dev GCP_SECRET_MANAGER_BOOTSTRAP_JSON=fixture node "$GATE" >/tmp/pr147_cfg_bundle_ambiguous 2>&1
+          bundle_ambiguous=$?
           env -i PATH="$PATH" bash scripts/dev-pr147-actual-topology-preflight-readonly.sh >/tmp/pr147_sha_missing 2>&1
           sha_missing=$?
           set -e
           test "$missing" -eq 2
           test "$wrong" -eq 2
           test "$synthetic" -eq 0
+          test "$bundle" -eq 0
+          test "$bundle_ambiguous" -eq 2
           test "$sha_missing" -eq 2
+          grep -q 'CST_READER_SOURCE=EXISTING_COMPANY_BUNDLE_PRESENT_UNVERIFIED' /tmp/pr147_cfg_bundle
+          grep -q 'DIVA_READER_SOURCE=EXISTING_COMPANY_BUNDLE_PRESENT_UNVERIFIED' /tmp/pr147_cfg_bundle
           grep -q 'CONFIGURATION_PREFLIGHT=CONFIG_PRESENT_BUT_UNVERIFIED' /tmp/pr147_cfg_synthetic
           grep -q 'CUTOVER_APPROVED=false' /tmp/pr147_cfg_synthetic
           grep -q 'PREFLIGHT_BLOCKED=expected_candidate_sha_required' /tmp/pr147_sha_missing
