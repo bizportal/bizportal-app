@@ -1,6 +1,6 @@
-import { createDedicatedPayrollPool } from "@workspace/db";
+import { Pool } from "pg";
 
-type SheetReaderPool = ReturnType<typeof createDedicatedPayrollPool>;
+type SheetReaderPool = Pool;
 const readers = new Map<number, { url: string; pool: SheetReaderPool }>();
 
 const identities: Record<number, { key: string; username: string }> = {
@@ -45,13 +45,35 @@ export function getDevBankSheetReader(companyId: number): SheetReaderPool {
     || !parsed.password) {
     throw new Error("PR147_DEV_SHEET_READER_IDENTITY_MISMATCH");
   }
+  // Reject query overrides; SSL is pinned in explicit Pool options below.
+  // A visible verify-full requirement prevents accidentally accepting URLs
+  // that elsewhere would permit plaintext, disabled verification or overrides.
+  if (parsed.searchParams.get("sslmode") !== "verify-full"
+      || [...parsed.searchParams.keys()].some((key) => key !== "sslmode")) {
+    throw new Error("PR147_DEV_SHEET_READER_TLS_REQUIRED");
+  }
   const existing = readers.get(companyId);
   if (existing?.url === raw) return existing.pool;
   if (existing) {
-    // Replacing a credential closes the previous idle pool; never log URLs.
-    void existing.pool.end().catch(() => undefined);
+    // A secret rotation requires a controlled process restart. Do not swap
+    // authenticated pools while requests may still use old connections.
+    throw new Error("PR147_DEV_SHEET_READER_CREDENTIAL_CHANGED_RESTART_REQUIRED");
   }
-  const pool = createDedicatedPayrollPool(raw);
+  // Explicit connection fields avoid pg-connection-string SSL query parsing.
+  // Node TLS verifies the certificate chain and the exact Supavisor hostname.
+  const pool = new Pool({
+    host: parsed.hostname,
+    port: Number(parsed.port),
+    user: decodeURIComponent(parsed.username),
+    password: decodeURIComponent(parsed.password),
+    database: "postgres",
+    ssl: { rejectUnauthorized: true, servername: parsed.hostname },
+    max: 1,
+    idleTimeoutMillis: 5_000,
+    connectionTimeoutMillis: 8_000,
+    query_timeout: 15_000,
+    application_name: "bizportal-pr147-sheet-reader-dev",
+  });
   readers.set(companyId, { url: raw, pool });
   return pool;
 }
