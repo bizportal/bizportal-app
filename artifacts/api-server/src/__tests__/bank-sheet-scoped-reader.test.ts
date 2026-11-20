@@ -1,15 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const poolSpy = vi.hoisted(() => ({
-  create: vi.fn((url: string) => ({ url, end: vi.fn(async () => undefined) })),
+  create: vi.fn(),
 }));
-vi.mock("@workspace/db", () => ({
-  createDedicatedPayrollPool: poolSpy.create,
+vi.mock("pg", () => ({
+  Pool: class {
+    end = vi.fn(async () => undefined);
+    constructor(options: unknown) { poolSpy.create(options); }
+  },
 }));
 import { getDevBankSheetReader, closeDevBankSheetReaders } from "../lib/bankSheetScopedReader";
 
-const cstUrl = "postgresql://bizportal_finance_cst_login_dev.xssrfshdrtdfupgqwfdw:isolated-only@aws-1-ap-southeast-2.pooler.supabase.com:6543/postgres";
-const divaUrl = "postgresql://bizportal_finance_diva_login_dev.xssrfshdrtdfupgqwfdw:isolated-only@aws-1-ap-southeast-2.pooler.supabase.com:6543/postgres";
+const cstUrl = "postgresql://bizportal_finance_cst_login_dev.xssrfshdrtdfupgqwfdw:isolated-only@aws-1-ap-southeast-2.pooler.supabase.com:6543/postgres?sslmode=verify-full";
+const divaUrl = "postgresql://bizportal_finance_diva_login_dev.xssrfshdrtdfupgqwfdw:isolated-only@aws-1-ap-southeast-2.pooler.supabase.com:6543/postgres?sslmode=verify-full";
 
 describe("PR147 dedicated DEV Sheet reader identity boundary", () => {
   beforeEach(() => {
@@ -56,6 +59,26 @@ describe("PR147 dedicated DEV Sheet reader identity boundary", () => {
     expect(() => getDevBankSheetReader(1)).toThrow("PR147_DEV_SHEET_READER_IDENTITY_MISMATCH");
     expect(poolSpy.create).not.toHaveBeenCalled();
   });
+  it("rejects absent, disabled or overridden TLS before opening a pool", () => {
+    for (const url of [
+      cstUrl.replace("?sslmode=verify-full", ""),
+      cstUrl.replace("verify-full", "disable"),
+      cstUrl+"&host=evil.example",
+      cstUrl+"&sslrootcert=/tmp/untrusted",
+    ]) {
+      vi.stubEnv("PR147_BANK_SHEET_CST_DATABASE_URL_DEV", url);
+      expect(() => getDevBankSheetReader(1)).toThrow("PR147_DEV_SHEET_READER_TLS_REQUIRED");
+    }
+    expect(poolSpy.create).not.toHaveBeenCalled();
+  });
+  it("rejects hot credential rotation without changing the live pool", () => {
+    vi.stubEnv("PR147_BANK_SHEET_CST_DATABASE_URL_DEV",cstUrl);
+    const first=getDevBankSheetReader(1);
+    vi.stubEnv("PR147_BANK_SHEET_CST_DATABASE_URL_DEV",cstUrl.replace("isolated-only","rotated-fixture"));
+    expect(()=>getDevBankSheetReader(1)).toThrow("PR147_DEV_SHEET_READER_CREDENTIAL_CHANGED_RESTART_REQUIRED");
+    expect(poolSpy.create).toHaveBeenCalledTimes(1);
+    expect(first).toBeDefined();
+  });
   it("uses only the matching restricted company credential and caches each pool", () => {
     vi.stubEnv("PR147_BANK_SHEET_CST_DATABASE_URL_DEV", cstUrl);
     vi.stubEnv("PR147_BANK_SHEET_DIVA_DATABASE_URL_DEV", divaUrl);
@@ -63,6 +86,13 @@ describe("PR147 dedicated DEV Sheet reader identity boundary", () => {
     expect(getDevBankSheetReader(1)).toBe(cst);
     const diva = getDevBankSheetReader(3);
     expect(diva).not.toBe(cst);
-    expect(poolSpy.create.mock.calls.map(x=>x[0])).toEqual([cstUrl,divaUrl]);
+    const opts = poolSpy.create.mock.calls.map(x=>x[0] as Record<string,unknown>);
+    expect(opts.map(x=>x.user)).toEqual([
+      "bizportal_finance_cst_login_dev.xssrfshdrtdfupgqwfdw",
+      "bizportal_finance_diva_login_dev.xssrfshdrtdfupgqwfdw",
+    ]);
+    expect(opts.every(x=>JSON.stringify(x.ssl) === JSON.stringify({
+      rejectUnauthorized:true,servername:"aws-1-ap-southeast-2.pooler.supabase.com"
+    }))).toBe(true);
   });
 });
