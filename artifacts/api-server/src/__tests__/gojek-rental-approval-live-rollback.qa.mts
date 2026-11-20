@@ -3,7 +3,7 @@
  * Uses the pre-existing role-pinned Finance adapter, never a service-role
  * or forged signed-OTP session. An intentional throw forces ROLLBACK.
  */
-import { withFleetFinanceDevTransaction } from "@workspace/db/fleet-finance-dev";
+import { withFleetFinanceDevTransaction } from "../../../../lib/db/src/fleet-finance-dev";
 
 const scope={sourceCompanyId:1,companyId:3};
 const codes=["1-1025-DV","1-1035-DV","4-1026-DV","4-1027-DV"];
