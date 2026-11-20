@@ -9,7 +9,7 @@ vi.mock("pg", () => ({
     constructor(options: unknown) { poolSpy.create(options); }
   },
 }));
-import { getDevBankSheetReader, closeDevBankSheetReaders } from "../lib/bankSheetScopedReader";
+import { getDevBankSheetReader, getDevBankSheetReaderFromConfiguredSource, closeDevBankSheetReaders } from "../lib/bankSheetScopedReader";
 
 const cstUrl = "postgresql://bizportal_finance_cst_login_dev.xssrfshdrtdfupgqwfdw:isolated-only@aws-1-ap-southeast-2.pooler.supabase.com:6543/postgres?sslmode=verify-full";
 const divaUrl = "postgresql://bizportal_finance_diva_login_dev.xssrfshdrtdfupgqwfdw:isolated-only@aws-1-ap-southeast-2.pooler.supabase.com:6543/postgres?sslmode=verify-full";
@@ -19,11 +19,47 @@ describe("PR147 dedicated DEV Sheet reader identity boundary", () => {
     vi.stubEnv("APP_ENV", "development");
     vi.stubEnv("PR147_BANK_SHEET_CST_DATABASE_URL_DEV", "");
     vi.stubEnv("PR147_BANK_SHEET_DIVA_DATABASE_URL_DEV", "");
+    vi.stubEnv("PR147_BANK_SHEET_CST_GCP_SECRET_NAME_DEV", "");
+    vi.stubEnv("PR147_BANK_SHEET_DIVA_GCP_SECRET_NAME_DEV", "");
     poolSpy.create.mockClear();
   });
   afterEach(async () => {
     await closeDevBankSheetReaders();
     vi.unstubAllEnvs();
+  });
+  it("reads only the named dedicated CST secret, never the OTP pool", async () => {
+    const reader = vi.fn(async (_name: string) => cstUrl);
+    vi.stubEnv("PR147_BANK_SHEET_CST_GCP_SECRET_NAME_DEV","bizportal-pr147-bank-sheet-cst-dev");
+    const scoped = await getDevBankSheetReaderFromConfiguredSource(1,reader);
+    expect(scoped).toBeDefined();
+    expect(reader).toHaveBeenCalledWith("bizportal-pr147-bank-sheet-cst-dev");
+    expect(poolSpy.create).toHaveBeenCalledTimes(1);
+  });
+  it("forbids conflicting direct and secret credentials before loading secrets", async () => {
+    const reader = vi.fn(async () => cstUrl);
+    vi.stubEnv("PR147_BANK_SHEET_CST_DATABASE_URL_DEV",cstUrl);
+    vi.stubEnv("PR147_BANK_SHEET_CST_GCP_SECRET_NAME_DEV","bizportal-pr147-bank-sheet-cst-dev");
+    await expect(getDevBankSheetReaderFromConfiguredSource(1,reader))
+      .rejects.toThrow("PR147_DEV_SHEET_READER_CREDENTIAL_SOURCE_AMBIGUOUS");
+    expect(reader).not.toHaveBeenCalled();
+    expect(poolSpy.create).not.toHaveBeenCalled();
+  });
+  it("forbids other secret names and wrong-company payloads", async () => {
+    const reader = vi.fn(async () => divaUrl);
+    vi.stubEnv("PR147_BANK_SHEET_CST_GCP_SECRET_NAME_DEV","shared-production-secret");
+    await expect(getDevBankSheetReaderFromConfiguredSource(1,reader))
+      .rejects.toThrow("PR147_DEV_SHEET_READER_SECRET_NAME_INVALID");
+    vi.stubEnv("PR147_BANK_SHEET_CST_GCP_SECRET_NAME_DEV","bizportal-pr147-bank-sheet-cst-dev");
+    await expect(getDevBankSheetReaderFromConfiguredSource(1,reader))
+      .rejects.toThrow("PR147_DEV_SHEET_READER_IDENTITY_MISMATCH");
+    expect(poolSpy.create).not.toHaveBeenCalled();
+  });
+  it("does not fall back on Secret Manager errors", async () => {
+    const reader = vi.fn(async () => { throw Error("GCP_SECRET_UNAVAILABLE"); });
+    vi.stubEnv("PR147_BANK_SHEET_CST_GCP_SECRET_NAME_DEV","bizportal-pr147-bank-sheet-cst-dev");
+    await expect(getDevBankSheetReaderFromConfiguredSource(1,reader))
+      .rejects.toThrow("GCP_SECRET_UNAVAILABLE");
+    expect(poolSpy.create).not.toHaveBeenCalled();
   });
   it("denies missing credential, never creating a general OTP pool", () => {
     expect(() => getDevBankSheetReader(1)).toThrow("PR147_DEV_SHEET_READER_NOT_CONFIGURED");
