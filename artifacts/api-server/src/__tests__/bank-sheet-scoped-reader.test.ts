@@ -153,12 +153,21 @@ describe("PR147 dedicated DEV Sheet reader identity boundary", () => {
       cstUrl.replace("?sslmode=verify-full", ""),
       cstUrl.replace("verify-full", "disable"),
       cstUrl+"&host=evil.example",
-      cstUrl+"&sslrootcert=/tmp/untrusted",
     ]) {
       vi.stubEnv("PR147_BANK_SHEET_CST_DATABASE_URL_DEV", url);
       expect(() => getDevBankSheetReader(1)).toThrow("PR147_DEV_SHEET_READER_TLS_REQUIRED");
     }
     expect(poolSpy.create).not.toHaveBeenCalled();
+  });
+  it("ignores legacy sslrootcert hint while pinning system TLS identity", () => {
+    vi.stubEnv("PR147_BANK_SHEET_CST_DATABASE_URL_DEV",cstUrl+"&sslrootcert=/tmp/untrusted");
+    expect(getDevBankSheetReader(1)).toBeDefined();
+    expect(poolSpy.create).toHaveBeenCalledTimes(1);
+    const opts=poolSpy.create.mock.calls[0][0] as Record<string,unknown>;
+    expect(opts.ssl).toEqual({
+      rejectUnauthorized:true,servername:"aws-1-ap-southeast-2.pooler.supabase.com"
+    });
+    expect(Object.keys(opts)).not.toContain("sslrootcert");
   });
   it("rejects hot credential rotation without changing the live pool", () => {
     vi.stubEnv("PR147_BANK_SHEET_CST_DATABASE_URL_DEV",cstUrl);
