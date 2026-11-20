@@ -26,6 +26,14 @@ describe("Fleet Central Finance service integration", () => {
     expect(integration).toContain("source='reversal'");
   });
 
+  it("requires an authoritative Fleet payment source before posting or reversing", () => {
+    expect(integration).toContain("verifyFleetCashPaymentSource(client, args)");
+    expect(integration).toContain("FROM public.fleet_cash_payments");
+    expect(integration).toContain("WHERE id=$1 AND company_id=$2 AND amount=$3");
+    expect(integration).toContain("Pembayaran Fleet sudah dibatalkan; posting ditolak.");
+    expect(integration).toContain("Sumber pembayaran Fleet tidak cocok dengan perusahaan, nominal, atau tanggal.");
+  });
+
   it("requires a same-company active journal before posting", () => {
     expect(integration).toContain("Jurnal Fleet tidak aktif atau bukan milik perusahaan ini.");
     expect(integration).toContain("WHERE id=$1 AND company_id=$2 AND COALESCE(is_active,true)=true");
