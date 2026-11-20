@@ -86,6 +86,18 @@ async function resolvePostingSettings(client: any, companyId: number) {
     throw new Error("COA Fleet Cash Payment tidak valid atau tidak postable.");
   }
 
+  // A configured numeric journal ID is not proof of company ownership.
+  // Fail closed before creating any journal header or accounting lines.
+  const journal = await client.query(
+    `SELECT id FROM public.accounting_journals
+      WHERE id=$1 AND company_id=$2 AND COALESCE(is_active,true)=true
+      LIMIT 1`,
+    [journalId, companyId],
+  );
+  if (!journal.rows[0]) {
+    throw new Error("Jurnal Fleet tidak aktif atau bukan milik perusahaan ini.");
+  }
+
   return { cashId, receivableId, journalId };
 }
 
@@ -108,6 +120,9 @@ async function postCashPayment(client: any, args: {
     [args.companyId, args.paymentId],
   );
   if (existing.rows[0]?.id) {
+    if (existing.rows[0].status !== "posted") {
+      throw new Error("Jurnal Fleet existing belum POSTED; perlu pemeriksaan manual.");
+    }
     return { entryId: Number(existing.rows[0].id), idempotent: true };
   }
 
@@ -141,7 +156,7 @@ async function postCashPayment(client: any, args: {
   let entryId = Number(entry.rows[0]?.id);
   if (!entryId) {
     const raced = await client.query(
-      `SELECT id
+      `SELECT id,status::text
          FROM public.accounting_entries
         WHERE company_id=$1
           AND source='fleet_cash_payment'
@@ -150,7 +165,9 @@ async function postCashPayment(client: any, args: {
       [args.companyId, args.paymentId],
     );
     entryId = Number(raced.rows[0]?.id);
-    if (!entryId) throw new Error("Gagal membuat jurnal Fleet Cash Payment.");
+    if (!entryId || raced.rows[0]?.status !== "posted") {
+      throw new Error("Jurnal Fleet existing belum POSTED; perlu pemeriksaan manual.");
+    }
     return { entryId, idempotent: true };
   }
 
@@ -190,6 +207,24 @@ async function reverseCashPayment(client: any, args: {
   driverName: string;
   actor?: string | null;
 }) {
+  // Reversal must point to exactly this company's original posted Fleet
+  // payment. A valid journal ID from another company or another payment is
+  // never sufficient authority to reverse cash or receivables.
+  const original = await client.query(
+    `SELECT id,total_debit,total_credit,status::text
+       FROM public.accounting_entries
+      WHERE id=$1 AND company_id=$2
+        AND source='fleet_cash_payment' AND source_id=$3
+      FOR UPDATE`,
+    [args.originalEntryId, args.companyId, args.paymentId],
+  );
+  const posted = original.rows[0];
+  if (!posted || posted.status !== "posted" ||
+      Math.abs(Number(posted.total_debit) - args.amount) > 0.005 ||
+      Math.abs(Number(posted.total_credit) - args.amount) > 0.005) {
+    throw new Error("Original Fleet payment tidak cocok dengan perusahaan, status, atau nominal.");
+  }
+
   const existing = await client.query(
     `SELECT id
        FROM public.accounting_entries
