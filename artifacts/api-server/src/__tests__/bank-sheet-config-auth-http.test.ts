@@ -32,7 +32,7 @@ vi.mock("@workspace/db", () => ({
 }));
 
 vi.mock("../lib/bankSheetScopedReader", () => ({
-  getDevBankSheetReader: (companyId: number) => ({
+  getDevBankSheetReaderFromConfiguredSource: async (companyId: number) => ({
     query: async (sql: string, params: unknown[] = []) => {
       mock.queries.push({sql, params});
       if (sql.includes("select sheet_id, tab_name from public.bank_sheet_configs")) {
