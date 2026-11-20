@@ -118,7 +118,7 @@ router.post("/accounting/gojek-rental-approval",async(req:Request,res:Response):
       );
       if (updated.rowCount !== CODES.length) throw new Error("APPROVAL_ATOMICITY_FAILED");
       return {approved:true,idempotent:false,accounts:updated.rowCount,approvedBy:actor.email};
-    });
+    },{ approvalOnly:true });
     res.setHeader("Cache-Control","private, no-store");
     res.status(result.idempotent ? 200 : 201).json({...result,postingEnabled:false});
   }catch(error){
