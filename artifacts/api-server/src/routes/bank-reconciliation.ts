@@ -7993,7 +7993,7 @@ router.use(["/bank-reconciliation/sheet-configs", "/bank-reconciliation/sheet-sy
     return;
   }
   const idMatch = requestPath.match(/(?:^|\/)bank-reconciliation\/sheet-configs\/(\d+)(?:\/(?:sync|test))?$/);
-  if (idMatch && actor.companyId != null) {
+  if (idMatch && actor.companyId != null && !(isDevelopmentEnvironment() && requestPath.endsWith("/test"))) {
     try {
       const owner = await pool.query<{ company_id: number | null }>(
         "select company_id from public.bank_sheet_configs where id=$1", [Number(idMatch[1])],
@@ -8369,11 +8369,30 @@ router.post("/bank-reconciliation/sheet-configs/:id/test", async (req, res): Pro
     return;
   }
 
+  // DEV connectivity inspection must use the same company-scoped reader
+  // as the list endpoint; never query Sheet config via the OTP app pool.
+  const requestedCompany = req.query.company_id === undefined
+    ? null : parsePositiveInt(req.query.company_id);
+  if (isDevelopmentEnvironment() && req.query.company_id !== undefined && requestedCompany === null) {
+    res.status(400).json({ ok: false, error: "company_id tidak valid" }); return;
+  }
+  if (actor.companyId != null && requestedCompany != null && actor.companyId !== requestedCompany) {
+    res.status(403).json({ ok: false, error: "Akses perusahaan ditolak" }); return;
+  }
+  const companyId = actor.companyId ?? requestedCompany;
+  if (isDevelopmentEnvironment() && companyId === null) {
+    res.status(400).json({ ok: false, error: "company_id wajib dipilih" }); return;
+  }
   try {
-    const config = await pool.query<{ sheet_id: string; tab_name: string }>(
-      "select sheet_id, tab_name from public.bank_sheet_configs where id = $1 and ($2::int is null or company_id = $2)",
-      [id, actor.companyId],
-    );
+    const config = isDevelopmentEnvironment()
+      ? await getDevBankSheetReader(companyId!).query<{ sheet_id: string; tab_name: string }>(
+        "select sheet_id, tab_name from public.bank_sheet_configs where id=$1 and company_id=$2",
+        [id, companyId],
+      )
+      : await pool.query<{ sheet_id: string; tab_name: string }>(
+        "select sheet_id, tab_name from public.bank_sheet_configs where id=$1 and ($2::int is null or company_id=$2)",
+        [id, actor.companyId],
+      );
     if (config.rowCount === 0) {
       res.status(404).json({ ok: false, error: "Konfigurasi tidak ditemukan" });
       return;
