@@ -108,3 +108,20 @@ bank evidence, atomic finalization, replay/rollback, authorization and existing
 posting contracts, with real disposable PostgreSQL queries for the adapters.
 API typecheck PASS. The test container was stopped and must be removed.
 This is not a real signed Owner HTTP E2E and remains NO-GO for real payments.
+
+## Signed Owner QA button (SAFE UI acceptance candidate)
+
+The new frontend route /finance/payment-approval-qa contains a visible functional
+"Setujui Pembayaran Uji" button and is linked from Finance Vendor Invoice preview.
+It uses a signed server-side Super Admin session, a verified CST/Diva company
+scope, and an isolated PostgreSQL QA database bound to 127.0.0.1:55495 and
+database name finance_approval_qa. Its acceptance endpoint is disabled by
+default, refuses cross-origin POST, prevents replay/double audit, and never
+touches payments, bank transfers or financial journals.
+
+This is a REAL UI-to-server approval QA test, but specifically NOT the real
+supplier-payment E2E. It exercises Super Admin approval only. Do not confuse
+the QA receipt with a bank settlement or accounting posting receipt.
+
+No owner action is requested until the candidate is actually deployed and
+verified in a browser. PROD unchanged.

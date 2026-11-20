@@ -96,6 +96,16 @@ router.use((req, res, next) => {
   });
 });
 
+// Signed Super Admin approval QA: isolated localhost PostgreSQL only; no bank/GL writes.
+router.use((req,res,next)=>{
+  if(req.path==='/mkt/admin/payment-approval-qa'){
+    void import('./dev-finance-approval-qa').then(({default:handler})=>handler(req,res,next)).catch(error=>{
+      req.log?.error({error},'Finance approval QA unavailable');
+      if(!res.headersSent)res.status(503).json({error:'Finance approval QA unavailable'});
+    });
+  }else next();
+});
+
 // Canonical vendor invoice/AP services: DEV-only, feature flags OFF by default.
 // Standalone runtime does not create GL journals or execute payments.
 router.use((req,res,next) => {
