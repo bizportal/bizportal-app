@@ -10,12 +10,15 @@ ACTIVE_API_DIR="${ACTIVE_API_DIR:-/opt/cst-bizportal-payroll-candidate-caaef80}"
 ACTIVE_API_PORT="${ACTIVE_API_PORT:-19981}"
 ACTIVE_SERVICE="${ACTIVE_SERVICE:-cst-bizportal-payroll-stage.service}"
 CANDIDATE="${CANDIDATE:-/tmp/bizportal-pr147-qa-2424bd3b}"
-EXPECTED_CANDIDATE_SHA="${EXPECTED_CANDIDATE_SHA:-92f6ff7e87c068c329cedac7c986fce0ac41f7c9}"
+EXPECTED_CANDIDATE_SHA="${EXPECTED_CANDIDATE_SHA:-}"
 EXPECTED_NGINX_SHA="${EXPECTED_NGINX_SHA:-baf9866f4a893e9193fda5dab77b6b4890b5a29f72e733a215338ab1ac4c7dfd}"
 EXPECTED_FRONTEND_SHA="${EXPECTED_FRONTEND_SHA:-a291f675abd384e06fe9e7f5a1c723f7b3058f6eb8431ec81b082c19d453a265}"
 EXPECTED_API_SHA="${EXPECTED_API_SHA:-1dbae20010bae5b767bde42fc248eb1a1e287c1619c8796cdc35ed3514c550ea}"
 
 block(){ printf 'PREFLIGHT_BLOCKED=%s\nCUTOVER_APPROVED=false\n' "$1"; exit 2; }
+# An older branch SHA must never silently be accepted as the new release candidate.
+test -n "$EXPECTED_CANDIDATE_SHA" || block "expected_candidate_sha_required"
+[[ "$EXPECTED_CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]] || block "expected_candidate_sha_invalid"
 for executable in git sha256sum curl grep readlink systemctl nginx; do
   command -v "$executable" >/dev/null || block "missing_tool_${executable}"
 done
