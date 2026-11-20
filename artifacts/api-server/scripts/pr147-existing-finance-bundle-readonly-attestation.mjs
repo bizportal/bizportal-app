@@ -105,6 +105,22 @@ async function main() {
       console.log("COMPANY_"+company+"=BLOCKED_"+(e?.message?.startsWith("TLS_")||e?.message?.startsWith("RLS_")||e?.message?.startsWith("SESSION_")||e?.message?.startsWith("CROSS_")||e?.message?.startsWith("CST_")?e.message:"AUTH_OR_QUERY_FAILURE"));
       console.log("COMPANY_"+company+"_SAFE_ERROR_CODE="+category);
       console.log("COMPANY_"+company+"_FAILURE_STAGE="+stage);
+      const safeErrorText=String(e?.message||"").toLowerCase();
+      const known=[
+        ["TLS_CHAIN","self-signed certificate"],
+        ["TLS_UNABLE_VERIFY","unable to verify"],
+        ["TLS_CERTIFICATE","certificate"],
+        ["TLS_HANDSHAKE","ssl"],
+        ["AUTH_PASSWORD","password authentication failed"],
+        ["AUTH_SASL","sasl"],
+        ["NETWORK_TIMEOUT","timeout"],
+        ["NETWORK_REFUSED","econnrefused"],
+        ["NETWORK_CONNECTION","connection"],
+        ["POOLER_REJECTION","pooler"],
+        ["INVALID_PG_CLIENT","client"],
+      ];
+      const matched=known.find(([_,pattern])=>safeErrorText.includes(pattern));
+      console.log("COMPANY_"+company+"_ERROR_CLASS="+(matched?.[0]??"UNCLASSIFIED"));
       all=false;
     } finally {
       try {await client.query("ROLLBACK");}catch{}
