@@ -26,6 +26,24 @@ describe("Fleet Central Finance service integration", () => {
     expect(integration).toContain("source='reversal'");
   });
 
+  it("requires a same-company active journal before posting", () => {
+    expect(integration).toContain("Jurnal Fleet tidak aktif atau bukan milik perusahaan ini.");
+    expect(integration).toContain("WHERE id=$1 AND company_id=$2 AND COALESCE(is_active,true)=true");
+  });
+
+  it("rejects mismatched and unposted originals before a Fleet reversal", () => {
+    expect(integration).toContain("source='fleet_cash_payment' AND source_id=$3");
+    expect(integration).toContain("AND source='fleet_cash_payment' AND source_id=$3");
+    expect(integration).toContain("Original Fleet payment tidak cocok dengan perusahaan, status, atau nominal.");
+    expect(integration).toContain("posted.status !== \"posted\"");
+    expect(integration).toContain("Math.abs(Number(posted.total_debit) - args.amount) > 0.005");
+  });
+
+  it("never reports a draft Fleet payment as an idempotent posted journal", () => {
+    expect(integration).toContain("Jurnal Fleet existing belum POSTED; perlu pemeriksaan manual.");
+    expect(integration).toContain("existing.rows[0].status !== \"posted\"");
+  });
+
   it("keeps the accounting settings source inside Central Finance", () => {
     expect(integration).toContain('router.get("/companies/:companyId/accounting-settings"');
     expect(integration).toContain('router.put("/companies/:companyId/accounting-settings"');
