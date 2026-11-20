@@ -147,13 +147,18 @@ export async function getFleetFinanceDevWriteReadiness(client: pg.PoolClient) {
 export async function withFleetFinanceDevTransaction<T>(
   scope: FleetFinanceDevScope,
   work: (client: pg.PoolClient) => Promise<T>,
-  options: { readOnly?: boolean } = {},
+  options: { readOnly?: boolean; approvalOnly?: boolean } = {},
 ): Promise<T> {
   requireDevelopment();
   if (scope.sourceCompanyId !== SOURCE_COMPANY || scope.companyId !== FINANCE_COMPANY) {
     throw new Error("FLEET_FINANCE_DEV_COMPANY_SCOPE_INVALID");
   }
-  if (options.readOnly !== true && process.env.FLEET_FINANCE_WRITE_ENABLED !== "true") {
+  if (options.approvalOnly === true) {
+    if (options.readOnly === true ||
+        process.env.BIZPORTAL_FLEET_GOJEK_APPROVAL_ENABLED_DEV !== "true") {
+      throw new Error("FLEET_GOJEK_APPROVAL_DEV_DISABLED");
+    }
+  } else if (options.readOnly !== true && process.env.FLEET_FINANCE_WRITE_ENABLED !== "true") {
     throw new Error("FLEET_FINANCE_DEV_WRITES_DISABLED");
   }
   const client = await (await getFinancePool()).connect();
