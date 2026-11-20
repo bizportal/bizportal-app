@@ -19,6 +19,31 @@ ON public.chart_of_accounts TO bizportal_fleet_finance_login_dev;
 DO $policy$ BEGIN
  IF NOT EXISTS (
    SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='chart_of_accounts'
+   AND policyname='fleet_gojek_rental_approval_dev_write'
+ ) THEN
+   -- SELECT's permissive policy cannot authorize UPDATE. This dedicated
+   -- permissive UPDATE is intersected with both existing restrictive guards.
+   CREATE POLICY fleet_gojek_rental_approval_dev_write
+   ON public.chart_of_accounts AS PERMISSIVE
+   FOR UPDATE TO bizportal_fleet_finance_login_dev
+   USING (
+     company_id=3 AND code IN ('1-1025-DV','1-1035-DV','4-1026-DV','4-1027-DV')
+     AND current_user=session_user
+     AND current_setting('app.fleet_source_company_id',true)='1'
+     AND current_setting('app.fleet_finance_company_id',true)='3'
+     AND nullif(current_setting('app.fleet_approval_actor',true),'') IS NOT NULL
+   )
+   WITH CHECK (
+     company_id=3 AND code IN ('1-1025-DV','1-1035-DV','4-1026-DV','4-1027-DV')
+     AND current_user=session_user
+     AND current_setting('app.fleet_source_company_id',true)='1'
+     AND current_setting('app.fleet_finance_company_id',true)='3'
+     AND approved_by=current_setting('app.fleet_approval_actor',true)
+     AND approved_at IS NOT NULL
+   );
+ END IF;
+ IF NOT EXISTS (
+   SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='chart_of_accounts'
    AND policyname='fleet_gojek_rental_approval_dev_restrictive'
  ) THEN
    CREATE POLICY fleet_gojek_rental_approval_dev_restrictive
