@@ -3,6 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const poolSpy = vi.hoisted(() => ({
   create: vi.fn(),
 }));
+vi.mock("@workspace/db", () => ({
+  readSecret: vi.fn(async () => { throw Error("NOT_CONFIGURED_FOR_ISOLATED_TEST"); }),
+}));
 vi.mock("pg", () => ({
   Pool: class {
     end = vi.fn(async () => undefined);
