@@ -24,11 +24,61 @@ describe("PR147 dedicated DEV Sheet reader identity boundary", () => {
     vi.stubEnv("PR147_BANK_SHEET_DIVA_DATABASE_URL_DEV", "");
     vi.stubEnv("PR147_BANK_SHEET_CST_GCP_SECRET_NAME_DEV", "");
     vi.stubEnv("PR147_BANK_SHEET_DIVA_GCP_SECRET_NAME_DEV", "");
+    vi.stubEnv("PR147_BANK_SHEET_COMPANIES_GCP_SECRET_NAME_DEV", "");
     poolSpy.create.mockClear();
   });
   afterEach(async () => {
     await closeDevBankSheetReaders();
     vi.unstubAllEnvs();
+  });
+  it("uses the existing scoped company bundle without copying or rotating credentials", async () => {
+    vi.stubEnv("PR147_BANK_SHEET_COMPANIES_GCP_SECRET_NAME_DEV","bizportal-marketplace-finance-dev-companies");
+    const fetchBundle=vi.fn(async () => JSON.stringify({
+      version:2,
+      companies: {
+        "1": {role:"bizportal_finance_cst_login_dev",databaseUrl:cstUrl},
+        "3": {role:"bizportal_finance_diva_login_dev",databaseUrl:divaUrl},
+      }
+    }));
+    const cst=await getDevBankSheetReaderFromConfiguredSource(1,fetchBundle);
+    const diva=await getDevBankSheetReaderFromConfiguredSource(3,fetchBundle);
+    expect(cst).toBeDefined();
+    expect(diva).not.toBe(cst);
+    expect(fetchBundle).toHaveBeenCalledTimes(2);
+    expect(fetchBundle).toHaveBeenNthCalledWith(1,"bizportal-marketplace-finance-dev-companies");
+    expect(poolSpy.create).toHaveBeenCalledTimes(2);
+  });
+  it("refuses a wrong role label even if the URL username looks correct", async () => {
+    vi.stubEnv("PR147_BANK_SHEET_COMPANIES_GCP_SECRET_NAME_DEV","bizportal-marketplace-finance-dev-companies");
+    const source=vi.fn(async()=>JSON.stringify({companies:{"1":{
+      role:"bizportal_finance_diva_login_dev",databaseUrl:cstUrl
+    }}}));
+    await expect(getDevBankSheetReaderFromConfiguredSource(1,source))
+      .rejects.toThrow("PR147_DEV_SHEET_READER_BUNDLE_COMPANY_IDENTITY_MISMATCH");
+    expect(poolSpy.create).not.toHaveBeenCalled();
+  });
+  it("refuses missing tenant, malformed bundle and non-approved source names", async () => {
+    vi.stubEnv("PR147_BANK_SHEET_COMPANIES_GCP_SECRET_NAME_DEV","bizportal-marketplace-finance-dev-companies");
+    await expect(getDevBankSheetReaderFromConfiguredSource(3,async()=>JSON.stringify({companies:{
+      "1":{role:"bizportal_finance_cst_login_dev",databaseUrl:cstUrl}
+    }}))).rejects.toThrow("PR147_DEV_SHEET_READER_BUNDLE_COMPANY_IDENTITY_MISMATCH");
+    await expect(getDevBankSheetReaderFromConfiguredSource(1,async()=>"{invalid"))
+      .rejects.toThrow("PR147_DEV_SHEET_READER_BUNDLE_INVALID");
+    vi.stubEnv("PR147_BANK_SHEET_COMPANIES_GCP_SECRET_NAME_DEV","bizportal-production");
+    await expect(getDevBankSheetReaderFromConfiguredSource(1,async()=>"unused"))
+      .rejects.toThrow("PR147_DEV_SHEET_READER_BUNDLE_NAME_INVALID");
+    expect(poolSpy.create).not.toHaveBeenCalled();
+  });
+  it("forbids bundle-plus-direct or bundle-plus-dedicated secret ambiguities", async () => {
+    vi.stubEnv("PR147_BANK_SHEET_COMPANIES_GCP_SECRET_NAME_DEV","bizportal-marketplace-finance-dev-companies");
+    vi.stubEnv("PR147_BANK_SHEET_CST_DATABASE_URL_DEV",cstUrl);
+    await expect(getDevBankSheetReaderFromConfiguredSource(1,async()=>"unused"))
+      .rejects.toThrow("PR147_DEV_SHEET_READER_CREDENTIAL_SOURCE_AMBIGUOUS");
+    vi.stubEnv("PR147_BANK_SHEET_CST_DATABASE_URL_DEV","");
+    vi.stubEnv("PR147_BANK_SHEET_CST_GCP_SECRET_NAME_DEV","bizportal-pr147-bank-sheet-cst-dev");
+    await expect(getDevBankSheetReaderFromConfiguredSource(1,async()=>"unused"))
+      .rejects.toThrow("PR147_DEV_SHEET_READER_CREDENTIAL_SOURCE_AMBIGUOUS");
+    expect(poolSpy.create).not.toHaveBeenCalled();
   });
   it("reads only the named dedicated CST secret, never the OTP pool", async () => {
     const reader = vi.fn(async (_name: string) => cstUrl);
