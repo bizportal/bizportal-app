@@ -8,8 +8,8 @@ vi.mock("@workspace/db", () => ({
 }));
 import { getDevBankSheetReader, closeDevBankSheetReaders } from "../lib/bankSheetScopedReader";
 
-const cstUrl = "postgresql://bizportal_finance_cst_login_dev.xssrfshdrtdfupgqwfdw:isolated-only@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres";
-const divaUrl = "postgresql://bizportal_finance_diva_login_dev.xssrfshdrtdfupgqwfdw:isolated-only@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres";
+const cstUrl = "postgresql://bizportal_finance_cst_login_dev.xssrfshdrtdfupgqwfdw:isolated-only@aws-1-ap-southeast-2.pooler.supabase.com:6543/postgres";
+const divaUrl = "postgresql://bizportal_finance_diva_login_dev.xssrfshdrtdfupgqwfdw:isolated-only@aws-1-ap-southeast-2.pooler.supabase.com:6543/postgres";
 
 describe("PR147 dedicated DEV Sheet reader identity boundary", () => {
   beforeEach(() => {
@@ -42,7 +42,17 @@ describe("PR147 dedicated DEV Sheet reader identity boundary", () => {
     vi.stubEnv("APP_ENV","production");
     expect(() => getDevBankSheetReader(1)).toThrow("PR147_DEV_SHEET_READER_ENVIRONMENT_REQUIRED");
     vi.stubEnv("APP_ENV","development");
+    vi.stubEnv("PR147_BANK_SHEET_CST_DATABASE_URL_DEV", cstUrl.replace("6543","6432"));
+    expect(() => getDevBankSheetReader(1)).toThrow("PR147_DEV_SHEET_READER_IDENTITY_MISMATCH");
+    expect(poolSpy.create).not.toHaveBeenCalled();
+  });
+  it("accepts the active CST-DEV Supavisor session endpoint as well as transaction mode", () => {
     vi.stubEnv("PR147_BANK_SHEET_CST_DATABASE_URL_DEV", cstUrl.replace("6543","5432"));
+    expect(getDevBankSheetReader(1)).toBeDefined();
+    expect(poolSpy.create).toHaveBeenCalledTimes(1);
+  });
+  it("denies a wrong regional Supavisor endpoint even with the same username", () => {
+    vi.stubEnv("PR147_BANK_SHEET_CST_DATABASE_URL_DEV", cstUrl.replace("ap-southeast-2","ap-southeast-1"));
     expect(() => getDevBankSheetReader(1)).toThrow("PR147_DEV_SHEET_READER_IDENTITY_MISMATCH");
     expect(poolSpy.create).not.toHaveBeenCalled();
   });
