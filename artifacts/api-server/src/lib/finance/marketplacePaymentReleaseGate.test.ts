@@ -67,5 +67,7 @@ describe("CST DEV Marketplace AP payment release preflight (no writes)",()=>{
   const global={...actor,companyId:null,approvedGlobalCompanyId:1};
   expect(evaluateMarketplacePaymentRelease(global,evidence()).status).toBe("GO_CANDIDATE");
   expect(evaluateMarketplacePaymentRelease({...global,approvedGlobalCompanyId:3},evidence()).status).toBe("NO_GO");
+  // Company-bound admin must never claim cross-company global authority.
+  expect(evaluateMarketplacePaymentRelease({...actor,companyId:3,approvedGlobalCompanyId:1},evidence()).status).toBe("NO_GO");
  });
 });

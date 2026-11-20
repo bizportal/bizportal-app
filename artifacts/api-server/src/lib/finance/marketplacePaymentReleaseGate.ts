@@ -51,7 +51,8 @@ export function evaluateMarketplacePaymentRelease(
   const company=ap.companyId;
   fail("SIGNED_SUPERADMIN_REQUIRED", !actor || actor.source!=="signed_server_session" || actor.role!=="super_admin");
   fail("COMPANY_SCOPE_MISMATCH", !validId(company) ||
-    actor==null || (actor.companyId!==company && actor.approvedGlobalCompanyId!==company) ||
+    actor==null || (actor.companyId!==company &&
+      !(actor.companyId===null && actor.approvedGlobalCompanyId===company)) ||
     [inv.companyId,h.companyId,req.companyId,b.companyId,m.companyId,j.companyId,r.companyId].some(v=>v!==company) ||
     j.lines.some(l=>l.companyId!==company));
   fail("LINKAGE_MISMATCH", ![ap.id,inv.id,ap.supplierId,req.id,b.id,j.id].every(validId) ||
