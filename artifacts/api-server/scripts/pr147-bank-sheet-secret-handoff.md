@@ -17,6 +17,16 @@ The existing GCP bootstrap credential `GCP_SECRET_MANAGER_BOOTSTRAP_JSON` must b
 
 Protected environment URLs `PR147_BANK_SHEET_CST_DATABASE_URL_DEV` and `PR147_BANK_SHEET_DIVA_DATABASE_URL_DEV` are alternative deployment-only sources, **not** additional credentials. Never configure an environment URL and a Secret Manager name for the same company. The application refuses ambiguous/invalid/missing secret sources, unsupported tenants, wrong DB principals, wrong project/host, insecure TLS, credential hot-swaps, and production execution.
 
+## Verified legacy source discovery (20 November 2026; no password rotation)
+
+An authorized metadata-only inventory found an **existing** GCP project `secret-504012` with a Finance company credential bundle named `bizportal-marketplace-finance-dev-companies`, with enabled versions **1 and 2**. Its version 2 payload shape is JSON with `companies.1.role`, `companies.1.databaseUrl`, `companies.3.role`, `companies.3.databaseUrl`. The role identifiers in both versions match the **existing** `bizportal_finance_cst_login_dev` and `bizportal_finance_diva_login_dev` identities. The separate `bizportal-marketplace-finance-dev` version 3 identifies the **different** `bizportal_marketplace_finance_login_dev` role and MUST NOT be used for either PR147 reader.
+
+**This is a role-name/source-discovery PASS only, NOT login/TLS credential validation.** Secret content must not be written to chat, logs, local plaintext files, GitHub, or shared service environment. A subsequent in-memory inspection of credential details was blocked by safety controls; no alternate technique should bypass that control. Do not copy the bundle to PR147 secrets or enable the reader merely because the role names match.
+
+Temporary target project `cst-super-app` contains only **empty** secret containers `bizportal-pr147-bank-sheet-cst-dev` and `bizportal-pr147-bank-sheet-diva-dev` (zero versions) and a dedicated keyless service account `bizportal-pr147-reader-dev@cst-super-app.iam.gserviceaccount.com`, with Secret Accessor on only those two containers. The target project is provisional. The source project `secret-504012` also has a separate existing Finance reader identity; never reuse its key or issue project-wide secret access in order to bridge projects.
+
+**Approved next action:** the authorized original credential custodian must attest, through the protected secret-management channel, that each original `databaseUrl` is current, authenticates with its exact company role to CST-DEV, verifies TLS and RLS, and remains in use or valid. Only then may a scoped runtime identity or approved protected delivery mechanism supply those original credentials to the isolated PR147 candidate; this must not rotate existing DB passwords, enable writes or switch live routing. Do not publish a new secret version until the identity and provenance checks pass.
+
 ## Required release proof (not yet completed)
 
 1. CI exact-head: Release Gate, Reconciliation, QRIS, Orphan Guard and Finance Reader RLS Gate all SUCCESS. Confirm exact commit SHA and clean checkout; no rerun of already-passing tests needed.
