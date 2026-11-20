@@ -36,8 +36,11 @@ export function getDevBankSheetReader(companyId: number): SheetReaderPool {
   }
   if (parsed.protocol !== "postgresql:"
     || decodeURIComponent(parsed.username) !== identity.username
-    || parsed.hostname !== "aws-0-ap-southeast-1.pooler.supabase.com"
-    || parsed.port !== "6543"
+    // Actual CST-DEV Supavisor endpoint verified from active DEV runtime.
+    // Both Supavisor session (5432) and transaction (6543) modes are allowed,
+    // but no arbitrary host, project, direct DB, or other port is permitted.
+    || parsed.hostname !== "aws-1-ap-southeast-2.pooler.supabase.com"
+    || !["5432", "6543"].includes(parsed.port)
     || parsed.pathname !== "/postgres"
     || !parsed.password) {
     throw new Error("PR147_DEV_SHEET_READER_IDENTITY_MISMATCH");
