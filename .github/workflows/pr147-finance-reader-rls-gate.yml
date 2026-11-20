@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - "artifacts/api-server/scripts/pr147-finance-sheet-scoped-reader-staged-only.sql"
+      - "artifacts/api-server/scripts/pr147-secret-readiness-preflight.mjs"
+      - "scripts/dev-pr147-actual-topology-preflight-readonly.sh"
       - "artifacts/api-server/scripts/pr147-sheet-reader-rls-readiness-readonly.sql"
       - "artifacts/api-server/scripts/pr147-finance-sheet-scoped-reader-rollback-staged-only.sql"
       - "artifacts/api-server/scripts/tests/pr147-finance-reader-isolated-fixture.sql"
@@ -38,6 +40,28 @@ jobs:
       PGDATABASE: pr147_reader_ci
     steps:
       - uses: actions/checkout@v4
+      - name: Verify PR147 credential delivery gate rejects missing or ambiguous sources
+        run: |
+          set -eu
+          GATE=artifacts/api-server/scripts/pr147-secret-readiness-preflight.mjs
+          set +e
+          env -i PATH="$PATH" APP_ENV=development node "$GATE" >/tmp/pr147_cfg_missing 2>&1
+          missing=$?
+          env -i PATH="$PATH" APP_ENV=development PR147_BANK_SHEET_CST_GCP_SECRET_NAME_DEV=wrong-name PR147_BANK_SHEET_DIVA_GCP_SECRET_NAME_DEV=bizportal-pr147-bank-sheet-diva-dev GCP_SECRET_MANAGER_BOOTSTRAP_JSON=fixture node "$GATE" >/tmp/pr147_cfg_wrong 2>&1
+          wrong=$?
+          env -i PATH="$PATH" APP_ENV=development PR147_BANK_SHEET_CST_GCP_SECRET_NAME_DEV=bizportal-pr147-bank-sheet-cst-dev PR147_BANK_SHEET_DIVA_GCP_SECRET_NAME_DEV=bizportal-pr147-bank-sheet-diva-dev GCP_SECRET_MANAGER_BOOTSTRAP_JSON=fixture node "$GATE" >/tmp/pr147_cfg_synthetic 2>&1
+          synthetic=$?
+          env -i PATH="$PATH" bash scripts/dev-pr147-actual-topology-preflight-readonly.sh >/tmp/pr147_sha_missing 2>&1
+          sha_missing=$?
+          set -e
+          test "$missing" -eq 2
+          test "$wrong" -eq 2
+          test "$synthetic" -eq 0
+          test "$sha_missing" -eq 2
+          grep -q 'CONFIGURATION_PREFLIGHT=CONFIG_PRESENT_BUT_UNVERIFIED' /tmp/pr147_cfg_synthetic
+          grep -q 'CUTOVER_APPROVED=false' /tmp/pr147_cfg_synthetic
+          grep -q 'PREFLIGHT_BLOCKED=expected_candidate_sha_required' /tmp/pr147_sha_missing
+          echo "PASS: absent/wrong secrets and SHA refuse, synthetic config never authorizes cutover"
       - name: Seed disposable CST / Diva identities and synthetic records
         run: psql -v ON_ERROR_STOP=1 -f artifacts/api-server/scripts/tests/pr147-finance-reader-isolated-fixture.sql
       - name: Apply staged policy to disposable PostgreSQL only
