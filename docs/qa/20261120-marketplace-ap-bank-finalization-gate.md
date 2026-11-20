@@ -213,3 +213,22 @@ PASS. CST-DEV postflight: 0 active Payment Requests/Handoffs, 0 new approval
 audit, historical CST Invoice fingerprint unchanged. Active Finance DEV
 runtime is still c1abee7, and the business-approval path is NOT enabled.
 Authentic Owner E2E and the real bank/GL pipeline are still NO-GO.
+
+## Integrated approval → posted-bank evidence → finalization (disposable PostgreSQL)
+A new integration sequence was added to
+marketplacePaymentFinalization.test.ts. Starting with an actual synthetic
+Marketplace AP Payment Request in draft, the test invokes the same
+approveMarketplacePaymentRequest service in a PostgreSQL transaction,
+commits the approval and audit, then invokes the canonical-evidence
+checking finalizer against a matching synthetic posted bank mutation,
+allocation and balanced GL journal. It proves approved→paid is only
+possible with verified posted evidence and that replay returns REPLAY
+without double audit. A separate negative case starts with draft and
+rejects finalization. This is a composition test, NOT a real bank posting
+or a signed browser E2E: the bank evidence is pre-seeded in the fixture.
+
+Disposable PostgreSQL integration: 15/15 PASS; broader Finance/AP and
+canonical posting contract regression: 82/82 PASS; API typecheck PASS.
+No change to the existing bank posting service or running Finance preview.
+Production and business GL remain untouched. A genuine bank posting
+workflow and authentic signed Super Admin HTTP request remain release gates.

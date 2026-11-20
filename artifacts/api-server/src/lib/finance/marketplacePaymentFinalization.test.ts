@@ -1,5 +1,7 @@
 import {beforeAll,afterAll,beforeEach,describe,expect,it} from "vitest";
 import pg from "pg";
+import {PgDialect} from "drizzle-orm/pg-core";
+import {approveMarketplacePaymentRequest} from "./marketplacePaymentApproval";
 import {finalizePostedMarketplacePayment} from "./marketplacePaymentFinalization";
 import type {VerifiedActor} from "./marketplacePaymentReleaseGate";
 const url="postgres://postgres@127.0.0.1:55493/postgres";
@@ -10,6 +12,7 @@ beforeAll(async()=>{
  await admin.connect();
  await admin.query(`
    -- Disposable container only: reset the prior test's fixture schema.
+   drop table if exists public.mkt_payment_approval_audit_dev;
    drop table if exists public.audit_logs;
    drop table if exists public.company_bank_accounts;
    drop table if exists public.chart_of_accounts;
@@ -27,6 +30,7 @@ beforeAll(async()=>{
       id integer primary key,company_id integer,source_type text,source_id integer,
       mkt_ap_preparation_id integer,idempotency_key text,status text,
       approved_by text,approved_at timestamp,mkt_approved_at timestamp,mkt_treasury_ready_at timestamp,
+      mkt_approved_by text,mkt_treasury_ready_by text,mkt_lifecycle_status text,
       supplier_id integer,total_amount numeric,paid_amount numeric,journal_entry_id integer,
       mkt_completed_at timestamp,updated_at timestamp,payload_fingerprint text
    );
@@ -37,10 +41,10 @@ beforeAll(async()=>{
      handoff_key text,amount numeric,payload_fingerprint text,updated_at timestamp
    );
    create table public.mkt_ap_preparations(
-     id integer primary key,company_id integer,vendor_invoice_id integer,supplier_id integer,status text
+     id integer primary key,company_id integer,vendor_invoice_id integer,supplier_id integer,status text,grand_total_snapshot numeric
    );
    create table public.vendor_invoices(
-     id integer primary key,company_id integer,supplier_id integer,status text,three_way_match_status text
+     id integer primary key,company_id integer,supplier_id integer,status text,three_way_match_status text,grand_total numeric
    );
    create table public.bank_mutations(
      id integer primary key,company_id integer,direction text,status text,
@@ -76,6 +80,11 @@ beforeAll(async()=>{
    create table public.chart_of_accounts(
      id integer primary key,company_id integer,is_active boolean,is_postable boolean
    );
+   create table public.mkt_payment_approval_audit_dev(
+     id serial primary key,company_id integer,payment_request_id integer,
+     actor_email text,decision text,created_at timestamptz default now(),
+     unique(payment_request_id)
+   );
    create table public.audit_logs(
      id serial primary key,user_email text,action text,entity_type text,entity_id text,
      company_id text,module text,after_data jsonb
@@ -93,7 +102,8 @@ beforeAll(async()=>{
 },30000);
 afterAll(async()=>{await admin.end()});
 beforeEach(async()=>{
- await admin.query(`truncate public.company_bank_accounts,public.chart_of_accounts,
+ await admin.query(`truncate public.mkt_payment_approval_audit_dev,
+ public.company_bank_accounts,public.chart_of_accounts,
  public.audit_logs,public.accounting_entry_lines,
  public.accounting_entries,public.payment_allocations,public.payment_matching_groups,
  public.bank_reconciliation_matches,public.bank_mutations,
@@ -110,10 +120,10 @@ beforeEach(async()=>{
   (id,payment_request_id,company_id,vendor_invoice_id,ap_preparation_id,status,
    accounting_status,handoff_key,amount,payload_fingerprint)
  values (9,41,1,77,88,'accepted','draft_not_posted','mkt-ap:88',100,repeat('a',64));
- insert into public.mkt_ap_preparations(id,company_id,vendor_invoice_id,supplier_id,status)
- values (88,1,77,5,'waiting_payment');
- insert into public.vendor_invoices(id,company_id,supplier_id,status,three_way_match_status)
- values (77,1,5,'ready_for_ap','passed');
+ insert into public.mkt_ap_preparations(id,company_id,vendor_invoice_id,supplier_id,status,grand_total_snapshot)
+ values (88,1,77,5,'waiting_payment',100);
+ insert into public.vendor_invoices(id,company_id,supplier_id,status,three_way_match_status,grand_total)
+ values (77,1,5,'ready_for_ap','passed',100);
  insert into public.bank_mutations
  (id,company_id,direction,status,accounting_posted,reconciliation_status,
  journal_entry_id,import_row_id,source_table,source_module,source_id,amount,
@@ -155,6 +165,47 @@ async function snapshot(){
  (select count(*)::int from public.audit_logs) audit_count`);
  return x.rows[0];
 }
+describe("Marketplace Approval to posted-bank finalization integrated PostgreSQL flow",()=>{
+ it("approves actual AP draft, then finalizes matched posted bank evidence with one audit each",async()=>{
+   // Existing canonical bank evidence fixture is already posted. These tests
+   // prove approval+finalization composition, not the bank posting algorithm.
+   await admin.query(`update public.payment_requests set
+     status='draft',approved_by=null,approved_at=null,mkt_approved_at=null,
+     mkt_treasury_ready_at=null where id=41`);
+   const c=new pg.Client({connectionString:url});await c.connect();
+   const dialect=new PgDialect();
+   try{
+     await c.query("BEGIN");
+     const approved=await approveMarketplacePaymentRequest({
+       execute:async(statement:any)=>{
+         const q=dialect.sqlToQuery(statement);
+         return c.query(q.sql,q.params) as any;
+       },
+     },actor,41);
+     expect(approved).toMatchObject({status:"approved",replay:false,bankTransfer:false,glPosted:false});
+     await c.query("COMMIT");
+   }finally{await c.end();}
+   expect((await admin.query("select status from public.payment_requests where id=41")).rows[0].status)
+     .toBe("approved");
+   const first=await run();
+   expect(first.status).toBe("CONFIRMED");
+   expect((await run()).status).toBe("REPLAY");
+   expect(await snapshot()).toMatchObject({
+     request_status:"paid",paid:"100.00",journal_id:201,
+     handoff_status:"posted",audit_count:1,
+   });
+   const approvalAudits=await admin.query(
+     "select count(*)::int as count from public.mkt_payment_approval_audit_dev where payment_request_id=41");
+   expect(approvalAudits.rows[0].count).toBe(1);
+ });
+ it("refuses finalization of a draft request lacking an authenticated approval",async()=>{
+   await admin.query("update public.payment_requests set status='draft',approved_by=null,approved_at=null where id=41");
+   await expect(run()).rejects.toThrow("SIGNED_APPROVAL_MISSING");
+   expect(await snapshot()).toMatchObject({
+     request_status:"draft",paid:"0",journal_id:null,handoff_status:"draft_not_posted",audit_count:0,
+   });
+ });
+});
 describe("Marketplace AP posted bank atomic finalization, disposable PostgreSQL only",()=>{
  it("confirms a verified payment exactly once and replays without duplicate audit",async()=>{
   expect((await run()).status).toBe("CONFIRMED");
