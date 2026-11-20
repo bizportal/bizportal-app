@@ -452,6 +452,104 @@ router.use((req, res, next) => {
   next();
 });
 
+// A genuine DEV-only Finance-side read-only preview. Rental fee due,
+// platform deduction and rebate are NOT cash payment receipts.
+router.get("/gojek-rental/preview", async (req, res) => {
+  if (process.env.APP_ENV?.trim().toLowerCase() !== "development") {
+    res.status(404).json({ error: "Gojek rental Finance preview hanya tersedia di DEV." });
+    return;
+  }
+  const targetCompanyId = parsePositiveInt(req.query.companyId);
+  if (targetCompanyId !== 3) {
+    res.status(403).json({ error: "Finance rental Gojek hanya untuk PT Diva Servis." });
+    return;
+  }
+  const scope = requireFleetScope(req, res, targetCompanyId);
+  if (!scope) return;
+  const raw = typeof req.query.transactionIds === "string" ? req.query.transactionIds.trim() : "";
+  const ids = raw.split(",").map(value => parsePositiveInt(value.trim()));
+  if (!raw || ids.length > 20 || ids.some(id => id === null) || new Set(ids).size !== ids.length) {
+    res.status(400).json({ error: "Diperlukan 1-20 ID transaksi Gojek unik." });
+    return;
+  }
+  try {
+    const result = await withFleetFinanceDevTransaction(scope, async (client) => {
+      const source = await client.query(
+        `SELECT id,report_id,transaction_type,amount::text,transaction_date::text,gopay_reference_id
+           FROM public.fleet_transactions
+          WHERE company_id=$1 AND id=ANY($2::int[])
+          ORDER BY id`,
+        [scope.sourceCompanyId, ids],
+      );
+      if (source.rows.length !== ids.length) {
+        throw new FleetFinanceError("Transaksi Gojek sumber tidak lengkap atau tidak sesuai perusahaan.",404);
+      }
+      const required = [
+        ["1-1025-DV", "asset", "DEBIT"],
+        ["1-1035-DV", "asset", "DEBIT"],
+        ["4-1026-DV", "revenue", "CREDIT"],
+        ["4-1027-DV", "revenue", "DEBIT"],
+      ];
+      const coa = await client.query(
+        `SELECT id,code,type::text AS type,normal_balance,approved_by,approved_at,
+                is_active,is_postable,is_header,status
+           FROM public.chart_of_accounts
+          WHERE company_id=$1 AND code=ANY($2::text[])
+          ORDER BY code`,
+        [scope.companyId, required.map(item => item[0])],
+      );
+      if (coa.rows.length !== required.length || required.some(([code,type,balance]) => {
+        const row = coa.rows.find((candidate: any) => candidate.code === code);
+        return !row || row.type !== type || row.normal_balance !== balance ||
+          row.is_active !== true || row.is_postable !== true || row.is_header === true ||
+          row.status !== "ACTIVE";
+      })) throw new FleetFinanceError("COA Gojek Diva tidak lengkap, tidak aktif, atau salah jenis.");
+      const byCode = new Map<string,any>(coa.rows.map((row:any) => [row.code,row]));
+      const previews = source.rows.map((row:any) => {
+        const minor = Math.round(Number(row.amount)*100);
+        if (!Number.isSafeInteger(minor) || minor === 0 ||
+            Math.abs(Number(row.amount)*100-minor)>0.0001) {
+          throw new FleetFinanceError("Nominal transaksi Gojek tidak valid.");
+        }
+        const value = Math.abs(minor)/100;
+        let debit:string, credit:string;
+        if (row.transaction_type === "Rental fee due" && minor > 0) {
+          debit="1-1035-DV"; credit="4-1026-DV";
+        } else if (row.transaction_type === "Rental fee deduction" && minor < 0) {
+          debit="1-1025-DV"; credit="1-1035-DV";
+        } else if (row.transaction_type === "Rental Rebate to Driver - Rental Rebate" && minor < 0) {
+          debit="4-1027-DV"; credit="1-1035-DV";
+        } else throw new FleetFinanceError("Jenis atau tanda transaksi Gojek tidak valid.");
+        return {
+          eventKey:`gojek-rental:${scope.sourceCompanyId}:${row.id}`,
+          transactionId:Number(row.id),reportId:Number(row.report_id),
+          transactionType:row.transaction_type,transactionDate:row.transaction_date,
+          signedAmount:Number(row.amount),providerReferenceId:row.gopay_reference_id,
+          lines:[
+            {accountId:Number(byCode.get(debit).id),coaCode:debit,debit:value,credit:0},
+            {accountId:Number(byCode.get(credit).id),coaCode:credit,debit:0,credit:value},
+          ],
+          totalDebit:value,totalCredit:value,
+          postingAllowed:false,bankSettlementProven:false,
+        };
+      });
+      const accountantApproved = coa.rows.every((row:any) => Boolean(row.approved_by && row.approved_at));
+      return {
+        ...scope, source:"fleet_transactions", journalType:"noncash_vehicle_rental_preview",
+        accountantApproved, postingAllowed:false, bankSettlementProven:false,
+        approvalRequired:true, previews,
+      };
+    }, { readOnly: true });
+    res.setHeader("Cache-Control","private, no-store");
+    res.json(result);
+  } catch(error) {
+    req.log?.error({ error }, "Gojek rental Finance DEV preview failed");
+    res.status(integrationErrorStatus(error)).json({
+      error: error instanceof Error ? error.message : "Gojek rental Finance preview gagal.",
+    });
+  }
+});
+
 router.get("/companies/:companyId/accounting-settings", async (req, res) => {
   const companyId = parsePositiveInt(req.params.companyId);
   if (!companyId) {
