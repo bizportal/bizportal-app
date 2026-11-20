@@ -125,3 +125,28 @@ the QA receipt with a bank settlement or accounting posting receipt.
 
 No owner action is requested until the candidate is actually deployed and
 verified in a browser. PROD unchanged.
+
+## Signed Super Admin QA button — deployed in Finance DEV preview
+
+Deployment verified under finance-pr81.72.61.210.205.sslip.io:
+
+- Web page: /finance/payment-approval-qa HTTP 200
+- Functional React button chunk HTTP 200; React DOM tests 2/2 PASS
+- Authenticated QA endpoint /api/mkt/admin/payment-approval-qa (GET/POST only);
+  anonymous HTTPS GET returns 401, production bank POST remains 404
+- HTTP integration on isolated PostgreSQL with synthetic signed-auth mocks: 4/4 PASS
+  (success, exactly-once audit, replay, anonymous/wrong role/tenant,
+  cross-origin and flag OFF restrictions)
+- QA PostgreSQL 127.0.0.1:55495/finance_approval_qa only, two synthetic
+  cases for CST and Diva, no bank transfers and no BizPortal GL transactions.
+- Main Finance backend remains the existing c1abee7 runtime. The only added
+  HTTPS API route proxies to a separate QA-only runtime on 127.0.0.1:19882.
+  The static Finance frontend bundle was updated with an on-disk rollback.
+- Both QA endpoint and frontend explicitly label this as a sandbox approval,
+  NOT proof of the real supplier-bank-reconciliation posting E2E.
+- Real signed Owner browser click has not yet occurred, and the authentic
+  payment-to-bank posting path remains NO-GO.
+
+Build sources were aligned from the c1abee7 preview baseline plus candidate
+changes, avoiding unrelated changes from the older QA workspace. Vite built
+successfully after the first constrained heap failed; API typecheck PASS.
