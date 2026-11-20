@@ -5,7 +5,7 @@
  * UNMOUNTED; an authenticated controller must derive actor from server session,
  * never from a caller-controlled email/company header.
  */
-import type { PoolClient } from "pg";
+import type { Client } from "pg";
 import type { VerifiedActor } from "./marketplacePaymentReleaseGate";
 
 export type FinalizeResult = {status:"CONFIRMED"|"REPLAY";paymentRequestId:number;bankMutationId:number;journalEntryId:number};
@@ -30,9 +30,9 @@ const one=async(db:Db,query:string,params:unknown[],code:string)=>{
  requireState(result.rows.length===1,code);
  return result.rows[0]!;
 };
-/** PoolClient is dedicated. BEGIN/COMMIT belong only here; no nested transaction. */
+/** Dedicated pg Client or PoolClient. BEGIN/COMMIT belong only here. */
 export async function finalizePostedMarketplacePayment(
-  client:PoolClient,actor:VerifiedActor,requestId:number,bankId:number,
+  client:Client,actor:VerifiedActor,requestId:number,bankId:number,
 ):Promise<FinalizeResult>{
   requireState(asId(requestId)&&asId(bankId),"INVALID_IDS");
   await client.query("BEGIN");
