@@ -42,6 +42,12 @@ async function main() {
   if (typeof data!=="string") throw Error("BUNDLE_NO_PAYLOAD");
   const bundle=JSON.parse(Buffer.from(data,"base64").toString("utf8"));
   if (!bundle?.companies || typeof bundle.companies !== "object") throw Error("BUNDLE_SHAPE_MISMATCH");
+  const pinnedCaPath=process.env.PR147_TEST_SUPABASE_CA_PATH;
+  if(pinnedCaPath!=="/tmp/pr147-supabase-root-2021-user-upload.crt") throw Error("APPROVED_TEST_CA_PATH_REQUIRED");
+  const caPem=await fs.readFile(pinnedCaPath,"utf8");
+  const pinnedFingerprint=crypto.createHash("sha256").update(caPem).digest("hex");
+  if(pinnedFingerprint!=="700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7") throw Error("TEST_CA_FINGERPRINT_MISMATCH");
+  console.log("USER_SUPABASE_CA_SHA256=PASS");
   console.log("BUNDLE_VERSION_2_ACCESS=PASS");
   let all=true;
   for (const [company,role] of [["1","bizportal_finance_cst_login_dev"],["3","bizportal_finance_diva_login_dev"]]) {
@@ -74,7 +80,7 @@ async function main() {
       console.log("COMPANY_"+company+"_SSLROOTCERT_CLASS="+(u.searchParams.get("sslrootcert")==="system"?"SYSTEM":u.searchParams.get("sslrootcert")==="/etc/ssl/certs/ca-certificates.crt"?"SYSTEM_CA_FILE":"OTHER_VALUE_NOT_PRINTED"));
       all=false;continue;
     }
-    const client=new Client({host:u.hostname,port:Number(u.port),user:decodeURIComponent(u.username),password:decodeURIComponent(u.password),database:"postgres",ssl:{rejectUnauthorized:true,servername:u.hostname},connectionTimeoutMillis:8000,query_timeout:12000,application_name:"pr147-temporary-read-only-attestation"});
+    const client=new Client({host:u.hostname,port:Number(u.port),user:decodeURIComponent(u.username),password:decodeURIComponent(u.password),database:"postgres",ssl:{rejectUnauthorized:true,servername:u.hostname,ca:caPem},connectionTimeoutMillis:8000,query_timeout:12000,application_name:"pr147-temporary-read-only-attestation"});
     let stage="connect";
     try {
       await client.connect();
