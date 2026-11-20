@@ -9,7 +9,7 @@ import {
 } from "../lib/reconciliation/qrisReviewDiagnostics";
 import { inspectSpreadsheet } from "../lib/google-sheets";
 import { bankSheetConfigAccountJoin } from "../lib/bankSheetConfigAccountJoin";
-import { getDevBankSheetReader } from "../lib/bankSheetScopedReader";
+import { getDevBankSheetReaderFromConfiguredSource } from "../lib/bankSheetScopedReader";
 import {
   syncAllBankSheetConfigs,
   syncOneBankSheetConfig,
@@ -8080,7 +8080,7 @@ router.get("/bank-reconciliation/sheet-configs", async (req, res): Promise<void>
     if (isDevelopmentEnvironment()) {
       // This separate restricted credential can only see its own company
       // through PostgreSQL RLS; OTP/general app pool is never a fallback.
-      const reader = getDevBankSheetReader(companyId!);
+      const reader = (await getDevBankSheetReaderFromConfiguredSource(companyId!));
       const result = await reader.query<SheetConfigRow>(
         `select config.id, config.company_id,
                 null::text as company_name,
@@ -8385,7 +8385,7 @@ router.post("/bank-reconciliation/sheet-configs/:id/test", async (req, res): Pro
   }
   try {
     const config = isDevelopmentEnvironment()
-      ? await getDevBankSheetReader(companyId!).query<{ sheet_id: string; tab_name: string }>(
+      ? await (await getDevBankSheetReaderFromConfiguredSource(companyId!)).query<{ sheet_id: string; tab_name: string }>(
         "select sheet_id, tab_name from public.bank_sheet_configs where id=$1 and company_id=$2",
         [id, companyId],
       )
