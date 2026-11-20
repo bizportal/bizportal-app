@@ -94,7 +94,11 @@ async function main() {
       if(company==="1" && rows.rows.length===0) throw Error("CST_CONFIGS_NOT_VISIBLE");
       console.log("COMPANY_"+company+"=PASS_AUTH_TLS_RLS_SELECT_ONLY");
     } catch(e) {
+      const safeCodes=new Set(["28P01","28000","42501","42P01","42703","57P03","53300","3D000","08P01","08006","08001","ECONNREFUSED","ETIMEDOUT","ENOTFOUND","EAI_AGAIN","CERT_HAS_EXPIRED","UNABLE_TO_VERIFY_LEAF_SIGNATURE","ERR_TLS_CERT_ALTNAME_INVALID"]);
+      const code=String(e?.code ?? "");
+      const category=safeCodes.has(code)?code:"UNKNOWN";
       console.log("COMPANY_"+company+"=BLOCKED_"+(e?.message?.startsWith("TLS_")||e?.message?.startsWith("RLS_")||e?.message?.startsWith("SESSION_")||e?.message?.startsWith("CROSS_")||e?.message?.startsWith("CST_")?e.message:"AUTH_OR_QUERY_FAILURE"));
+      console.log("COMPANY_"+company+"_SAFE_ERROR_CODE="+category);
       all=false;
     } finally {
       try {await client.query("ROLLBACK");}catch{}
