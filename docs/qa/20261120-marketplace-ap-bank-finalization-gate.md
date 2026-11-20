@@ -175,3 +175,14 @@ main Finance health 200, bank POST remains 404. Rollback at
 /var/lib/bizportal-finance-preview-rollbacks/20261120-signed-approval-ui-scope-fix-final.
 Real owner browser action has not been accessed by the connector. QA scenarios
 remain pending without any audit rows. No real transfers or GL posted.
+
+## QA approval concurrency and rollback validation (2026-11-20)
+On the existing, separate localhost-only finance_approval_qa PostgreSQL,
+real HTTP integration tests now include two concurrent signed synthetic
+approval requests: one first successful transition, one idempotent replay,
+exactly one audit row. A database trigger fault injected into the approval
+audit INSERT after the status update returns HTTP 503 and proves full
+rollback to pending with no audit. The trigger is removed in test cleanup.
+6/6 approval HTTP tests PASS; no production cookies or real Owner credentials
+were generated or read. This remains a synthetic authenticated harness,
+not the genuine Owner browser acceptance and not the bank/GL E2E.

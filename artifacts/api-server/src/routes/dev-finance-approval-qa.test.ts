@@ -52,6 +52,40 @@ describe("signed Super Admin real HTTP to isolated QA approval",()=>{
   const a=await admin.query("select count(*)::int as n from public.qa_approval_audit where scenario_id=9001");
   expect(a.rows[0].n).toBe(1);
  });
+ it("serializes two simultaneous signed approvals into one audit and replay",async()=>{
+  const [first,second]=await Promise.all([post(),post()]);
+  expect(first.status).toBe(200);
+  expect(second.status).toBe(200);
+  const statuses=[await first.json(),await second.json()];
+  expect(statuses.map(x=>x.replay).sort()).toEqual([false,true]);
+  const a=await admin.query("select count(*)::int as n from public.qa_approval_audit where scenario_id=9001");
+  expect(a.rows[0].n).toBe(1);
+  const state=await admin.query("select status from public.qa_approval_scenarios where id=9001");
+  expect(state.rows[0].status).toBe("approved");
+ });
+ it("rolls back approval if audit INSERT fails after the status update",async()=>{
+  await admin.query(`
+    create or replace function public.qa_reject_approval_audit()
+    returns trigger language plpgsql as $$
+    begin raise exception 'QA_INJECTED_AUDIT_FAILURE'; end; $$;
+    create trigger qa_reject_approval_audit before insert
+    on public.qa_approval_audit for each row
+    execute function public.qa_reject_approval_audit();
+  `);
+  try{
+    const result=await post();
+    expect(result.status).toBe(503);
+    const state=await admin.query(
+      "select status,approved_by,approved_at from public.qa_approval_scenarios where id=9001");
+    expect(state.rows[0]).toMatchObject({status:"pending",approved_by:null,approved_at:null});
+    const audit=await admin.query(
+      "select count(*)::int as n from public.qa_approval_audit where scenario_id=9001");
+    expect(audit.rows[0].n).toBe(0);
+  }finally{
+    await admin.query("drop trigger if exists qa_reject_approval_audit on public.qa_approval_audit");
+    await admin.query("drop function if exists public.qa_reject_approval_audit()");
+  }
+ });
  it("rejects anonymous and wrong role or company",async()=>{
   fake.session.mockReturnValue(null);expect((await post()).status).toBe(401);
   fake.session.mockReturnValue({id:"signed"});
