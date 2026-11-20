@@ -396,7 +396,7 @@ export default function AccountingSettingsPage() {
           <p className="text-sm text-muted-foreground">Mapping akun &amp; jurnal default untuk auto-posting semua modul</p>
         </div>
 
-        {import.meta.env.DEV && activeCompanyId === 3 && <GojekRentalApprovalCard />}
+        {typeof window !== "undefined" && window.location.hostname === "dev-bizportal.cstlogistic.co.id" && Number(activeCompanyId) === 3 && <GojekRentalApprovalCard />}
 
         <Card>
           <CardHeader><CardTitle>Profil Perusahaan</CardTitle></CardHeader>
