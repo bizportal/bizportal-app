@@ -150,3 +150,28 @@ Deployment verified under finance-pr81.72.61.210.205.sslip.io:
 Build sources were aligned from the c1abee7 preview baseline plus candidate
 changes, avoiding unrelated changes from the older QA workspace. Vite built
 successfully after the first constrained heap failed; API typecheck PASS.
+
+## 403 Finance scope recovery — DEV UI fix
+The screenshot of an authenticated Super Admin showed HTTP 403:
+"Pilih dan verifikasi perusahaan Finance". Root cause: the signed Finance
+company-scope cookie had not been issued for the QA screen opened directly,
+although the BizPortal company selector showed CST. The QA backend must
+continue refusing an unscoped global Super Admin.
+
+The scoped QA frontend now retries only after a 403, using the EXISTING
+server-validated POST /api/mkt/admin/finance-company-selection with the
+user-selected, strictly allowlisted company ID (1 CST or 3 Diva). It checks
+server confirmation and retries QA GET once. It does not attempt an
+auto-selection on 401 or on an unsupported company, and checks that the QA
+response company equals the selected UI company. A successful QA response
+replaces the manual verify card with a verified-company indicator.
+
+React/jsdom regressions: 5/5 PASS, covering success, retry 403, 401 without
+scope selection, unsupported company and sandbox click receipt. Existing
+backend isolated HTTP QA: 4/4 PASS. Frontend Vite production build PASS.
+UI static bundle deployed in Finance DEV (no backend/PROD changes).
+HTTPS approval screen 200, new JS chunk 200, unauthenticated QA GET 401,
+main Finance health 200, bank POST remains 404. Rollback at
+/var/lib/bizportal-finance-preview-rollbacks/20261120-signed-approval-ui-scope-fix-final.
+Real owner browser action has not been accessed by the connector. QA scenarios
+remain pending without any audit rows. No real transfers or GL posted.

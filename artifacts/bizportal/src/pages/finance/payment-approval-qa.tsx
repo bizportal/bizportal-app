@@ -6,6 +6,7 @@ import {Button} from "@/components/ui/button";
 import {Badge} from "@/components/ui/badge";
 import {useCompany} from "@/contexts/CompanyContext";
 import {FinanceCompanyScopeCard} from "@/pages/purchase/FinanceCompanyScopeCard";
+import {requestFinanceCompanyScope} from "@/lib/financeCompanyScope";
 
 type Scenario={
  id:number;companyId:number;reference:string;amount:string;
@@ -22,16 +23,25 @@ export default function FinancePaymentApprovalQa(){
  const load=useCallback(async()=>{
   setLoading(true);setError("");setData(null);
   try{
-   const response=await fetch("/api/mkt/admin/payment-approval-qa",{credentials:"include",cache:"no-store"});
+   let response=await fetch("/api/mkt/admin/payment-approval-qa",{credentials:"include",cache:"no-store"});
+   // This sandbox screen may be opened directly from a company selected in
+   // BizPortal before the separate signed Finance-scope cookie is issued.
+   // On 403 ONLY, ask the existing server to verify that explicit selection.
+   // It refuses non-Super Admin, cross-company and unauthorized companies.
+   if(response.status===403 && (activeCompanyId===1||activeCompanyId===3)){
+    await requestFinanceCompanyScope(activeCompanyId);
+    response=await fetch("/api/mkt/admin/payment-approval-qa",{credentials:"include",cache:"no-store"});
+   }
    const body=await response.json().catch(()=>({}));
    if(!response.ok)throw Error(body.error??"Skenario QA belum tersedia");
-   if(body.sandbox!==true||body.bankTransfer!==false||body.glPosted!==false)
-    throw Error("Kontrak keamanan QA tidak sesuai");
+   if(body.sandbox!==true||body.bankTransfer!==false||body.glPosted!==false||
+       body.scenario?.companyId!==activeCompanyId)
+    throw Error("Kontrak keamanan QA atau perusahaan tidak sesuai");
    setData(body as Data);
   }catch(e){setError(e instanceof Error?e.message:"Gagal memuat persetujuan QA");}
   finally{setLoading(false);}
- },[]);
- useEffect(()=>{void load();},[load,activeCompanyId]);
+ },[activeCompanyId]);
+ useEffect(()=>{void load();},[load]);
  async function approve(){
   if(!data||data.scenario.status!=="pending"||submitting)return;
   setSubmitting(true);setError("");setReceipt("");
@@ -57,7 +67,11 @@ export default function FinancePaymentApprovalQa(){
     <p className="text-sm text-muted-foreground">Sesi Super Admin asli · skenario sintetis · tanpa transfer bank atau posting GL</p></div>
     <Link href="/purchase/vendor-invoices" className="text-sm underline">Kembali ke Vendor Invoice</Link>
    </div>
-   <FinanceCompanyScopeCard onVerified={()=>void load()}/>
+   {data
+    ? <p role="status" className="text-sm text-green-600">
+       Perusahaan Finance sudah diverifikasi oleh server untuk sesi ini.
+      </p>
+    : <FinanceCompanyScopeCard onVerified={()=>void load()}/>}
    <Card><CardHeader><CardTitle className="text-base">Transaksi uji persetujuan</CardTitle></CardHeader>
     <CardContent className="space-y-4">
      <div className="flex flex-wrap gap-2">
