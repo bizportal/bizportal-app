@@ -192,5 +192,29 @@ const stopBackgroundTimers = () => {
     startupInitializationTimer = null;
   }
 };
-process.once("SIGTERM", stopBackgroundTimers);
-process.once("SIGINT", stopBackgroundTimers);
+let shutdownStarted = false;
+const shutdown = (signal: "SIGTERM" | "SIGINT") => {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  stopBackgroundTimers();
+  logger.info({ signal }, "Shutting down HTTP listener");
+
+  // First drain established HTTP requests and idle keep-alive sockets.
+  // A bounded fallback prevents a stalled connection blocking systemd rollback.
+  const deadline = setTimeout(() => {
+    logger.warn("HTTP shutdown deadline reached; closing remaining connections");
+    server.closeAllConnections();
+  }, 8_000);
+  deadline.unref();
+
+  server.close((error) => {
+    clearTimeout(deadline);
+    if (error) {
+      logger.error({ error }, "HTTP listener failed to close");
+      process.exitCode = 1;
+    }
+  });
+  server.closeIdleConnections();
+};
+process.once("SIGTERM", () => shutdown("SIGTERM"));
+process.once("SIGINT", () => shutdown("SIGINT"));
