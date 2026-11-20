@@ -59,7 +59,7 @@ async function call(method:"GET"|"POST",options:{body?:unknown;origin?:string}={
   const res=await fetch(origin+"/api/accounting/gojek-rental-approval",{
     method,headers:{...(method==="POST"?{"content-type":"application/json",origin:options.origin??"https://dev-bizportal.cstlogistic.co.id"}:{})},
     ...(method==="POST"?{body:JSON.stringify(options.body??approvalBody)}:{}),
-  });return {status:res.status,body:await res.json()};
+  });return {status:res.status,body:await res.json() as {accounts:unknown[];canApprove:boolean;postingEnabled:boolean;idempotent:boolean}};
 }
 describe("Super Admin accounting approval button backend — isolated HTTP",()=>{
   it("preview shows exactly four pending COAs, no posting",async()=>{
