@@ -75,11 +75,15 @@ async function main() {
       all=false;continue;
     }
     const client=new Client({host:u.hostname,port:Number(u.port),user:decodeURIComponent(u.username),password:decodeURIComponent(u.password),database:"postgres",ssl:{rejectUnauthorized:true,servername:u.hostname},connectionTimeoutMillis:8000,query_timeout:12000,application_name:"pr147-temporary-read-only-attestation"});
+    let stage="connect";
     try {
       await client.connect();
+      stage="tls_verify";
       const tls=client.connection?.stream;
       if (!tls?.encrypted || !tls?.authorized) throw Error("TLS_NOT_AUTHORIZED");
+      stage="begin_read_only";
       await client.query("BEGIN READ ONLY");
+      stage="privilege_probe";
       const probe=await client.query(`SELECT
         current_user AS who, session_user AS session_who,
         row_security_active('public.bank_sheet_configs'::regclass) AS sheet_rls,
@@ -89,6 +93,7 @@ async function main() {
       const q=probe.rows[0];
       if(q.who!==role+".xssrfshdrtdfupgqwfdw" && q.who!==role) throw Error("SESSION_PRINCIPAL_MISMATCH");
       if(q.session_who!==q.who || !q.sheet_rls || !q.bank_rls || !q.can_read || q.can_write) throw Error("RLS_OR_PRIVILEGE_FAILED");
+      stage="company_rows";
       const rows=await client.query("SELECT DISTINCT company_id FROM public.bank_sheet_configs ORDER BY company_id");
       if (rows.rows.some(r=>String(r.company_id)!==company)) throw Error("CROSS_COMPANY_DATA_VISIBLE");
       if(company==="1" && rows.rows.length===0) throw Error("CST_CONFIGS_NOT_VISIBLE");
@@ -99,6 +104,7 @@ async function main() {
       const category=safeCodes.has(code)?code:"UNKNOWN";
       console.log("COMPANY_"+company+"=BLOCKED_"+(e?.message?.startsWith("TLS_")||e?.message?.startsWith("RLS_")||e?.message?.startsWith("SESSION_")||e?.message?.startsWith("CROSS_")||e?.message?.startsWith("CST_")?e.message:"AUTH_OR_QUERY_FAILURE"));
       console.log("COMPANY_"+company+"_SAFE_ERROR_CODE="+category);
+      console.log("COMPANY_"+company+"_FAILURE_STAGE="+stage);
       all=false;
     } finally {
       try {await client.query("ROLLBACK");}catch{}
