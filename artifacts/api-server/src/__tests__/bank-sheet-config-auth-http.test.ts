@@ -113,12 +113,11 @@ describe("bank Sheet company-scoped HTTP authorization gate", () => {
     ])expect((await post(endpoint)).status).toBe(401);
     expect(mock.queries).toHaveLength(0);
   });
-  it("denies cross-company Sheet test and sync before Google calls",async()=>{
+  it("denies cross-company Sheet test and locks sync before any bank query",async()=>{
     mock.actor={email:"owner@pr95.invalid",companyId:1,role:"super_admin"};
     expect((await post("/bank-reconciliation/sheet-configs/3/test?company_id=3")).status).toBe(403);
-    expect((await post("/bank-reconciliation/sheet-configs/3/sync")).status).toBe(403);
-    expect(mock.queries).toHaveLength(1);
-    expect(mock.queries[0].sql).toContain("select company_id from public.bank_sheet_configs");
+    expect((await post("/bank-reconciliation/sheet-configs/3/sync")).status).toBe(423);
+    expect(mock.queries).toHaveLength(0);
   });
   it("reads test config only through the company reader, not OTP pool",async()=>{
     mock.actor={email:"owner@pr95.invalid",companyId:1,role:"super_admin"};
@@ -142,7 +141,7 @@ describe("bank Sheet company-scoped HTTP authorization gate", () => {
     expect(sync.status).toBe(423);
     expect(mock.queries).toHaveLength(0);
   });
-  it("denies authorized same-company Sheet edit, delete and sync after ownership check",async()=>{
+  it("denies Sheet edit, delete and sync before any OTP-pool query",async()=>{
     mock.actor={email:"owner@pr95.invalid",companyId:1,role:"super_admin"};
     for(const [method,path] of [
       ["PUT","/bank-reconciliation/sheet-configs/2"],
@@ -153,8 +152,7 @@ describe("bank Sheet company-scoped HTTP authorization gate", () => {
       expect(response.status).toBe(423);
       expect(await response.json()).toMatchObject({code:"BANK_SHEET_DEV_SOURCE_ONLY_READ_ONLY"});
     }
-    expect(mock.queries).toHaveLength(3);
-    expect(mock.queries.every(x=>x.sql.includes("select company_id from public.bank_sheet_configs"))).toBe(true);
+    expect(mock.queries).toHaveLength(0);
   });
   it("prevents bulk and create requests from crossing company scope",async()=>{
     mock.actor={email:"owner@pr95.invalid",companyId:1,role:"super_admin"};
