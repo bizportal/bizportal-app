@@ -227,6 +227,28 @@ router.post("/sales/documents/:id/action", async (request, response): Promise<vo
  * No Invoice creation, journal posting, finance activation, or side effects
  * outside the one Customer and Sales Order identity + transactional audit.
  */
+// Capability is read-only and reveals no customer data. It prevents a dead QA
+// button appearing before signed OTP authentication and the DEV flag are ready.
+router.get("/sales/dev/qa-orders/108/customer-setup-capability", async (request, response): Promise<void> => {
+  if (!isDevelopmentEnvironment() || process.env.APP_ENV !== "development" ||
+      !isSignedOtpDevEnabled() ||
+      process.env.BIZPORTAL_DEV_QA_ORDER108_CUSTOMER_SETUP !== "true") {
+    response.status(404).json({ error: "Not found" });
+    return;
+  }
+  const session = getProductionSession(request);
+  const actor = session ? await getProductionUser(session).catch(() => null) : null;
+  if (!session || !actor || actor.id !== session.id ||
+      actor.email.trim().toLowerCase() !== session.email ||
+      actor.role !== "super_admin" ||
+      (actor.companyId !== null && Number(actor.companyId) !== 1)) {
+    response.status(403).json({ error: "Signed CST Super Admin session required" });
+    return;
+  }
+  response.setHeader("Cache-Control", "no-store");
+  response.json({ available: true, documentId: 108, companyId: 1, syntheticOnly: true });
+});
+
 router.post("/sales/dev/qa-orders/108/attach-customer", async (request, response): Promise<void> => {
   if (!isDevelopmentEnvironment() || process.env.APP_ENV !== "development" ||
       !isSignedOtpDevEnabled() ||
