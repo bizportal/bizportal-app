@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach } from "vitest";
 import { parseAmount } from "./bank-sheet-sync";
 
 describe("bank sheet amount parsing", () => {
@@ -93,7 +94,12 @@ const config = {
 let storedMutations: StoredMutation[];
 let nextMutationId: number;
 
+afterEach(() => vi.unstubAllEnvs());
+
 beforeEach(() => {
+  // This suite tests sync behavior only against mocked DB/Google Sheets.
+  // Enable the DEV sync path in the test fixture, never in live runtime.
+  vi.stubEnv("BANK_SHEET_DEV_WRITES_ENABLED", "true");
   config.account_type = "bank";
   storedMutations = [];
   nextMutationId = 100;

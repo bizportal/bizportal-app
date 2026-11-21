@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { bankSheetConfigAccountJoin } from "./bankSheetConfigAccountJoin";
 import { pool } from "@workspace/db";
 import {
   readSpreadsheetValues,
@@ -1003,13 +1004,26 @@ async function syncConfig(config: SheetConfig): Promise<{
   }
 }
 
+/**
+ * Second safety boundary for DEV source-only deployments. HTTP protects
+ * authorized route calls; this protects any internal caller or future job.
+ * Never invoke Google Sheets or DB while the legacy schema is read-only.
+ */
+function assertDevBankSheetSyncAllowed(): void {
+  if (process.env.APP_ENV?.trim().toLowerCase() === "development"
+    && process.env.BANK_SHEET_DEV_WRITES_ENABLED !== "true") {
+    throw new Error("BANK_SHEET_DEV_SOURCE_ONLY_READ_ONLY");
+  }
+}
+
 export async function syncOneBankSheetConfig(configId: number) {
+  assertDevBankSheetSyncAllowed();
   const result = await pool.query<SheetConfig>(
     `select config.id, config.company_id, config.sheet_id, config.tab_name, config.label,
-            config.bank_account_id, config.bank_account_number,
+            cba.id as bank_account_id, config.bank_account_number,
             cba.account_type
        from public.bank_sheet_configs config
-       left join public.company_bank_accounts cba on cba.id = config.bank_account_id
+       ${bankSheetConfigAccountJoin}
       where config.id = $1 and config.is_active = true`,
     [configId],
   );
@@ -1024,12 +1038,13 @@ export async function syncOneBankSheetConfig(configId: number) {
 }
 
 export async function syncAllBankSheetConfigs(companyId?: number) {
+  assertDevBankSheetSyncAllowed();
   const result = await pool.query<SheetConfig>(
     `select config.id, config.company_id, config.sheet_id, config.tab_name, config.label,
-            config.bank_account_id, config.bank_account_number,
+            cba.id as bank_account_id, config.bank_account_number,
             cba.account_type
        from public.bank_sheet_configs config
-       left join public.company_bank_accounts cba on cba.id = config.bank_account_id
+       ${bankSheetConfigAccountJoin}
       where config.is_active = true
         and ($1::int is null or config.company_id = $1)
       order by config.id`,
