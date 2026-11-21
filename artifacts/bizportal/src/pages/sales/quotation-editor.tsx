@@ -676,6 +676,13 @@ export default function SalesDocumentEditorPage({ kind: propKind }: EditorProps 
 
   const validate = (): string | null => {
     if (!customerName.trim()) return "Customer wajib diisi";
+    // A Sales Order must link to a real customer record, not free-text only.
+    // Quotations may retain the existing free-text draft workflow.
+    const isSalesOrder = !!(fromPortal || urlKind === "order" || doc?.kind === "order");
+    if (isSalesOrder && (!Number.isSafeInteger(customerId) || (customerId ?? 0) <= 0 ||
+        !selectedCustomer || selectedCustomer.name !== customerName.trim())) {
+      return "Sales Order wajib memilih customer terdaftar dari daftar Customer";
+    }
     if (lines.length === 0) return "Minimal satu baris item";
     for (const l of lines) {
       if (!l.name.trim()) return "Nama produk pada setiap baris wajib diisi";
@@ -687,10 +694,10 @@ export default function SalesDocumentEditorPage({ kind: propKind }: EditorProps 
   const save = async () => {
     const err = validate();
     if (err) {
-      toast({ title: t.common.error, variant: "destructive" });
+      toast({ title: err, variant: "destructive" });
       return;
     }
-    const isPortalOrder = !!(fromPortal || urlKind === "order");
+    const isPortalOrder = !!(fromPortal || urlKind === "order" || doc?.kind === "order");
     const body = {
       kind: (isPortalOrder ? "order" : "quote") as "order" | "quote",
       customerId,
