@@ -100,6 +100,24 @@ describe("PR147 real signed Super Admin opt-in verification", () => {
     expect(state.queries).toHaveLength(4);
     expect(state.queries.every(query => query.sql.trim().toUpperCase().startsWith("SELECT"))).toBe(true);
   });
+  it("serves the one-click page only to authenticated signed global Super Admin", async () => {
+    const page = base.replace("/api/pr147/verify-super-admin", "/api/pr147/verify-page");
+    state.session = null;
+    expect((await fetch(page)).status).toBe(401);
+    state.session = { id: "signed", email: "admin@example.test" };
+    state.user = { role: "finance", companyId: 1 };
+    expect((await fetch(page)).status).toBe(403);
+    state.user = { role: "super_admin", companyId: null };
+    const result = await fetch(page);
+    expect(result.status).toBe(200);
+    expect(result.headers.get("content-security-policy")).toContain("script-src 'nonce-");
+    const html = await result.text();
+    expect(html).toContain("Jalankan verifikasi baca-saja");
+    expect(html).toContain("/api/pr147/verify-super-admin");
+    expect(state.queries).toHaveLength(0);
+    vi.stubEnv("PR147_SIGNED_VERIFY_ENABLED_DEV", "");
+    expect((await fetch(page)).status).toBe(404);
+  });
   it("fails closed without leaking secret or DB details", async () => {
     state.failDb = true;
     const response = await fetch(base);
