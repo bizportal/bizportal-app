@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const page = readFileSync(new URL("../pages/sales/document-detail.tsx", import.meta.url), "utf8");
-const salesRouter = readFileSync(new URL("../../../api-server/src/routes/sales-core.ts", import.meta.url), "utf8");
+const page = readFileSync(resolve(process.cwd(), "src/pages/sales/document-detail.tsx"), "utf8");
+const salesRouter = readFileSync(resolve(process.cwd(), "../api-server/src/routes/sales-core.ts"), "utf8");
 
 describe("CST-DEV QA #108 Invoice button must not bypass canonical posting owner", () => {
   it("uses the exact DEV host and document identity gate", () => {
