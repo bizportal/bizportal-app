@@ -14,7 +14,7 @@ type AccountingRequest = Request & {
   accountingUser?: DevAuthUser;
 };
 
-router.use(async (req, res, next) => {
+router.use("/accounting", async (req, res, next) => {
   try {
     const user = isDevelopmentEnvironment()
       ? getDevSession(req)
@@ -42,7 +42,7 @@ router.use(async (req, res, next) => {
   }
 });
 
-router.use(async (req, res, next) => {
+router.use("/accounting", async (req, res, next) => {
   try {
     const session = isDevelopmentEnvironment() ? null : getProductionSession(req);
     const user = isDevelopmentEnvironment()
