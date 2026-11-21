@@ -881,9 +881,24 @@ export default function SalesDocumentDetailPage() {
       <AppShell>
         <div className="max-w-5xl mx-auto py-16 text-center">
           <FileText className="w-14 h-14 mx-auto mb-4 text-muted-foreground/40" />
-          <h2 className="text-lg font-semibold mb-1">Dokumen tidak ditemukan</h2>
+          <h2 className="text-lg font-semibold mb-1">
+            {error ? "Gagal memuat dokumen dari API" : "Dokumen tidak ditemukan"}
+          </h2>
           <p className="text-sm text-muted-foreground mb-6">
-            Dokumen dengan ID <span className="font-mono font-medium">{id}</span> tidak ada atau kamu tidak punya akses.
+            {error
+              ? (() => {
+                  const status = typeof error === "object" && error !== null && "status" in error
+                    ? Number((error as { status?: unknown }).status)
+                    : 0;
+                  return status === 401 || status === 403
+                    ? `Sesi akses dokumen tidak diizinkan (HTTP ${status}). Login Super Admin OTP perlu diverifikasi oleh backend.`
+                    : status === 404
+                      ? "Endpoint detail dokumen belum tersedia atau tidak mengizinkan dokumen ini (HTTP 404)."
+                      : status === 503
+                        ? "Layanan data Sales sementara tidak tersedia (HTTP 503)."
+                        : `Permintaan pembacaan dokumen gagal (HTTP ${status || "tidak diketahui"}).`;
+                })()
+              : <>Dokumen dengan ID <span className="font-mono font-medium">{id}</span> tidak ditemukan.</>}
           </p>
           <Button variant="outline" onClick={() => navigate("/sales/documents")}>
             <ArrowLeft className="mr-2 h-4 w-4" /> Kembali ke Daftar
