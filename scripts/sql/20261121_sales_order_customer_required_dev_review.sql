@@ -1,59 +1,59 @@
--- CST-DEV review-only migration. Do not run in PROD or auto-apply with drizzle-kit push.
--- Prevent future Sales Order rows without registered customers, including non-UI writers.
--- A targeted trigger enforces new/identity/status changes without rejecting harmless edits
--- to historical unlinked Orders. Do NOT add a NOT VALID CHECK here: PostgreSQL would
--- reject even unrelated UPDATEs to old invalid rows after installing that CHECK.
--- Database name and role must be verified by the authorized DEV DBA before executing.
+-- CST-DEV ONLY. DO NOT APPLY TO PROD.
+-- Reviewed source of migration:
+-- sales_order_customer_company_prospective_guard_dev_20261121
+-- Applied to Supabase CST-DEV (xssrfshdrtdfupgqwfdw) on 21 November 2026.
+-- This source is for audit/recovery, not Hostinger startup auto-migrations.
+--
+-- Protect future Sales Orders without blocking harmless updates to historical
+-- documents. At application of this migration, 30 orders existed, of which
+-- 29 had NULL customer_id, and the remaining demo had NULL company_id.
+-- Do not invent or backfill legacy customer/company associations.
+--
+-- In particular DO NOT include UPDATE OF status or invoice_status here:
+-- that would block legacy transitions unrelated to customer identity.
 
 BEGIN;
 
--- Customer ID must also belong to the SAME company. The existing foreign key
--- proves existence only; it does not prove tenant ownership.
 CREATE OR REPLACE FUNCTION public.sales_order_customer_company_guard_dev()
 RETURNS trigger
 LANGUAGE plpgsql
-AS $$
-DECLARE
-  linked_company_id integer;
+AS $fn$
 BEGIN
-  IF NEW.kind <> 'order' THEN
+  IF NEW.kind::text <> 'order' THEN
     RETURN NEW;
   END IF;
 
   IF NEW.customer_id IS NULL OR NEW.company_id IS NULL THEN
-    RAISE EXCEPTION 'Sales Order requires customer_id and company_id'
-      USING ERRCODE = '23514';
+    RAISE EXCEPTION 'Sales Order requires registered customer_id and company_id'
+      USING ERRCODE='23514';
   END IF;
 
-  SELECT company_id INTO linked_company_id
-  FROM public.customers
-  WHERE id = NEW.customer_id;
-
-  IF NOT FOUND OR linked_company_id IS DISTINCT FROM NEW.company_id THEN
-    RAISE EXCEPTION 'Sales Order customer does not belong to its company'
-      USING ERRCODE = '23514';
+  IF NOT EXISTS (
+    SELECT 1
+    FROM public.customers c
+    WHERE c.id = NEW.customer_id
+      AND c.company_id = NEW.company_id
+  ) THEN
+    RAISE EXCEPTION 'Sales Order customer/company mismatch'
+      USING ERRCODE='23514';
   END IF;
 
   RETURN NEW;
 END;
-$$;
+$fn$;
 
 CREATE TRIGGER sales_order_customer_company_guard_dev_trigger
-BEFORE INSERT OR UPDATE OF kind, customer_id, company_id, status, invoice_status
+BEFORE INSERT OR UPDATE OF kind, customer_id, company_id
 ON public.sales_documents
-FOR EACH ROW EXECUTE FUNCTION public.sales_order_customer_company_guard_dev();
+FOR EACH ROW
+EXECUTE FUNCTION public.sales_order_customer_company_guard_dev();
 
 COMMIT;
 
--- Authorized read-only preflight before applying this reviewed migration:
--- SELECT company_id, count(*) FROM public.sales_documents
--- WHERE kind='order' AND (customer_id IS NULL OR company_id IS NULL)
--- GROUP BY company_id;
--- SELECT d.id, d.company_id, d.customer_id, c.company_id AS customer_company
--- FROM public.sales_documents d LEFT JOIN public.customers c ON c.id=d.customer_id
--- WHERE d.kind='order' AND (c.id IS NULL OR c.company_id IS DISTINCT FROM d.company_id);
+-- Read-only verification:
+-- SELECT pg_get_triggerdef(oid) FROM pg_trigger
+-- WHERE tgrelid='public.sales_documents'::regclass
+-- AND tgname='sales_order_customer_company_guard_dev_trigger';
 --
--- Historical rows require verified customer reconciliation; never guess an ID.
--- Once every historical row is remediated, add a fully validated CHECK constraint
--- under a separate reviewed database change. This migration does NOT authorize Invoice issuance,
--- change Order #108, enable financial writers, or replace signed Owner OTP.
+-- This guard does not authorize Sales confirmation, Invoice/AR/GL posting, or
+-- unlocking a financial writer. Those remain signed-OTP gated and default OFF.
