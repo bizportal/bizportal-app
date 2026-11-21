@@ -90,7 +90,7 @@ describe("PR147 real signed Super Admin opt-in verification", () => {
     const response = await fetch(base);
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
-    const payload = await response.json();
+    const payload = await response.json() as { code: string; companies: Array<{ companyId: number; status: string; configCount: number }>; productionCutoverApproved: boolean };
     expect(payload.code).toBe("PR147_SIGNED_SUPER_ADMIN_READER_PASS");
     expect(payload.companies).toEqual([
       { companyId: 1, status: "PASS", configCount: 2 },
