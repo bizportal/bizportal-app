@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from "react";
 import type { AuthUser } from "@shared/api-client-react";
 import { supabase } from "@/lib/supabaseClient";
+import { confirmOtpServerSession } from "@/lib/confirmOtpServerSession";
 
 interface AuthContextValue {
   session: { user: AuthUser } | null;
@@ -349,11 +350,21 @@ export function SupabaseAuthProvider({ children }: { children: React.ReactNode }
       } | null;
       if (!response.ok) return { error: data?.error ?? "Email atau kode OTP tidak dapat digunakan." };
       if (!data?.user) return { error: "Session login tidak diterima server." };
-      writeCache(data.user);
-      setUser(data.user);
+      // OTP success is not a session. Require a server-accepted cookie and
+      // identical identity before declaring the client logged in.
+      const verified = await confirmOtpServerSession(data.user, normalizedEmail);
+      if (!verified) {
+        writeCache(null);
+        setUser(null);
+        return { error: "OTP diterima, tetapi sesi API belum terverifikasi. Login tidak dinyatakan berhasil." };
+      }
+      writeCache(verified);
+      setUser(verified);
       return { error: null };
     } catch {
-      return { error: "Koneksi ke server gagal." };
+      writeCache(null);
+      setUser(null);
+      return { error: "Verifikasi sesi API gagal. Login belum dinyatakan berhasil." };
     }
   }, [exchangeToken]);
 
