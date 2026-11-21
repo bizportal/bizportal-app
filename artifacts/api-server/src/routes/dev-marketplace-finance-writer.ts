@@ -103,12 +103,16 @@ router.post("/mkt/admin/finance-company-selection", async (req, res) => {
   }
 });
 
-async function authorize(req: Request, res: Response, readOnly = false): Promise<VerifiedFinanceActor | null> {
+async function authorize(req: Request, res: Response, readOnly = false,
+  approvalOnly = false): Promise<VerifiedFinanceActor | null> {
   // Separate opt-in GET-only gate; POST actions still require the Writer flag.
   const writerEnabled = process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV === "true";
   const readerEnabled = readOnly && process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV === "true";
+  const scopedApprovalEnabled=approvalOnly &&
+    process.env.BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV === "true" &&
+    process.env.BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV === "true";
   if (!isDevelopmentEnvironment() || process.env.APP_ENV?.trim().toLowerCase() !== "development"
-    || (!writerEnabled && !readerEnabled)) {
+    || (!writerEnabled && !readerEnabled && !scopedApprovalEnabled)) {
     res.status(404).json({ error: "Not found" });
     return null;
   }
@@ -377,11 +381,12 @@ router.post("/mkt/admin/ap-preparations/:id/accounting-handoff", async (req,res)
 // demonstration button and is never enabled by its sandbox flag. Actual
 // bank posting and payment finalization require distinct independent gates.
 router.post("/mkt/admin/payment-requests/:id/approve", async (req,res) => {
-  const actor=await authorize(req,res);
-  if(!actor)return;
-  if(process.env.BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV!=="true"){
+  if(process.env.BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV!=="true" ||
+     process.env.BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV!=="true"){
     res.status(404).json({error:"Not found"});return;
   }
+  const actor=await authorize(req,res,false,true);
+  if(!actor)return;
   const id=validId(String(req.params.id??""));
   if(!id){res.status(400).json({error:"Invalid Payment Request ID"});return;}
   if(req.body && (typeof req.body!=="object" || Array.isArray(req.body) ||
@@ -412,7 +417,7 @@ router.post("/mkt/admin/payment-requests/:id/approve", async (req,res) => {
         source:"signed_server_session",role:"super_admin",email:actor.email,
         companyId:actor.companyId,
       },id);
-    });
+    },{paymentApprovalOnly:true});
     res.json({ok:true,...result});
   }catch(error){
     if(error instanceof Error && "code" in error &&

@@ -232,3 +232,32 @@ canonical posting contract regression: 82/82 PASS; API typecheck PASS.
 No change to the existing bank posting service or running Finance preview.
 Production and business GL remain untouched. A genuine bank posting
 workflow and authentic signed Super Admin HTTP request remain release gates.
+
+## Narrow independent approval-only gate — 21 November 2026
+
+Audit found the first real Payment Request approval handler depended on
+BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV, the general Finance
+writer switch. Enabling it for the sole purpose of verifying approval
+would also expose unrelated vendor invoice and AP writer operations.
+
+The candidate code now has an independent approval-only transaction option
+and handler guard. Both BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV
+and BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV must explicitly
+be true, APP_ENV must be development, and the independent tenant-bound
+Finance PostgreSQL role and the existing full RLS/11-table readiness checks
+remain mandatory. The common Finance Writer flag is NOT required. Unrelated
+writers continue to return 404 when their general flag is OFF.
+No external after-commit actions may be registered in approval-only mode.
+When the approval flag is OFF, the handler returns 404 before session lookup.
+
+New tests: 39/39 approval HTTP tests PASS including isolation from vendor
+invoice/AP writers; 5/5 DB guard tests PASS. API TypeScript typecheck PASS.
+Two preexisting isolated PostgreSQL suites were not rerun in the combined
+test because their disposable containers (ports 55493 and 55497) had been
+removed; their historical PASS remains separate and is not included in
+the current run.
+
+This is a code-only change on a draft PR. Neither the unrestricted Finance
+writer nor the new approval-only flag was enabled on the currently deployed
+Finance DEV backend. Real Payment Requests count was zero as of last
+read-only DB inspection; no bank or journal was posted.

@@ -53,6 +53,7 @@ beforeEach(()=>{
   delete process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV;
   delete process.env.BIZPORTAL_MARKETPLACE_ACCOUNTING_HANDOFF_ENABLED_DEV;
   delete process.env.BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV;
+  delete process.env.BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV;
 });
 const get=(path:string)=>fetch(base+path);
 const post=(path:string,body:any={})=>fetch(base+path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
@@ -406,6 +407,7 @@ describe("DEV Marketplace real Payment Request approval protected HTTP boundary"
   });
   it("rejects anonymous, mismatched company and non-superadmin",async()=>{
     process.env.BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV="true";
+    process.env.BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV="true";
     mock.session.mockReturnValue(null);
     expect((await post("/api/mkt/admin/payment-requests/41/approve")).status).toBe(401);
     mock.session.mockReturnValue({id:"signed",email:"admin@test.dev",issuedAt:100,expiresAt:Date.now()+600000});
@@ -415,6 +417,7 @@ describe("DEV Marketplace real Payment Request approval protected HTTP boundary"
   });
   it("rejects invalid body and cross-site origin before any financial operation",async()=>{
     process.env.BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV="true";
+    process.env.BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV="true";
     const origin="https://"+new URL(base).host;
     const path="/api/mkt/admin/payment-requests/41/approve";
     expect((await post(path,{approve:true})).status).toBe(422);
@@ -424,8 +427,32 @@ describe("DEV Marketplace real Payment Request approval protected HTTP boundary"
     expect(bad.status).toBe(403);
     expect(mock.approvePay).not.toHaveBeenCalled();
   });
-  it("uses existing signed Super Admin, company role and writer transaction",async()=>{
+  it("keeps all other Finance writers OFF when approval-only is enabled",async()=>{
+    delete process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV;
     process.env.BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV="true";
+    process.env.BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV="true";
+    mock.approvePay.mockResolvedValue({requestId:41,companyId:1,status:"approved",
+      replay:false,bankTransfer:false,glPosted:false});
+    const path="/api/mkt/admin/payment-requests/41/approve";
+    const response=await fetch(base+path,{method:"POST",
+      headers:{"Content-Type":"application/json","Origin":"https://"+new URL(base).host},body:"{}"});
+    expect(response.status).toBe(200);
+    expect(mock.finance).toHaveBeenCalledWith(1,expect.any(Function),
+      {paymentApprovalOnly:true});
+    expect((await post("/api/mkt/admin/ap-preparations/88/accounting-handoff")).status).toBe(404);
+    expect((await post("/api/mkt/admin/vendor-invoices/77/match")).status).toBe(404);
+    expect(mock.handoffAp).not.toHaveBeenCalled();
+    expect(mock.submitInvoice).not.toHaveBeenCalled();
+  });
+  it("does not expose approval without company-scoped credential mode",async()=>{
+    process.env.BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV="true";
+    delete process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV;
+    expect((await post("/api/mkt/admin/payment-requests/41/approve")).status).toBe(404);
+    expect(mock.approvePay).not.toHaveBeenCalled();
+  });
+  it("uses existing signed Super Admin, company role and approval-only transaction",async()=>{
+    process.env.BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV="true";
+    process.env.BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV="true";
     mock.approvePay.mockResolvedValue({requestId:41,companyId:1,status:"approved",
       replay:false,bankTransfer:false,glPosted:false});
     const path="/api/mkt/admin/payment-requests/41/approve";
