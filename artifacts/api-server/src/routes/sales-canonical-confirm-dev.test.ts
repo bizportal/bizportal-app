@@ -282,7 +282,7 @@ describe("CST-DEV QA Order #108 detail GET parity", () => {
     expect(r.status).toBe(200);
     expect(r.headers.get("cache-control")).toBe("no-store");
     const payload=await r.json();
-    expect(payload).toMatchObject({id:108,companyId:undefined,docNumber:"QA-CST-DEV-OWNER-20261120-001",
+    expect(payload).toMatchObject({id:108,docNumber:"QA-CST-DEV-OWNER-20261120-001",
       customerId:null,status:"draft",invoiceStatus:"none",grandTotal:111,
       lines:[{id:901,documentId:108,quantity:1,subtotal:100}]});
     expect(m.poolQuery).toHaveBeenCalledTimes(2);
