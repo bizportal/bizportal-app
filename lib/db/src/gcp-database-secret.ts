@@ -48,7 +48,7 @@ function getCredentials(secretName: string): ServiceAccountCredentials {
     }
     const filename = path.join(directory, "gcp-secret-manager-bootstrap.json");
     const stat = statSync(filename);
-    if (!stat.isFile() || stat.size > 8192 || (stat.mode & 0o077) !== 0) {
+    if (!stat.isFile() || stat.size > 8192 || stat.uid !== 0 || stat.gid !== 0 || (stat.mode & 0o027) !== 0) {
       throw new Error("PR147_SYSTEMD_CREDENTIAL_PERMISSIONS_INVALID");
     }
     raw = readFileSync(filename, "utf8");
