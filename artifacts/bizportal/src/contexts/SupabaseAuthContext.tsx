@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from "react";
 import type { AuthUser } from "@shared/api-client-react";
 import { supabase } from "@/lib/supabaseClient";
+import { confirmOtpServerSession } from "@/lib/confirmOtpServerSession";
 
 interface AuthContextValue {
   session: { user: AuthUser } | null;
@@ -349,26 +350,16 @@ export function SupabaseAuthProvider({ children }: { children: React.ReactNode }
       } | null;
       if (!response.ok) return { error: data?.error ?? "Email atau kode OTP tidak dapat digunakan." };
       if (!data?.user) return { error: "Session login tidak diterima server." };
-      // OTP verification success alone does not prove the signed cookie reached
-      // the browser. Check a fresh protected server session before showing the
-      // user as authenticated; otherwise Sales detail can fail with HTTP 401.
-      const sessionResponse = await fetch("/api/auth/user", {
-        credentials: "include",
-        cache: "no-store",
-      });
-      const checked = sessionResponse.ok
-        ? await sessionResponse.json().catch(() => null) as { user?: AuthUser } | null
-        : null;
-      if (!checked?.user ||
-          checked.user.email?.trim().toLowerCase() !== normalizedEmail ||
-          checked.user.role !== data.user.role ||
-          checked.user.id !== data.user.id) {
+      // OTP success is not a session. Require a server-accepted cookie and
+      // identical identity before declaring the client logged in.
+      const verified = await confirmOtpServerSession(data.user, normalizedEmail);
+      if (!verified) {
         writeCache(null);
         setUser(null);
         return { error: "OTP diterima, tetapi sesi API belum terverifikasi. Login tidak dinyatakan berhasil." };
       }
-      writeCache(checked.user);
-      setUser(checked.user);
+      writeCache(verified);
+      setUser(verified);
       return { error: null };
     } catch {
       writeCache(null);
