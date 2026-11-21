@@ -349,11 +349,31 @@ export function SupabaseAuthProvider({ children }: { children: React.ReactNode }
       } | null;
       if (!response.ok) return { error: data?.error ?? "Email atau kode OTP tidak dapat digunakan." };
       if (!data?.user) return { error: "Session login tidak diterima server." };
-      writeCache(data.user);
-      setUser(data.user);
+      // OTP verification success alone does not prove the signed cookie reached
+      // the browser. Check a fresh protected server session before showing the
+      // user as authenticated; otherwise Sales detail can fail with HTTP 401.
+      const sessionResponse = await fetch("/api/auth/user", {
+        credentials: "include",
+        cache: "no-store",
+      });
+      const checked = sessionResponse.ok
+        ? await sessionResponse.json().catch(() => null) as { user?: AuthUser } | null
+        : null;
+      if (!checked?.user ||
+          checked.user.email?.trim().toLowerCase() !== normalizedEmail ||
+          checked.user.role !== data.user.role ||
+          checked.user.id !== data.user.id) {
+        writeCache(null);
+        setUser(null);
+        return { error: "OTP diterima, tetapi sesi API belum terverifikasi. Login tidak dinyatakan berhasil." };
+      }
+      writeCache(checked.user);
+      setUser(checked.user);
       return { error: null };
     } catch {
-      return { error: "Koneksi ke server gagal." };
+      writeCache(null);
+      setUser(null);
+      return { error: "Verifikasi sesi API gagal. Login belum dinyatakan berhasil." };
     }
   }, [exchangeToken]);
 
