@@ -8,13 +8,20 @@ const state = vi.hoisted(() => ({
   session: null as null | { id: string; email: string },
   user: null as null | { role: string; companyId: number | null },
   failDb: false,
+  actorFailuresRemaining: 0,
   queries: [] as Array<{ company: number; sql: string }>,
 }));
 
 vi.mock("./dev-auth", () => ({
   isSignedOtpDevEnabled: () => state.signedEnabled,
   getProductionSession: () => state.session,
-  getProductionUser: async () => state.user,
+  getProductionUser: async () => {
+    if (state.actorFailuresRemaining > 0) {
+      state.actorFailuresRemaining--;
+      throw new Error("Transient database error");
+    }
+    return state.user;
+  },
 }));
 vi.mock("../lib/bankSheetScopedReader", () => ({
   getDevBankSheetReaderFromConfiguredSource: async (company: number) => ({
@@ -59,6 +66,7 @@ describe("PR147 real signed Super Admin opt-in verification", () => {
     state.session = { id: "real-session-shape", email: "admin@example.test" };
     state.user = { role: "super_admin", companyId: null };
     state.failDb = false;
+    state.actorFailuresRemaining = 0;
     state.queries.length = 0;
   });
   afterEach(() => vi.unstubAllEnvs());
@@ -116,6 +124,22 @@ describe("PR147 real signed Super Admin opt-in verification", () => {
     expect((await fetch(base)).status).toBe(401);
     vi.stubEnv("PR147_SIGNED_VERIFY_ENABLED_DEV", "");
     expect((await fetch(page)).status).toBe(404);
+  });
+  it("retries the same signed actor read once on transient DB failure", async () => {
+    state.actorFailuresRemaining = 1;
+    const response = await fetch(base);
+    expect(response.status).toBe(200);
+    expect(state.actorFailuresRemaining).toBe(0);
+    expect((await response.json() as { code: string }).code)
+      .toBe("PR147_SIGNED_SUPER_ADMIN_READER_PASS");
+  });
+  it("fails closed after bounded actor lookup failures", async () => {
+    state.actorFailuresRemaining = 2;
+    const response = await fetch(base);
+    expect(response.status).toBe(503);
+    expect((await response.json() as { code: string }).code)
+      .toBe("PR147_ACTOR_REVALIDATION_UNAVAILABLE");
+    expect(state.queries).toHaveLength(0);
   });
   it("fails closed without leaking secret or DB details", async () => {
     state.failDb = true;
