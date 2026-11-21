@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { pool } from "@workspace/db";
+import { pool, type PayrollDbClient } from "@workspace/db";
 import { authenticateAdmin, type AdminRequest } from "./admin-auth";
 import { getProductionSession, getProductionUser, isDevelopmentEnvironment, isSignedOtpDevEnabled } from "./dev-auth";
 
@@ -142,7 +142,7 @@ router.post("/sales/documents/:id/action", async (request, response): Promise<vo
     return;
   }
 
-  let client: Awaited<ReturnType<typeof pool.connect>> | undefined;
+  let client: PayrollDbClient | undefined;
   let inTransaction = false;
   try {
     client = await pool.connect();
