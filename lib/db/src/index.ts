@@ -32,7 +32,11 @@ async function createConcretePool(): Promise<InstanceType<typeof Pool>> {
     // Supabase's transaction pooler rejects statement_timeout as a startup
     // parameter. Keep the timeout client-side instead of breaking every connection.
     query_timeout: Number(process.env.DB_QUERY_TIMEOUT_MS ?? 30_000),
-    application_name: "cst-bizportal",
+    // Keep PROD's existing label unchanged; distinguish DEV-only failures
+    // when multiple Hostinger apps share a Supavisor project.
+    application_name: process.env.APP_ENV?.trim().toLowerCase() === "development"
+      ? "cst-bizportal-dev"
+      : "cst-bizportal",
   });
 }
 
