@@ -53,7 +53,7 @@ router.get("/sales/documents/:id", async (request, response): Promise<void> => {
       ai_generated: boolean; ai_source_wa_phone: string | null;
       ai_source_correspondence_id: number | null;
     }>(
-      \`SELECT id,doc_number,kind::text,status::text,invoice_status::text,
+      `SELECT id,doc_number,kind::text,status::text,invoice_status::text,
               delivery_status::text,payment_status::text,customer_id,customer_name,
               total_amount,tax_rate_id,tax_amount,grand_total,origin,destination,
               transport_mode,etd,eta,valid_until,expected_date,notes,confirmed_at,
@@ -61,7 +61,7 @@ router.get("/sales/documents/:id", async (request, response): Promise<void> => {
               ai_source_correspondence_id
          FROM public.sales_documents
         WHERE id=$1 AND company_id=$2 AND doc_number=$3
-          AND kind::text='order'\`,
+          AND kind::text='order'`,
       [108, 1, "QA-CST-DEV-OWNER-20261120-001"],
     );
     const doc = order.rows[0];
@@ -74,8 +74,8 @@ router.get("/sales/documents/:id", async (request, response): Promise<void> => {
       name: string; description: string | null;
       quantity: string; unit_price: string; subtotal: string;
     }>(
-      \`SELECT id,document_id,product_id,name,description,quantity,unit_price,subtotal
-         FROM public.sales_document_lines WHERE document_id=$1 ORDER BY id\`,
+      `SELECT id,document_id,product_id,name,description,quantity,unit_price,subtotal
+         FROM public.sales_document_lines WHERE document_id=$1 ORDER BY id`,
       [108],
     );
     response.setHeader("Cache-Control", "no-store");
