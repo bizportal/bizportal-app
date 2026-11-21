@@ -34,7 +34,7 @@ function allowedAccountingRole(user: DevAuthUser | null, req: Request): boolean 
   const role = user?.role?.trim().toLowerCase();
   if (role && ["admin", "owner", "finance", "accounting"].includes(role)) return true;
   // Exact four read-only resources, no journal posting or accounting writes.
-  const path = req.path.replace(/^\\/accounting(?=\\/)/, "");
+  const path = req.path.startsWith("/accounting/") ? req.path.slice("/accounting".length) : req.path;
   return role === "super_admin" && isDevelopmentEnvironment() &&
     process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV === "true" &&
     req.method === "GET" &&
