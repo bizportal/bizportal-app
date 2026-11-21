@@ -125,19 +125,9 @@ router.get("/pr147/verify-page", async (req: Request, res: Response): Promise<vo
     res.status(503).send("Signed DEV OTP unavailable");
     return;
   }
-  const session = getProductionSession(req);
-  if (!session) { res.status(401).send("Sesi Super Admin diperlukan"); return; }
-  try {
-    const actor = await getProductionUser(session);
-    if (!actor || actor.role.trim().toLowerCase() !== "super_admin"
-        || actor.companyId !== null) {
-      res.status(403).send("Akses Super Admin ditolak");
-      return;
-    }
-  } catch {
-    res.status(503).send("Otorisasi DEV tidak tersedia");
-    return;
-  }
+  // Public presentation only: never disclose user/tenant data here.
+  // Actual verification still requires the real signed OTP session and
+  // independently revalidates the DB-backed Super Admin actor.
   const nonce = randomBytes(16).toString("base64");
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.setHeader("Content-Security-Policy",
@@ -147,24 +137,63 @@ router.get("/pr147/verify-page", async (req: Request, res: Response): Promise<vo
 <style>body{font-family:system-ui,sans-serif;background:#f6f7fb;color:#1b2433;max-width:650px;margin:5vh auto;padding:24px}
 main{background:white;border:1px solid #dce1eb;border-radius:16px;padding:26px}
 h1{font-size:24px}p{line-height:1.6}button{background:#2447b2;color:white;border:0;border-radius:8px;padding:13px 20px;font-weight:700;cursor:pointer}
-button:disabled{opacity:.55}pre{white-space:pre-wrap;word-break:break-word;background:#eef1f6;border-radius:8px;padding:15px}
+button:disabled{opacity:.55}input{display:block;width:100%;box-sizing:border-box;margin:8px 0 14px;padding:11px;border:1px solid #b2bccb;border-radius:8px}label{font-weight:600;font-size:14px}section{margin-top:20px;padding:14px;background:#f2f5fb;border-radius:8px}section button{margin:6px 0 16px}pre{white-space:pre-wrap;word-break:break-word;background:#eef1f6;border-radius:8px;padding:15px}
 small{color:#526176}</style></head><body><main>
 <h1>Verifikasi Super Admin — PR #147</h1>
 <p>Khusus BizPortal DEV. Akun Anda diverifikasi melalui sesi OTP resmi. Pemeriksaan hanya membaca konfigurasi CST dan Diva serta hak RLS, tanpa mengubah jurnal, mutasi, atau password.</p>
 <button id="run" type="button">Jalankan verifikasi baca-saja</button>
+<section id="otp" hidden>
+<p>Sesi aplikasi di hostname ini belum tersedia. Login sekali menggunakan OTP email BizPortal DEV resmi. Jangan mengirim OTP melalui chat.</p>
+<label for="email">Email Super Admin</label><input id="email" type="email" autocomplete="username" maxlength="320" required placeholder="Email terdaftar">
+<button id="sendOtp" type="button">Kirim OTP email</button>
+<label for="otpCode">Kode OTP</label><input id="otpCode" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="6 digit">
+<button id="verifyOtp" type="button">Verifikasi OTP dan lanjutkan</button>
+</section>
 <p id="status" role="status" aria-live="polite"></p><pre id="result" hidden></pre>
 <small>Hasil PASS pemeriksaan ini tidak otomatis mengizinkan deployment PROD.</small></main>
 <script nonce="${nonce}">
-document.getElementById("run").addEventListener("click",async()=>{
- const b=document.getElementById("run"),s=document.getElementById("status"),r=document.getElementById("result");
- b.disabled=true;s.textContent="Memverifikasi…";r.hidden=true;
- try {
+const runButton=document.getElementById("run"),status=document.getElementById("status");
+const otpSection=document.getElementById("otp"),result=document.getElementById("result");
+const email=document.getElementById("email"),otpCode=document.getElementById("otpCode");
+async function runVerification(){
+ if(runButton.disabled)return;
+ runButton.disabled=true;status.textContent="Memverifikasi…";result.hidden=true;
+ try{
   const response=await fetch("/api/pr147/verify-super-admin",{credentials:"include",cache:"no-store"});
   const payload=await response.json();
-  s.textContent=response.ok?"PASS: sesi Super Admin dan pembaca CST/Diva terverifikasi.":"BELUM PASS: "+response.status;
-  r.textContent=JSON.stringify(payload,null,2);r.hidden=false;
- }catch{s.textContent="API kandidat belum terjangkau — tidak ada data diubah."}
- finally{b.disabled=false}
+  if(response.status===401){
+   otpSection.hidden=false;status.textContent="Belum ada sesi OTP yang valid pada domain BizPortal DEV ini.";
+  }else{
+   status.textContent=response.ok?"PASS: sesi Super Admin asli dan Finance CST/Diva berhasil diverifikasi.":"BELUM PASS (HTTP "+response.status+"): pemeriksaan berhenti dengan aman.";
+   result.textContent=JSON.stringify(payload,null,2);result.hidden=false;
+   if(response.ok)otpSection.hidden=true;
+  }
+ }catch{status.textContent="API kandidat tidak dapat dihubungi; tidak ada data yang diubah."}
+ finally{runButton.disabled=false}
+}
+runButton.addEventListener("click",runVerification);
+document.getElementById("sendOtp").addEventListener("click",async()=>{
+ const value=email.value.trim().toLowerCase();
+ if(!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(value)){status.textContent="Isi email Super Admin yang valid.";return;}
+ const button=document.getElementById("sendOtp");button.disabled=true;
+ try{
+  const response=await fetch("/api/auth/email-otp/send",{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:value})});
+  status.textContent=response.ok?"Jika email Super Admin terdaftar, OTP akan dikirim melalui email.":"OTP belum dapat diminta (HTTP "+response.status+").";
+ }catch{status.textContent="Layanan OTP belum terjangkau."}
+ finally{button.disabled=false}
+});
+document.getElementById("verifyOtp").addEventListener("click",async()=>{
+ const value=email.value.trim().toLowerCase(),code=otpCode.value.trim();
+ if(!/^[0-9]{6}$/.test(code)){status.textContent="Masukkan kode OTP enam digit.";return;}
+ const button=document.getElementById("verifyOtp");button.disabled=true;
+ try{
+  const response=await fetch("/api/auth/email-otp/verify",{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:value,code})});
+  otpCode.value="";
+  if(!response.ok){status.textContent="OTP belum berhasil diverifikasi (HTTP "+response.status+").";return;}
+  status.textContent="OTP valid. Menjalankan verifikasi CST dan Diva…";
+  await runVerification();
+ }catch{otpCode.value="";status.textContent="Verifikasi OTP tidak terjangkau."}
+ finally{button.disabled=false}
 });
 </script></body></html>`);
 });
