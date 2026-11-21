@@ -262,9 +262,19 @@ describe("CST-DEV QA Order #108 detail GET parity", () => {
     expect((await detail("107")).status).toBe(404);
     expect(m.poolQuery).not.toHaveBeenCalled();
   });
-  it("does not expose detail when QA feature disabled", async () => {
+  it("reads the existing order without turning on the customer creation permission", async () => {
     delete process.env.BIZPORTAL_DEV_QA_ORDER108_CUSTOMER_SETUP;
-    expect((await detail()).status).toBe(404);
+    const res = await detail();
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-cst-dev-sales-detail-reader")).toBe("v2");
+    expect(m.poolQuery).toHaveBeenCalledTimes(2);
+    expect(m.connect).not.toHaveBeenCalled();
+  });
+  it("includes a harmless runtime receipt even when signed session is absent", async () => {
+    m.signed = false;
+    const res = await detail();
+    expect(res.status).toBe(403);
+    expect(res.headers.get("x-cst-dev-sales-detail-reader")).toBe("v2");
     expect(m.poolQuery).not.toHaveBeenCalled();
   });
   it("rejects unsigned DEV cookie before DB access", async () => {
