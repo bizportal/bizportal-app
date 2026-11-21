@@ -33,7 +33,7 @@ describe("CST-DEV database customer guard migration contract", () => {
     expect(migration).toContain("ERRCODE='23514'");
   });
   it("does not block unrelated legacy order status or invoice-status updates", () => {
-    const triggerClause = migration.match(/BEFORE INSERT OR UPDATE OF ([^\\n]+)/)?.[1] ?? "";
+    const triggerClause = migration.split("\n").find(line => line.startsWith("BEFORE INSERT OR UPDATE OF")) ?? "";
     expect(triggerClause).not.toContain("status");
     expect(triggerClause).not.toContain("invoice_status");
     expect(migration).not.toContain("UPDATE OF kind, customer_id, company_id, status");
