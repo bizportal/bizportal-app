@@ -1,14 +1,11 @@
 -- CST-DEV review-only migration. Do not run in PROD or auto-apply with drizzle-kit push.
 -- Prevent future Sales Order rows without registered customers, including non-UI writers.
--- NOT VALID leaves historical Sales Orders untouched for separately approved remediation.
+-- A targeted trigger enforces new/identity/status changes without rejecting harmless edits
+-- to historical unlinked Orders. Do NOT add a NOT VALID CHECK here: PostgreSQL would
+-- reject even unrelated UPDATEs to old invalid rows after installing that CHECK.
 -- Database name and role must be verified by the authorized DEV DBA before executing.
 
 BEGIN;
-
-ALTER TABLE public.sales_documents
-  ADD CONSTRAINT sales_order_customer_required
-  CHECK (kind <> 'order' OR (customer_id IS NOT NULL AND customer_id > 0))
-  NOT VALID;
 
 -- Customer ID must also belong to the SAME company. The existing foreign key
 -- proves existence only; it does not prove tenant ownership.
@@ -42,7 +39,7 @@ END;
 $$;
 
 CREATE TRIGGER sales_order_customer_company_guard_dev_trigger
-BEFORE INSERT OR UPDATE OF kind, customer_id, company_id
+BEFORE INSERT OR UPDATE OF kind, customer_id, company_id, status, invoice_status
 ON public.sales_documents
 FOR EACH ROW EXECUTE FUNCTION public.sales_order_customer_company_guard_dev();
 
@@ -57,6 +54,6 @@ COMMIT;
 -- WHERE d.kind='order' AND (c.id IS NULL OR c.company_id IS DISTINCT FROM d.company_id);
 --
 -- Historical rows require verified customer reconciliation; never guess an ID.
--- Once every historical row is remediated, validate constraint under a separate
--- reviewed database change. This migration does NOT authorize Invoice issuance,
+-- Once every historical row is remediated, add a fully validated CHECK constraint
+-- under a separate reviewed database change. This migration does NOT authorize Invoice issuance,
 -- change Order #108, enable financial writers, or replace signed Owner OTP.
