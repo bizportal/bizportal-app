@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { insertSalesDocumentSchema } from "../../../../lib/db/src/schema/salesDocuments";
 
@@ -16,5 +17,25 @@ describe("Sales Order customer identity guard", () => {
   });
   it("preserves draft quotation without customerId", () => {
     expect(insertSalesDocumentSchema.safeParse({ ...base, kind: "quote", customerId: null }).success).toBe(true);
+  });
+});
+
+describe("CST-DEV database customer guard migration contract", () => {
+  const migration = readFileSync(
+    new URL("../../../../scripts/sql/20261121_sales_order_customer_required_dev_review.sql", import.meta.url),
+    "utf8",
+  );
+  it("requires customer and company match for new or reidentified Sales Orders", () => {
+    expect(migration).toContain("CREATE TRIGGER sales_order_customer_company_guard_dev_trigger");
+    expect(migration).toContain("BEFORE INSERT OR UPDATE OF kind, customer_id, company_id");
+    expect(migration).toContain("c.id = NEW.customer_id");
+    expect(migration).toContain("c.company_id = NEW.company_id");
+    expect(migration).toContain("ERRCODE='23514'");
+  });
+  it("does not block unrelated legacy order status or invoice-status updates", () => {
+    const triggerClause = migration.split("\n").find(line => line.startsWith("BEFORE INSERT OR UPDATE OF")) ?? "";
+    expect(triggerClause).not.toContain("status");
+    expect(triggerClause).not.toContain("invoice_status");
+    expect(migration).not.toContain("UPDATE OF kind, customer_id, company_id, status");
   });
 });
