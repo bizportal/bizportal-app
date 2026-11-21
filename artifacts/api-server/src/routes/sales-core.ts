@@ -17,16 +17,27 @@ function numeric(value: unknown): number {
 }
 
 router.use(authenticateAdmin);
+// Non-sensitive route presence receipt for anonymous CI/runtime probes.
+// The actual document data remains protected by authenticateAdmin and signed OTP.
+router.use((request, response, next) => {
+  if (request.method === "GET" && request.path === "/sales/documents/108" &&
+      isDevelopmentEnvironment() && process.env.APP_ENV === "development") {
+    response.setHeader("X-CST-DEV-Sales-Detail-Reader", "v2");
+  }
+  next();
+});
+
 router.use(authenticateAdmin);
 
 // DEV-only read parity for the exact synthetic Order #108.
 // The old UI queries GET /sales/documents/:id, which the canonical DEV router
 // did not expose. No legacy writer or Invoice route is imported here.
 router.get("/sales/documents/:id", async (request, response): Promise<void> => {
+  // Reading a document is not a customer-creation permission. Keep the
+  // QA provisioning flag only on the distinct POST and capability endpoints.
   if (request.params.id !== "108" ||
       !isDevelopmentEnvironment() || process.env.APP_ENV !== "development" ||
-      !isSignedOtpDevEnabled() ||
-      process.env.BIZPORTAL_DEV_QA_ORDER108_CUSTOMER_SETUP !== "true") {
+      !isSignedOtpDevEnabled()) {
     response.status(404).json({ error: "Not found" });
     return;
   }
