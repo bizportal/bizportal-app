@@ -122,11 +122,17 @@ export const salesDocumentLinesTable = pgTable("sales_document_lines", {
   index("sales_doc_lines_doc_idx").on(t.documentId),
 ]);
 
+// Enforce customer linkage on new Sales Orders at the shared validation boundary.
+// Existing quotations may still be saved as free-text drafts.
 export const insertSalesDocumentSchema = createInsertSchema(salesDocumentsTable).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
   docNumber: true,
+}).superRefine((doc, ctx) => {
+  if (doc.kind === "order" && (!Number.isSafeInteger(doc.customerId) || (doc.customerId ?? 0) <= 0)) {
+    ctx.addIssue({ code: "custom", path: ["customerId"], message: "Sales Order requires a registered customerId" });
+  }
 });
 export const insertSalesDocumentLineSchema = createInsertSchema(salesDocumentLinesTable).omit({
   id: true,
