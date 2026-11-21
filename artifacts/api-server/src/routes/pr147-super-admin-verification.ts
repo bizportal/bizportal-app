@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from "express";
+import { randomBytes } from "node:crypto";
 import {
   getProductionSession,
   getProductionUser,
@@ -93,6 +94,66 @@ router.get("/pr147/verify-super-admin", async (req: Request, res: Response): Pro
     // Never return backend URLs, password-bearing driver errors, or bank data.
     res.status(503).json({ code: "PR147_READONLY_E2E_NOT_VERIFIED", productionCutoverApproved: false });
   }
+});
+
+/**
+ * Self-contained DEV verification UI. Served only by the separate candidate
+ * API so no release of the existing BizPortal frontend is required.
+ * CSP nonce and same-origin fetch ensure session cookies remain in-browser.
+ */
+router.get("/pr147/verify-page", async (req: Request, res: Response): Promise<void> => {
+  res.setHeader("Cache-Control", "no-store");
+  if (process.env.APP_ENV !== "development"
+      || process.env.PR147_SIGNED_VERIFY_ENABLED_DEV !== "true") {
+    res.status(404).send("Not found");
+    return;
+  }
+  if (!isSignedOtpDevEnabled()) {
+    res.status(503).send("Signed DEV OTP unavailable");
+    return;
+  }
+  const session = getProductionSession(req);
+  if (!session) { res.status(401).send("Sesi Super Admin diperlukan"); return; }
+  try {
+    const actor = await getProductionUser(session);
+    if (!actor || actor.role.trim().toLowerCase() !== "super_admin"
+        || actor.companyId !== null) {
+      res.status(403).send("Akses Super Admin ditolak");
+      return;
+    }
+  } catch {
+    res.status(503).send("Otorisasi DEV tidak tersedia");
+    return;
+  }
+  const nonce = randomBytes(16).toString("base64");
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.setHeader("Content-Security-Policy",
+    `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`);
+  res.status(200).send(`<!doctype html><html lang="id"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Verifikasi BizPortal DEV — PR147</title>
+<style>body{font-family:system-ui,sans-serif;background:#f6f7fb;color:#1b2433;max-width:650px;margin:5vh auto;padding:24px}
+main{background:white;border:1px solid #dce1eb;border-radius:16px;padding:26px}
+h1{font-size:24px}p{line-height:1.6}button{background:#2447b2;color:white;border:0;border-radius:8px;padding:13px 20px;font-weight:700;cursor:pointer}
+button:disabled{opacity:.55}pre{white-space:pre-wrap;word-break:break-word;background:#eef1f6;border-radius:8px;padding:15px}
+small{color:#526176}</style></head><body><main>
+<h1>Verifikasi Super Admin — PR #147</h1>
+<p>Khusus BizPortal DEV. Akun Anda diverifikasi melalui sesi OTP resmi. Pemeriksaan hanya membaca konfigurasi CST dan Diva serta hak RLS, tanpa mengubah jurnal, mutasi, atau password.</p>
+<button id="run" type="button">Jalankan verifikasi baca-saja</button>
+<p id="status" role="status" aria-live="polite"></p><pre id="result" hidden></pre>
+<small>Hasil PASS pemeriksaan ini tidak otomatis mengizinkan deployment PROD.</small></main>
+<script nonce="${nonce}">
+document.getElementById("run").addEventListener("click",async()=>{
+ const b=document.getElementById("run"),s=document.getElementById("status"),r=document.getElementById("result");
+ b.disabled=true;s.textContent="Memverifikasi…";r.hidden=true;
+ try {
+  const response=await fetch("/api/pr147/verify-super-admin",{credentials:"include",cache:"no-store"});
+  const payload=await response.json();
+  s.textContent=response.ok?"PASS: sesi Super Admin dan pembaca CST/Diva terverifikasi.":"BELUM PASS: "+response.status;
+  r.textContent=JSON.stringify(payload,null,2);r.hidden=false;
+ }catch{s.textContent="API kandidat belum terjangkau — tidak ada data diubah."}
+ finally{b.disabled=false}
+});
+</script></body></html>`);
 });
 
 export default router;
