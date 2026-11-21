@@ -67,13 +67,36 @@ function assertExpectedSupabaseProject(
   return value;
 }
 
+/**
+ * Exact CST-DEV-only recovery for a saturated Supavisor session pool (5432).
+ * Transaction mode (6543) has passed a native read-only PostgreSQL probe.
+ * Never rewrite a direct URL, another tenant, an alternate host, or PROD.
+ * Preserve user, password, query string and TLS parameters byte-for-byte.
+ */
+export function recoverCstDevSessionPoolerUrl(value: string, environment: AppEnvironment): string {
+  if (environment !== "development") return value;
+  const url = new URL(value);
+  if (url.hostname.toLowerCase() !== "aws-1-ap-southeast-2.pooler.supabase.com" ||
+      decodeURIComponent(url.username).toLowerCase() !== "postgres." + DEV_SUPABASE_PROJECT_REF ||
+      url.port !== "5432") return value;
+
+  // Change only the port without URL reserialization (sensitive credentials
+  // must never be logged, normalized, or exposed via a diagnostic response).
+  const protocolAndHost = value.match(
+    /^(postgres(?:ql)?:\/\/[^/?#@]+@aws-1-ap-southeast-2\.pooler\.supabase\.com):5432(?=[/?#]|$)/i,
+  );
+  if (!protocolAndHost) return value;
+  return value.replace(protocolAndHost[0], protocolAndHost[1] + ":6543");
+}
+
 function validateEnvironmentDatabaseUrl(
   value: string,
   environment: AppEnvironment,
   source: string,
 ): string {
   const validated = validateDatabaseUrl(value, source);
-  return assertExpectedSupabaseProject(validated, environment, source);
+  const scoped = assertExpectedSupabaseProject(validated, environment, source);
+  return recoverCstDevSessionPoolerUrl(scoped, environment);
 }
 
 /**
