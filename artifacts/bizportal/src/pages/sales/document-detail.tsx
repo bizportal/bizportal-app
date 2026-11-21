@@ -769,6 +769,12 @@ export default function SalesDocumentDetailPage() {
   };
 
   const handleAction = async (action: string, label: string) => {
+    // Confirmation is a Sales Order transition, not permitted for free-text-only drafts.
+    // The backend must independently enforce customer existence and company ownership.
+    if (action === "confirm" && (!Number.isSafeInteger(doc?.customerId) || (doc?.customerId ?? 0) <= 0)) {
+      toast({ title: "Customer ID wajib diisi", description: "Pilih customer terdaftar melalui Edit Dokumen sebelum konfirmasi Sales Order.", variant: "destructive" });
+      return;
+    }
     if (!confirm(`${label}?`)) return;
     setActionLoading(action);
     try {
@@ -919,7 +925,7 @@ export default function SalesDocumentDetailPage() {
             {(doc.status === "draft" || doc.status === "sent") && (
               <Button size="sm" className="gap-2 bg-emerald-600 hover:bg-emerald-700"
                 onClick={() => handleAction("confirm", "Konfirmasi sebagai Sales Order")}
-                disabled={actionLoading === "confirm"}
+                disabled={actionLoading === "confirm" || !Number.isSafeInteger(doc.customerId) || (doc.customerId ?? 0) <= 0}
               >
                 {actionLoading === "confirm" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle className="h-3.5 w-3.5" />}
                 Konfirmasi
