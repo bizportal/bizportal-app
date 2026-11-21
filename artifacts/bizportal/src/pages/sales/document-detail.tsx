@@ -877,17 +877,30 @@ export default function SalesDocumentDetailPage() {
   }
 
   if (error || !doc || Number.isNaN(docId)) {
+    // A failed API call is not proof that the underlying Sales document was
+    // deleted. Make its HTTP status visible without leaking response contents.
+    const requestStatus = error && typeof error === "object" && "status" in error &&
+      typeof error.status === "number" ? error.status : null;
     return (
       <AppShell>
         <div className="max-w-5xl mx-auto py-16 text-center">
           <FileText className="w-14 h-14 mx-auto mb-4 text-muted-foreground/40" />
-          <h2 className="text-lg font-semibold mb-1">Dokumen tidak ditemukan</h2>
+          <h2 className="text-lg font-semibold mb-1">
+            {error ? "Dokumen belum dapat dimuat" : "Dokumen tidak ditemukan"}
+          </h2>
           <p className="text-sm text-muted-foreground mb-6">
-            Dokumen dengan ID <span className="font-mono font-medium">{id}</span> tidak ada atau kamu tidak punya akses.
+            {error
+              ? `Permintaan detail dokumen ID ${docId} gagal${requestStatus ? ` (HTTP ${requestStatus})` : ""}. Data belum dinyatakan hilang.`
+              : <>Dokumen dengan ID <span className="font-mono font-medium">{id}</span> tidak ditemukan.</>}
           </p>
-          <Button variant="outline" onClick={() => navigate("/sales/documents")}>
-            <ArrowLeft className="mr-2 h-4 w-4" /> Kembali ke Daftar
-          </Button>
+          <div className="flex justify-center gap-2">
+            {error && <Button variant="outline" onClick={() => queryClient.invalidateQueries({ queryKey: getGetSalesDocumentQueryKey(docId) })}>
+              <RefreshCw className="mr-2 h-4 w-4" /> Coba Muat Ulang
+            </Button>}
+            <Button variant="outline" onClick={() => navigate("/sales/documents")}>
+              <ArrowLeft className="mr-2 h-4 w-4" /> Kembali ke Daftar
+            </Button>
+          </div>
         </div>
       </AppShell>
     );

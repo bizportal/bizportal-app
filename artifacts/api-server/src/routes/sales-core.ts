@@ -23,10 +23,11 @@ router.use(authenticateAdmin);
 // The old UI queries GET /sales/documents/:id, which the canonical DEV router
 // did not expose. No legacy writer or Invoice route is imported here.
 router.get("/sales/documents/:id", async (request, response): Promise<void> => {
+  // Reading an existing QA order is not a write-capability. The explicit
+  // customer-provisioning flag remains mandatory for POST, but not for GET.
   if (request.params.id !== "108" ||
       !isDevelopmentEnvironment() || process.env.APP_ENV !== "development" ||
-      !isSignedOtpDevEnabled() ||
-      process.env.BIZPORTAL_DEV_QA_ORDER108_CUSTOMER_SETUP !== "true") {
+      !isSignedOtpDevEnabled()) {
     response.status(404).json({ error: "Not found" });
     return;
   }
