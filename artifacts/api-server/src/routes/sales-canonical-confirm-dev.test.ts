@@ -131,3 +131,76 @@ describe("CST-DEV canonical Sales confirmation", () => {
     expect(m.query.mock.calls.some(([sql]) => sql === "COMMIT")).toBe(false);
   });
 });
+
+
+describe("CST DEV one-order synthetic customer provisioning", () => {
+  const endpoint = () => fetch(root + "/api/sales/dev/qa-orders/108/attach-customer", { method: "POST" });
+  const qaOrder = (changes: Record<string,unknown> = {}) => ({
+    id: 108, company_id: 1, customer_id: null,
+    doc_number: "QA-CST-DEV-OWNER-20261120-001",
+    customer_name: "INTERNAL QA CST DEV — NO REAL CUSTOMER",
+    status: "draft", invoice_status: "none", ...changes,
+  });
+  beforeEach(() => {
+    process.env.APP_ENV = "development";
+    process.env.BIZPORTAL_DEV_QA_ORDER108_CUSTOMER_SETUP = "true";
+    m.signed = true;
+    m.enabled = true;
+    m.authenticated = true;
+    m.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("FROM public.sales_documents WHERE id=108")) return { rows: [qaOrder()], rowCount: 1 };
+      if (sql.includes("INSERT INTO public.customers")) return { rows: [{ id: 911 }], rowCount: 1 };
+      if (sql.includes("UPDATE public.sales_documents")) return { rows: [{ id: 108 }], rowCount: 1 };
+      return { rows: [], rowCount: 1 };
+    });
+  });
+  it("is OFF unless explicitly enabled", async () => {
+    delete process.env.BIZPORTAL_DEV_QA_ORDER108_CUSTOMER_SETUP;
+    expect((await endpoint()).status).toBe(404);
+    expect(m.connect).not.toHaveBeenCalled();
+  });
+  it("rejects unsigned session before DB access", async () => {
+    m.signed = false;
+    expect((await endpoint()).status).toBe(403);
+    expect(m.connect).not.toHaveBeenCalled();
+  });
+  it("creates and links one synthetic customer with audit in same transaction", async () => {
+    const response = await endpoint();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ salesDocumentId: 108, customerId: 911, synthetic: true });
+    const queries = m.query.mock.calls.map(([sql]) => String(sql));
+    expect(queries.join("\n")).toContain("INSERT INTO public.customers");
+    expect(queries.join("\n")).toContain("INSERT INTO erp_audit_logs");
+    expect(queries).toContain("COMMIT");
+    expect(queries.join("\n")).not.toMatch(/INSERT INTO (?:public\\.)?(?:journal|invoice|gl_)/i);
+  });
+  it("does not create duplicate customer on replay", async () => {
+    m.query.mockImplementation(async (sql: string) =>
+      sql.includes("FROM public.sales_documents WHERE id=108")
+        ? { rows: [qaOrder({ customer_id: 911 })], rowCount: 1 }
+        : { rows: [], rowCount: 1 });
+    expect((await endpoint()).status).toBe(409);
+    expect(m.query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO public.customers"))).toBe(false);
+  });
+  it("rejects unexpected QA document identity without inserting", async () => {
+    m.query.mockImplementation(async (sql: string) =>
+      sql.includes("FROM public.sales_documents WHERE id=108")
+        ? { rows: [qaOrder({ doc_number: "REAL-SALES-108" })], rowCount: 1 }
+        : { rows: [], rowCount: 1 });
+    expect((await endpoint()).status).toBe(409);
+    expect(m.query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO public.customers"))).toBe(false);
+  });
+  it("rolls back customer creation if audit insertion fails", async () => {
+    m.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("FROM public.sales_documents WHERE id=108")) return { rows: [qaOrder()], rowCount: 1 };
+      if (sql.includes("INSERT INTO public.customers")) return { rows: [{ id: 911 }], rowCount: 1 };
+      if (sql.includes("UPDATE public.sales_documents")) return { rows: [{ id: 108 }], rowCount: 1 };
+      if (sql.includes("INSERT INTO erp_audit_logs")) throw new Error("AUDIT_FAILURE");
+      return { rows: [], rowCount: 1 };
+    });
+    expect((await endpoint()).status).toBe(503);
+    const queries = m.query.mock.calls.map(([sql]) => String(sql));
+    expect(queries).toContain("ROLLBACK");
+    expect(queries).not.toContain("COMMIT");
+  });
+});
