@@ -10,6 +10,7 @@ import gojekRentalSuperAdminApprovalRouter from "./gojek-rental-superadmin-appro
 import purchaseWorkflowRouter from "./purchase-workflow";
 import businessDashboardRouter from "./business-dashboard";
 import localProductionAuthRouter from "./local-production-auth";
+import devCustomerInvoiceAttestationRouter from "./dev-customer-invoice-attestation";
 import salesCoreRouter from "./sales-core";
 import adminRealtimeRouter from "./admin-realtime";
 import driverGeofenceRouter from "./driver-geofence";
@@ -39,6 +40,10 @@ router.get("/", (_request, response) => {
 router.use(healthRouter);
 
 router.use(createDevAuthRouter());
+
+// DEV-only signed Owner OTP; refuses unless existing signed OTP and explicit feature flags.
+// Mount before the generic auth fallback, without changing production sessions.
+router.use(devCustomerInvoiceAttestationRouter);
 
 // Production auth is local to this deployment and is mounted before the
 // remaining API-owned routes.
