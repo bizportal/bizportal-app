@@ -23,6 +23,12 @@ These fingerprints detect accidental changes; they do **not** prove ownership or
 - A future provenance remediation is a **separate** task and requires original archived Sheet source, prior change/audit records, explicit accounting owner decision, immutable pre/post snapshot, independent review, isolated replay and separate approval. It must not be a prerequisite silently implemented by PR147.
 - Run `pr147-bank-sheet-historical-fingerprint-readonly.sql` before and after *every* isolated runtime test, and require exact equality of counts and all three fingerprints. On any difference, stop with NO-GO and investigate. An API health or CI success alone is never enough.
 
+## Owner decision — 21 November 2026
+
+The Owner explicitly approved the **source-only historical preservation plan**: retain all 21 legacy Sheet-4 bank mutation rows and existing journal references/statuses unchanged for the BizPortal repository cutover. This approval **does not** authorize repairing, reassigning, reposting, migrating, deleting or otherwise changing those historical transactions. Any later reconciliation needs separate provenance evidence and accounting approval.
+
+A fresh read-only CST-DEV check on 21 November 2026 showed exactly 54 total mutations, 21 Sheet-4 legacy rows in one company and 7 journal links. All three baseline fingerprints below are unchanged. Therefore the historical **custody-policy decision is accepted** for the bounded source-only DEV candidate; the underlying unresolved journal links remain intentionally untouched and cannot be counted as accounting reconciliation PASS.
+
 ## Remaining release requirements
 
 - Real dedicated reader login + verified TLS, RLS and cross-company isolation are **PASS** using the user-provided Supabase Root 2021 CA. That PASS does not imply signed application-level E2E.
@@ -30,4 +36,4 @@ These fingerprints detect accidental changes; they do **not** prove ownership or
 - A **genuine signed Super Admin** request to isolated API must prove company 1 and 3 authorized GET, 401 anonymous, 403 cross-tenant, 400 missing company, 423 attempted Sheet sync/write, and Finance/Payroll/QRIS scoped read-only behavior. No export of browser cookies, token dumps or privileged bypass allowed.
 - Rehearse stopping candidate and restoring original Nginx/API service; keep Hostinger PROD unchanged until Owner explicitly switches after all DEV acceptance gates PASS.
 
-**Decision:** Historical data are **preserved, uncorrected, and excluded from automatic migrated reconciliation** in this source-only PR. This is an acceptable *proposed technical handling*, not independent accounting approval or a declaration that the full product is ready to cut over.
+**Decision:** Historical data are **preserved, uncorrected, and excluded from automatic migrated reconciliation** in this source-only PR. The Owner approved this **bounded no-change custody treatment** for source-only cutover on 21 November 2026. This is not an approval of historical accounting reconstruction or a declaration that the full product is ready to cut over.
