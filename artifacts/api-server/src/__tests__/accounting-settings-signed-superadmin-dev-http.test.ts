@@ -46,7 +46,7 @@ afterEach(async()=>{
 });
 async function call(path:string,method="GET"){
   const response=await fetch(base+"/api/accounting/"+path+"?company=3",{method});
-  return {status:response.status,body:await response.json()};
+  return {status:response.status,body:await response.json() as {companyName?:string}};
 }
 describe("Accounting Settings DEV signed-OTP Super Admin",()=>{
   it("allows exact four GET-only resources and reads Company3 settings",async()=>{
