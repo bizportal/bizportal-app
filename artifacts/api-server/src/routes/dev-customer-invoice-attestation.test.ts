@@ -94,6 +94,50 @@ describe("existing signed OTP BizPortal Super Admin -> Customer Invoice attestat
     for(const k of KEYS){if(originals[k]===undefined)delete process.env[k];
     else process.env[k]=originals[k];}
   });
+  it("returns existing PUBLIC Ed25519 verifier to signed CST Super Admin before attestation enabled", async () => {
+    const originalVerifier = getCustomerInvoiceAttestationPublicKeyDev();
+    delete process.env.BIZPORTAL_CUSTOMER_INVOICE_ATTEST_DEV;
+    const res = await fetch(base + "/api/auth/dev/customer-invoice-attestation/public-key", {
+      headers: {Cookie:"bizportal_supabase_session=SIGNED_QA"},
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json() as Record<string,unknown>;
+    expect(data).toMatchObject({
+      purpose:"customer-invoice-public-verifier-setup",
+      algorithm:"Ed25519", attestationEnabled:false,
+      publicKeySpkiDerBase64:originalVerifier,
+    });
+    const spki = Buffer.from(String(data.publicKeySpkiDerBase64),"base64");
+    expect(createPublicKey({key:spki,format:"der",type:"spki"}).asymmetricKeyType).toBe("ed25519");
+    expect(data.fingerprintSha256).toBe(createHash("sha256").update(spki).digest("hex"));
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(res.headers.get("vary")).toContain("Cookie");
+    expect(JSON.stringify(data)).not.toContain(process.env.SESSION_SECRET);
+    expect(JSON.stringify(data)).not.toContain(email);
+    expect(JSON.stringify(data)).not.toContain("SIGNED_QA");
+  });
+  it("never publishes public verifier to unsigned or wrong-tenant sessions", async () => {
+    const url=base + "/api/auth/dev/customer-invoice-attestation/public-key";
+    let res=await fetch(url);
+    expect(res.status).toBe(401);
+    m.getProductionUser.mockResolvedValue({id,email,role:"admin",companyId:1});
+    res=await fetch(url,{headers:{Cookie:"bizportal_supabase_session=SIGNED_QA"}});
+    expect(res.status).toBe(401);
+    m.getProductionUser.mockResolvedValue({id,email,role:"super_admin",companyId:3});
+    res=await fetch(url,{headers:{Cookie:"bizportal_supabase_session=SIGNED_QA"}});
+    expect(res.status).toBe(401);
+  });
+  it("refuses verifier setup in PROD or without signed OTP DEV configuration",async()=>{
+    const url=base + "/api/auth/dev/customer-invoice-attestation/public-key";
+    process.env.APP_ENV="production";
+    let res=await fetch(url,{headers:{Cookie:"bizportal_supabase_session=SIGNED_QA"}});
+    expect(res.status).toBe(404);
+    process.env.APP_ENV="development";
+    m.signedAuthEnabled.mockReturnValue(false);
+    res=await fetch(url,{headers:{Cookie:"bizportal_supabase_session=SIGNED_QA"}});
+    expect(res.status).toBe(404);
+  });
   it("strictly disabled unless DEV signed OTP + dedicated flag",async()=>{
     delete process.env.BIZPORTAL_CUSTOMER_INVOICE_ATTEST_DEV;
     const r=await get(issuedChallenge(),{accept:"application/json"});
