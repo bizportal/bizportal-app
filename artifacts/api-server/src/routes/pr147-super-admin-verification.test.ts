@@ -100,21 +100,20 @@ describe("PR147 real signed Super Admin opt-in verification", () => {
     expect(state.queries).toHaveLength(4);
     expect(state.queries.every(query => query.sql.trim().toUpperCase().startsWith("SELECT"))).toBe(true);
   });
-  it("serves the one-click page only to authenticated signed global Super Admin", async () => {
+  it("serves only a public OTP entry UI; never exposes evidence without signed login", async () => {
     const page = base.replace("/api/pr147/verify-super-admin", "/api/pr147/verify-page");
     state.session = null;
-    expect((await fetch(page)).status).toBe(401);
-    state.session = { id: "signed", email: "admin@example.test" };
-    state.user = { role: "finance", companyId: 1 };
-    expect((await fetch(page)).status).toBe(403);
-    state.user = { role: "super_admin", companyId: null };
-    const result = await fetch(page);
-    expect(result.status).toBe(200);
-    expect(result.headers.get("content-security-policy")).toContain("script-src 'nonce-");
-    const html = await result.text();
+    const publicPage = await fetch(page);
+    expect(publicPage.status).toBe(200);
+    expect(publicPage.headers.get("content-security-policy")).toContain("script-src 'nonce-");
+    const html = await publicPage.text();
     expect(html).toContain("Jalankan verifikasi baca-saja");
+    expect(html).toContain("/api/auth/email-otp/send");
+    expect(html).toContain("/api/auth/email-otp/verify");
     expect(html).toContain("/api/pr147/verify-super-admin");
+    expect(html).not.toContain("private DSN");
     expect(state.queries).toHaveLength(0);
+    expect((await fetch(base)).status).toBe(401);
     vi.stubEnv("PR147_SIGNED_VERIFY_ENABLED_DEV", "");
     expect((await fetch(page)).status).toBe(404);
   });
