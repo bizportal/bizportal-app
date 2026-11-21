@@ -17,7 +17,11 @@ import {
   getProductionSession,
   getProductionUser,
   isDevelopmentEnvironment,
+  getFinanceCompanyScope,
+  isApprovedFinanceGlobalSuperAdmin,
+  isApprovedFinanceGlobalCompany,
 } from "./dev-auth";
+import { authorizeMarketplaceReadyForApBankAllocation } from "../lib/finance/marketplaceInvoiceBankStatusAdapter";
 
 interface SheetConfigInput {
   company_id?: number | null;
@@ -8495,8 +8499,47 @@ router.post("/bank-reconciliation/:mutationId/vendor-invoice-payment-batch", asy
       taxesByInvoice.set(Number(row.invoice_id), rows);
     }
 
+    // DEV Marketplace adapter is strictly opt-in and requires the REAL signed
+    // Finance Super Admin. Never change status to "posted" for eligibility.
+    let authorizedMarketplaceInvoiceId: number | null = null;
+    if (invoiceResult.rows.some(row => row.status === "ready_for_ap")) {
+      if (process.env.APP_ENV !== "development" ||
+          process.env.BIZPORTAL_MARKETPLACE_AP_BANK_STATUS_ADAPTER_DEV !== "true" ||
+          invoiceResult.rows.length !== 1 || vendorInvoiceIds.length !== 1 ||
+          invoiceResult.rows[0]?.status !== "ready_for_ap") {
+        throw new ApprovalError("Marketplace AP bank adapter is disabled or batch unsupported", 409, "MARKETPLACE_BANK_ADAPTER_NO_GO");
+      }
+      const signedSession = getProductionSession(req);
+      const signedUser = signedSession ? await getProductionUser(signedSession) : null;
+      if (!signedUser || signedUser.role.toLowerCase() !== "super_admin" ||
+          signedUser.email !== actor.email) {
+        throw new ApprovalError("Signed Super Admin required", 403, "SIGNED_SUPERADMIN_REQUIRED");
+      }
+      const selectedCompany = signedUser.companyId ??
+        (signedSession && isApprovedFinanceGlobalSuperAdmin(signedUser.email)
+          ? getFinanceCompanyScope(req, signedSession) : null);
+      if (selectedCompany !== companyId ||
+          (signedUser.companyId === null && !isApprovedFinanceGlobalCompany(companyId))) {
+        throw new ApprovalError("Verified Finance company required", 403, "FINANCE_COMPANY_NOT_VERIFIED");
+      }
+      try {
+        await authorizeMarketplaceReadyForApBankAllocation(
+          client, {
+            source:"signed_server_session",role:"super_admin",email:signedUser.email,
+            companyId:signedUser.companyId,
+            ...(signedUser.companyId === null ? {approvedGlobalCompanyId:companyId} : {}),
+          }, companyId, invoiceResult.rows[0].id, mutationId,
+        );
+      } catch (error) {
+        throw new ApprovalError("Marketplace AP payment evidence not eligible", 409,
+          error instanceof Error && /^[A-Z_]+$/.test(error.message)
+            ? error.message : "MARKETPLACE_AP_NOT_READY");
+      }
+      authorizedMarketplaceInvoiceId = invoiceResult.rows[0].id;
+    }
     const allocations = invoiceResult.rows.map((invoice) => {
-      if (String(invoice.status).toLowerCase() !== "posted") {
+      if (String(invoice.status).toLowerCase() !== "posted" &&
+          invoice.id !== authorizedMarketplaceInvoiceId) {
         throw new ApprovalError(
           `Invoice ${invoice.vendor_invoice_ref ?? invoice.invoice_number} harus berstatus posted sebelum dibayar`,
           422,
