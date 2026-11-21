@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import {
   getProductionSession,
   getProductionUser,
@@ -81,7 +81,16 @@ router.get("/pr147/verify-super-admin", async (req: Request, res: Response): Pro
       companyResults.push({ companyId, status: "PASS", configCount: result.rows.length });
     }
 
+    const receiptId = randomUUID();
+    // Audit evidence contains neither cookie/session data nor bank details.
+    req.log?.info?.({
+      event: "PR147_SIGNED_SUPER_ADMIN_READER_PASS",
+      receiptId,
+      companyCounts: companyResults.map(c => ({ companyId: c.companyId, configCount: c.configCount })),
+      productionCutoverApproved: false,
+    }, "PR147 signed owner verification evidence");
     res.status(200).json({
+      receiptId,
       code: "PR147_SIGNED_SUPER_ADMIN_READER_PASS",
       evidenceLevel: "REAL_SIGNED_USER_AND_READ_ONLY_DATABASE",
       verifiedAt: new Date().toISOString(),
@@ -92,6 +101,10 @@ router.get("/pr147/verify-super-admin", async (req: Request, res: Response): Pro
     });
   } catch {
     // Never return backend URLs, password-bearing driver errors, or bank data.
+    req.log?.warn?.({
+      event: "PR147_READONLY_E2E_NOT_VERIFIED",
+      productionCutoverApproved: false,
+    }, "PR147 signed owner verification blocked");
     res.status(503).json({ code: "PR147_READONLY_E2E_NOT_VERIFIED", productionCutoverApproved: false });
   }
 });
