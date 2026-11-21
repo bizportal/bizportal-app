@@ -50,13 +50,15 @@ router.get("/health/ready", async (_req, res) => {
       databaseProvider: runtimeDatabaseUrl.includes("supabase") ? "supabase" : "postgres",
       startupMode: STARTUP_MODE,
     });
-  } catch (error) {
+  } catch {
+    // Readiness is public: do not expose PostgreSQL credentials, role names,
+    // internal hosts, or provider error messages through this response.
     res.status(503).json({
       status: "degraded",
       ready: false,
       database: "unavailable-or-auth-not-ready",
       authSessionSigning: "not-ready",
-      error: error instanceof Error ? error.message : "Runtime readiness failed",
+      error: "RUNTIME_READINESS_UNAVAILABLE",
       startupMode: STARTUP_MODE,
     });
   }
