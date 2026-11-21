@@ -4,11 +4,11 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
 const m = vi.hoisted(() => ({
-  connect: vi.fn(), query: vi.fn(), release: vi.fn(),
+  connect: vi.fn(), query: vi.fn(), release: vi.fn(), poolQuery: vi.fn(),
   authenticated: true, signed: true, enabled: true,
 }));
 vi.mock("@workspace/db", () => ({
-  pool: { connect: m.connect, query: vi.fn() },
+  pool: { connect: m.connect, query: m.poolQuery },
 }));
 vi.mock("./admin-auth", () => ({
   authenticateAdmin: (_req: unknown, _res: unknown, next: () => void) => next(),
@@ -230,5 +230,66 @@ describe("QA #108 capability visibility", () => {
     expect(res.headers.get("cache-control")).toBe("no-store");
     expect(await res.json()).toEqual({ available: true, documentId: 108, companyId: 1, syntheticOnly: true });
     expect(m.connect).not.toHaveBeenCalled();
+  });
+});
+
+describe("CST-DEV QA Order #108 detail GET parity", () => {
+  const detail = (id: string = "108") => fetch(root + "/api/sales/documents/" + id);
+  beforeEach(() => {
+    process.env.APP_ENV = "development";
+    process.env.BIZPORTAL_DEV_QA_ORDER108_CUSTOMER_SETUP = "true";
+    m.signed = true; m.authenticated = true; m.enabled = true;
+    m.poolQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("FROM public.sales_documents")) {
+        return { rows: [{
+          id:108,doc_number:"QA-CST-DEV-OWNER-20261120-001",
+          kind:"order",status:"draft",invoice_status:"none",
+          delivery_status:"to_deliver",payment_status:"unpaid",
+          customer_id:null,customer_name:"INTERNAL QA CST DEV — NO REAL CUSTOMER",
+          total_amount:"100",tax_amount:"11",grand_total:"111",
+          amount_paid:"0",created_at:new Date("2026-11-20T01:00:00Z"),
+          updated_at:new Date("2026-11-20T01:00:00Z"),
+        }], rowCount:1 };
+      }
+      if (sql.includes("FROM public.sales_document_lines")) {
+        return { rows: [{id:901,document_id:108,product_id:null,
+          name:"DEV QA",quantity:"1",unit_price:"100",subtotal:"100"}],rowCount:1 };
+      }
+      throw Error("UNEXPECTED_SQL");
+    });
+  });
+  it("refuses other IDs without querying database", async () => {
+    expect((await detail("107")).status).toBe(404);
+    expect(m.poolQuery).not.toHaveBeenCalled();
+  });
+  it("does not expose detail when QA feature disabled", async () => {
+    delete process.env.BIZPORTAL_DEV_QA_ORDER108_CUSTOMER_SETUP;
+    expect((await detail()).status).toBe(404);
+    expect(m.poolQuery).not.toHaveBeenCalled();
+  });
+  it("rejects unsigned DEV cookie before DB access", async () => {
+    m.signed=false;
+    expect((await detail()).status).toBe(403);
+    expect(m.poolQuery).not.toHaveBeenCalled();
+  });
+  it("rejects when DB-signed Owner account not resolved", async () => {
+    m.authenticated=false;
+    expect((await detail()).status).toBe(403);
+    expect(m.poolQuery).not.toHaveBeenCalled();
+  });
+  it("returns only QA 108 with expected detail and one line, read-only", async () => {
+    const r=await detail();
+    expect(r.status).toBe(200);
+    expect(r.headers.get("cache-control")).toBe("no-store");
+    const payload=await r.json();
+    expect(payload).toMatchObject({id:108,docNumber:"QA-CST-DEV-OWNER-20261120-001",
+      customerId:null,status:"draft",invoiceStatus:"none",grandTotal:111,
+      lines:[{id:901,documentId:108,quantity:1,subtotal:100}]});
+    expect(m.poolQuery).toHaveBeenCalledTimes(2);
+    expect(m.poolQuery.mock.calls.map(([q])=>String(q)).join("\n")).not.toMatch(/\b(UPDATE|DELETE|INSERT|TRUNCATE|ALTER|CREATE)\b/i);
+  });
+  it("fails closed on unrelated/absent order, never returns another tenant's row", async () => {
+    m.poolQuery.mockResolvedValue({rows:[],rowCount:0});
+    expect((await detail()).status).toBe(404);
   });
 });
