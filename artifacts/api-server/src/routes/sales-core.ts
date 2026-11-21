@@ -125,7 +125,7 @@ router.post("/sales/documents/:id/action", async (request, response): Promise<vo
     return;
   }
   const id = Number(request.params.id);
-  if (!Number.isSafeInteger(id) || id <= 0 || !/^[1-9]\\d*$/.test(request.params.id ?? "")) {
+  if (!Number.isSafeInteger(id) || id <= 0 || !/^[1-9]\d*$/.test(request.params.id ?? "")) {
     response.status(400).json({ error: "Invalid Sales document ID" });
     return;
   }
