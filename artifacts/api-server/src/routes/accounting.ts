@@ -19,8 +19,13 @@ type AccountingRequest = Request & {
  * A signed DEV Super Admin can read accounting for the selected company; no
  * additional write privileges or cross-tenant bypass are granted here.
  */
+function signedOtpAccountingDev(): boolean {
+  // Preserve legacy Accounting test/runtime adapters that do not export the
+  // opt-in OTP helper; undefined must never turn an existing route into HTTP503.
+  return typeof isSignedOtpDevEnabled === "function" && isSignedOtpDevEnabled();
+}
 async function getAccountingUser(req: Request): Promise<DevAuthUser | null> {
-  if (isDevelopmentEnvironment() && !isSignedOtpDevEnabled()) return getDevSession(req);
+  if (isDevelopmentEnvironment() && !signedOtpAccountingDev()) return getDevSession(req);
   const session = getProductionSession(req);
   return session ? getProductionUser(session) : null;
 }
@@ -30,7 +35,7 @@ function allowedAccountingRole(user: DevAuthUser | null, req: Request): boolean 
   // Signed Super Admin is allowed to READ the four settings-page resources
   // only. This must not grant accounting write, journal-post or tax edit rights.
   return role === "super_admin" && isDevelopmentEnvironment() &&
-    isSignedOtpDevEnabled() && req.method === "GET" &&
+    signedOtpAccountingDev() && req.method === "GET" &&
     ["/settings", "/accounts", "/journals", "/taxes"].includes(req.path);
 }
 router.use("/accounting", async (req, res, next) => {
