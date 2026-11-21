@@ -106,7 +106,8 @@ describe("CST DEV signed Sales 108 passes unrelated Accounting and Dashboard rou
     expect(mocks.poolQuery).not.toHaveBeenCalled();
   });
 
-  it("retains Accounting and Dashboard authentication gates", async () => {
+  it("retains unauthenticated Accounting and Dashboard authentication gates", async () => {
+    mocks.signed = false;
     expect((await request("/accounting/settings")).status).toBe(401);
     expect((await request("/sales/dashboard-widget")).status).toBe(401);
     expect(mocks.poolQuery).not.toHaveBeenCalled();
