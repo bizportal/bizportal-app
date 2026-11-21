@@ -5,7 +5,6 @@ import {
   getProductionSession,
   getProductionUser,
   isDevelopmentEnvironment,
-  isSignedOtpDevEnabled,
   type DevAuthUser,
 } from "./dev-auth";
 
@@ -19,24 +18,27 @@ type AccountingRequest = Request & {
  * A signed DEV Super Admin can read accounting for the selected company; no
  * additional write privileges or cross-tenant bypass are granted here.
  */
-function signedOtpAccountingDev(): boolean {
-  // Preserve legacy Accounting test/runtime adapters that do not export the
-  // opt-in OTP helper; undefined must never turn an existing route into HTTP503.
-  return typeof isSignedOtpDevEnabled === "function" && isSignedOtpDevEnabled();
-}
+/** Use the same signed OTP DEV cookie as BizPortal login, but preserve the
+ * historical picker only when signed OTP mode is not configured.
+ * No direct dependency on test-only optional dev-auth exports.
+ */
 async function getAccountingUser(req: Request): Promise<DevAuthUser | null> {
-  if (isDevelopmentEnvironment() && !signedOtpAccountingDev()) return getDevSession(req);
+  const dev = isDevelopmentEnvironment();
+  if (dev && process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV !== "true") {
+    return getDevSession(req);
+  }
   const session = getProductionSession(req);
   return session ? getProductionUser(session) : null;
 }
 function allowedAccountingRole(user: DevAuthUser | null, req: Request): boolean {
   const role = user?.role?.trim().toLowerCase();
   if (role && ["admin", "owner", "finance", "accounting"].includes(role)) return true;
-  // Signed Super Admin is allowed to READ the four settings-page resources
-  // only. This must not grant accounting write, journal-post or tax edit rights.
+  // Exact four read-only resources, no journal posting or accounting writes.
+  const path = req.path.replace(/^\\/accounting(?=\\/)/, "");
   return role === "super_admin" && isDevelopmentEnvironment() &&
-    signedOtpAccountingDev() && req.method === "GET" &&
-    ["/settings", "/accounts", "/journals", "/taxes"].includes(req.path);
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV === "true" &&
+    req.method === "GET" &&
+    ["/settings", "/accounts", "/journals", "/taxes"].includes(path);
 }
 router.use("/accounting", async (req, res, next) => {
   try {
