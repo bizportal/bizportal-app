@@ -25,9 +25,11 @@ vi.mock("@workspace/db",()=>({
   }},
 }));
 import router from "../routes/accounting";
+const originalOtpFlag=process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV;
 let server:Server,base:string;
 beforeEach(async()=>{
   state.dev=true;state.signed=true;state.role="super_admin";state.companyId=null;state.queryCount=0;
+  process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV="true";
   const app=express();
   app.use(express.json());
   app.use((req,_res,next)=>{(req as any).log={error:()=>{}};next();});
@@ -37,7 +39,11 @@ beforeEach(async()=>{
   if(!address||typeof address==="string")throw Error("No test port");
   base="http://127.0.0.1:"+address.port;
 });
-afterEach(()=>new Promise<void>((resolve,reject)=>server.close(e=>e?reject(e):resolve())));
+afterEach(async()=>{
+  if(originalOtpFlag===undefined)delete process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV;
+  else process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV=originalOtpFlag;
+  await new Promise<void>((resolve,reject)=>server.close(e=>e?reject(e):resolve()));
+});
 async function call(path:string,method="GET"){
   const response=await fetch(base+"/api/accounting/"+path+"?company=3",{method});
   return {status:response.status,body:await response.json()};
@@ -64,7 +70,7 @@ describe("Accounting Settings DEV signed-OTP Super Admin",()=>{
     expect((await call("settings")).status).toBe(403);
   });
   it("preserves the existing legacy DEV admin path",async()=>{
-    state.signed=false;
+    state.signed=false;process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV="false";
     expect((await call("settings")).status).toBe(200);
   });
 });
