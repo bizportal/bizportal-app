@@ -204,3 +204,31 @@ describe("CST DEV one-order synthetic customer provisioning", () => {
     expect(queries).not.toContain("COMMIT");
   });
 });
+
+describe("QA #108 capability visibility", () => {
+  const capability = () => fetch(root + "/api/sales/dev/qa-orders/108/customer-setup-capability");
+  beforeEach(() => {
+    m.signed = true;
+    m.enabled = true;
+    m.authenticated = true;
+    process.env.APP_ENV = "development";
+    process.env.BIZPORTAL_DEV_QA_ORDER108_CUSTOMER_SETUP = "true";
+  });
+  it("returns 404 when feature flag is OFF, without database access", async () => {
+    delete process.env.BIZPORTAL_DEV_QA_ORDER108_CUSTOMER_SETUP;
+    expect((await capability()).status).toBe(404);
+    expect(m.connect).not.toHaveBeenCalled();
+  });
+  it("returns 403 with unsigned DEV session, without database access", async () => {
+    m.signed = false;
+    expect((await capability()).status).toBe(403);
+    expect(m.connect).not.toHaveBeenCalled();
+  });
+  it("reveals one-time QA capability only to signed Super Admin", async () => {
+    const res = await capability();
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(await res.json()).toEqual({ available: true, documentId: 108, companyId: 1, syntheticOnly: true });
+    expect(m.connect).not.toHaveBeenCalled();
+  });
+});

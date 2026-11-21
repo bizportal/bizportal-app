@@ -760,6 +760,25 @@ export default function SalesDocumentDetailPage() {
     query: { queryKey: getGetSalesDocumentQueryKey(docId), enabled: !Number.isNaN(docId) },
   });
 
+  // Only show the one-time QA preparation action when the actual DEV server
+  // confirms both the feature flag and signed Owner/Super Admin session.
+  const canShowQa108 = typeof window !== "undefined" &&
+    window.location.hostname === "dev-bizportal.cstlogistic.co.id" && docId === 108;
+  const { data: qaCustomerSetupAvailable } = useQuery<boolean>({
+    queryKey: ["sales-qa108-customer-capability"],
+    queryFn: async () => {
+      const result = await fetch("/api/sales/dev/qa-orders/108/customer-setup-capability", {
+        credentials: "include", cache: "no-store",
+      });
+      if (!result.ok) return false;
+      const capability = await result.json() as { available?: boolean; documentId?: number };
+      return capability.available === true && capability.documentId === 108;
+    },
+    enabled: canShowQa108,
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+  });
+
   const actionMut = useSalesDocumentAction();
   const deleteMut = useDeleteSalesDocument();
 
@@ -783,6 +802,29 @@ export default function SalesDocumentDetailPage() {
       toast({ title: "Berhasil" });
     } catch {
       toast({ title: "Gagal", variant: "destructive" });
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleAttachQaCustomer = async () => {
+    if (!doc || docId !== 108 || doc.customerId != null || !qaCustomerSetupAvailable ||
+        doc.docNumber !== "QA-CST-DEV-OWNER-20261120-001" || doc.status !== "draft") return;
+    if (!confirm("Buat satu customer SINTETIS khusus QA CST-DEV dan kaitkan dengan Sales Order #108? Tidak menerbitkan Invoice atau jurnal.")) return;
+    setActionLoading("qa-customer");
+    try {
+      const result = await fetch("/api/sales/dev/qa-orders/108/attach-customer", {
+        method: "POST", credentials: "include", cache: "no-store",
+      });
+      if (!result.ok) {
+        const info = await result.json().catch(() => ({})) as { error?: string };
+        throw new Error(info.error || "Penyiapan customer QA belum tersedia");
+      }
+      const attached = await result.json() as { customerId: number };
+      invalidate();
+      toast({ title: "Customer QA terkait", description: `Customer ID #${attached.customerId} berhasil dihubungkan ke Order #108. Invoice belum diterbitkan.` });
+    } catch (error) {
+      toast({ title: "Customer QA belum dibuat", description: error instanceof Error ? error.message : "Permintaan ditolak", variant: "destructive" });
     } finally {
       setActionLoading(null);
     }
@@ -899,6 +941,15 @@ export default function SalesDocumentDetailPage() {
 
           {/* Action buttons */}
           <div className="flex items-center gap-2 flex-wrap">
+            {canShowQa108 && qaCustomerSetupAvailable === true &&
+             doc.docNumber === "QA-CST-DEV-OWNER-20261120-001" &&
+             doc.kind === "order" && doc.status === "draft" && doc.customerId == null && (
+              <Button variant="outline" size="sm" onClick={handleAttachQaCustomer}
+                disabled={actionLoading === "qa-customer"} className="gap-2">
+                {actionLoading === "qa-customer" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <User className="h-3.5 w-3.5" />}
+                Siapkan Customer QA #108
+              </Button>
+            )}
             <Button variant="outline" size="sm" onClick={handleDownloadPdf} disabled={pdfLoading} className="gap-2">
               {pdfLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Printer className="h-3.5 w-3.5" />}
               PDF
