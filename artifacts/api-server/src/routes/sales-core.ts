@@ -219,4 +219,95 @@ router.post("/sales/documents/:id/action", async (request, response): Promise<vo
   }
 });
 
+
+/**
+ * Explicit, single-order synthetic Customer setup for Invoice #108 E2E QA.
+ * This is an application workflow (not an operator SQL data patch).
+ * Only CST-DEV, default OFF, signed OTP Super Admin and exact QA reference.
+ * No Invoice creation, journal posting, finance activation, or side effects
+ * outside the one Customer and Sales Order identity + transactional audit.
+ */
+router.post("/sales/dev/qa-orders/108/attach-customer", async (request, response): Promise<void> => {
+  if (!isDevelopmentEnvironment() || process.env.APP_ENV !== "development" ||
+      !isSignedOtpDevEnabled() ||
+      process.env.BIZPORTAL_DEV_QA_ORDER108_CUSTOMER_SETUP !== "true") {
+    response.status(404).json({ error: "Not found" });
+    return;
+  }
+  const session = getProductionSession(request);
+  const actor = session ? await getProductionUser(session).catch(() => null) : null;
+  if (!session || !actor || actor.id !== session.id ||
+      actor.email.trim().toLowerCase() !== session.email ||
+      actor.role !== "super_admin" ||
+      (actor.companyId !== null && Number(actor.companyId) !== 1)) {
+    response.status(403).json({ error: "Signed CST Super Admin session required" });
+    return;
+  }
+
+  let client: PayrollDbClient | undefined;
+  let inTransaction = false;
+  try {
+    client = await pool.connect();
+    await client.query("BEGIN");
+    inTransaction = true;
+    const result = await client.query<{
+      id: number; company_id: number; customer_id: number | null;
+      status: string; invoice_status: string; doc_number: string; customer_name: string;
+    }>(
+      `SELECT id,company_id,customer_id,status::text,invoice_status::text,doc_number,customer_name
+       FROM public.sales_documents WHERE id=108 AND company_id=1 FOR UPDATE`,
+    );
+    const doc = result.rows[0];
+    const expected = "INTERNAL QA CST DEV — NO REAL CUSTOMER";
+    if (!doc || doc.doc_number !== "QA-CST-DEV-OWNER-20261120-001" ||
+        doc.status !== "draft" || doc.invoice_status !== "none" ||
+        doc.customer_name !== expected) {
+      await client.query("ROLLBACK");
+      inTransaction = false;
+      response.status(409).json({ error: "QA Order #108 identity/state mismatch" });
+      return;
+    }
+    if (doc.customer_id !== null) {
+      await client.query("ROLLBACK");
+      inTransaction = false;
+      response.status(409).json({ error: "QA Order #108 already has a customer; no duplicate created" });
+      return;
+    }
+
+    const inserted = await client.query<{ id: number }>(
+      `INSERT INTO public.customers (company_id, name, notes)
+       VALUES (1,$1,$2) RETURNING id`,
+      [expected, "SYNTHETIC DEV-ONLY INVOICE QA #108. Not a real customer. No external billing."],
+    );
+    const customerId = inserted.rows[0]?.id;
+    if (!Number.isSafeInteger(customerId) || !customerId || customerId <= 0)
+      throw new Error("QA_CUSTOMER_CREATE_FAILED");
+    const linked = await client.query(
+      `UPDATE public.sales_documents SET customer_id=$1, updated_at=NOW()
+       WHERE id=108 AND company_id=1 AND customer_id IS NULL
+         AND status::text='draft' AND invoice_status::text='none'
+       RETURNING id`,
+      [customerId],
+    );
+    if (linked.rowCount !== 1) throw new Error("QA_ORDER_LINK_CONFLICT");
+    await client.query(
+      `INSERT INTO erp_audit_logs
+       (company_id,user_id,user_email,action,module,reference_id,
+        old_data,new_data,created_at)
+       VALUES (1,$1,$2,'update','sales','108',$3::jsonb,$4::jsonb,NOW())`,
+      [actor.id, actor.email, JSON.stringify({ customerId: null }),
+       JSON.stringify({ customerId, synthetic: true, qaOnly: true })],
+    );
+    await client.query("COMMIT");
+    inTransaction = false;
+    response.status(200).json({ salesDocumentId: 108, customerId, companyId: 1, synthetic: true });
+  } catch (error) {
+    if (client && inTransaction) await client.query("ROLLBACK").catch(() => undefined);
+    request.log?.error?.({ error }, "DEV-only QA Order #108 customer setup rolled back");
+    response.status(503).json({ error: "QA customer setup unavailable; transaction rolled back" });
+  } finally {
+    client?.release();
+  }
+});
+
 export default router;
