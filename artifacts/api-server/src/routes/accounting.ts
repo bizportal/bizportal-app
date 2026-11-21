@@ -24,12 +24,14 @@ async function getAccountingUser(req: Request): Promise<DevAuthUser | null> {
   const session = getProductionSession(req);
   return session ? getProductionUser(session) : null;
 }
-function allowedAccountingRole(user: DevAuthUser | null): boolean {
+function allowedAccountingRole(user: DevAuthUser | null, req: Request): boolean {
   const role = user?.role?.trim().toLowerCase();
-  return Boolean(role && (
-    ["admin", "owner", "finance", "accounting"].includes(role) ||
-    (isDevelopmentEnvironment() && isSignedOtpDevEnabled() && role === "super_admin")
-  ));
+  if (role && ["admin", "owner", "finance", "accounting"].includes(role)) return true;
+  // Signed Super Admin is allowed to READ the four settings-page resources
+  // only. This must not grant accounting write, journal-post or tax edit rights.
+  return role === "super_admin" && isDevelopmentEnvironment() &&
+    isSignedOtpDevEnabled() && req.method === "GET" &&
+    ["/settings", "/accounts", "/journals", "/taxes"].includes(req.path);
 }
 router.use("/accounting", async (req, res, next) => {
   try {
@@ -38,7 +40,7 @@ router.use("/accounting", async (req, res, next) => {
       res.status(401).json({error:"Unauthorized"});
       return;
     }
-    if (!allowedAccountingRole(user)) {
+    if (!allowedAccountingRole(user, req)) {
       res.status(403).json({error:"Forbidden"});
       return;
     }
