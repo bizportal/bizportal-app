@@ -34,10 +34,31 @@ router.get("/pr147/verify-super-admin", async (req: Request, res: Response): Pro
     return;
   }
 
-  let actor: Awaited<ReturnType<typeof getProductionUser>>;
-  try {
-    actor = await getProductionUser(session);
-  } catch {
+  let actor: Awaited<ReturnType<typeof getProductionUser>> = null;
+  let actorLookupFailure = false;
+  // Only retry the exact same signed-session database read once. Never
+  // substitute email-only login, simulate a role, or bypass DB revalidation.
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      actor = await getProductionUser(session);
+      actorLookupFailure = false;
+      break;
+    } catch (error) {
+      actorLookupFailure = true;
+      if (attempt === 2) {
+        const code = String((error as { code?: unknown })?.code ?? "");
+        const safeCodes = new Set(["08001","08006","08P01","28P01","42501","42P01","53300","57P03","ETIMEDOUT","ECONNREFUSED","SELF_SIGNED_CERT_IN_CHAIN"]);
+        req.log?.warn?.({
+          event: "PR147_ACTOR_REVALIDATION_UNAVAILABLE",
+          pgCode: safeCodes.has(code) ? code : "OTHER",
+          attempts: attempt,
+        }, "PR147 signed-owner actor lookup unavailable");
+        break;
+      }
+      await new Promise<void>(resolve => setTimeout(resolve, 350));
+    }
+  }
+  if (actorLookupFailure) {
     res.status(503).json({ code: "PR147_ACTOR_REVALIDATION_UNAVAILABLE" });
     return;
   }
