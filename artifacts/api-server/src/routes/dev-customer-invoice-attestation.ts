@@ -44,12 +44,61 @@ function getSigningKey() {
   });
 }
 
-/** For setup only. This is a PUBLIC verifier, never an authorization grant. */
-export function getCustomerInvoiceAttestationPublicKeyDev(): string {
-  if (!isCustomerInvoiceAttestationDevEnabled()) throw Error("DEV_ATTESTATION_DISABLED");
+/** The same reviewed signer; only the SPKI PUBLIC verifier leaves BizPortal. */
+function publicVerifierSpkiDev(): string {
   return (createPublicKey(getSigningKey()).export({ type: "spki", format: "der" }) as Buffer)
     .toString("base64");
 }
+
+/** Original export, unchanged release gate for actual attestation use. */
+export function getCustomerInvoiceAttestationPublicKeyDev(): string {
+  if (!isCustomerInvoiceAttestationDevEnabled()) throw Error("DEV_ATTESTATION_DISABLED");
+  return publicVerifierSpkiDev();
+}
+
+/**
+ * Setup-only signed Super Admin read of the EXISTING public verifier.
+ * Deliberately usable before the Invoice attestation feature is enabled:
+ * pinning the correct key is a precondition for that separate approval.
+ * No signing of a challenge, OTP issuance, financial mutation or private key output.
+ */
+router.get("/auth/dev/customer-invoice-attestation/public-key", async (
+  request: Request, response: Response,
+): Promise<void> => {
+  response.setHeader("Cache-Control", "no-store");
+  response.setHeader("Referrer-Policy", "no-referrer");
+  response.setHeader("X-Content-Type-Options", "nosniff");
+  response.setHeader("X-Frame-Options", "DENY");
+  response.setHeader("Vary", "Cookie");
+  if (process.env.APP_ENV?.trim().toLowerCase() !== "development" ||
+      !isSignedOtpDevEnabled()) {
+    response.status(404).json({error: "Not found"});
+    return;
+  }
+  try {
+    const session = getProductionSession(request);
+    const actor = session ? await getProductionUser(session) : null;
+    if (!actor || actor.id !== session?.id ||
+        actor.email.trim().toLowerCase() !== session.email ||
+        actor.role !== "super_admin" ||
+        (actor.companyId !== null && Number(actor.companyId) !== 1)) {
+      response.status(401).json({error: "Signed CST Super Admin session required"});
+      return;
+    }
+    const spki = publicVerifierSpkiDev();
+    const fingerprint = createHash("sha256")
+      .update(Buffer.from(spki, "base64")).digest("hex");
+    response.status(200).json({
+      purpose: "customer-invoice-public-verifier-setup",
+      algorithm: "Ed25519",
+      publicKeySpkiDerBase64: spki,
+      fingerprintSha256: fingerprint,
+      attestationEnabled: isCustomerInvoiceAttestationDevEnabled(),
+    });
+  } catch {
+    response.status(503).json({error: "DEV public verifier unavailable"});
+  }
+});
 
 function canonicalChallenge(raw: string): {
   companyId: number; invoiceId: number; portalEmail: string;
