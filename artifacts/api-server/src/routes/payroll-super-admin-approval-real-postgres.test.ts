@@ -141,4 +141,51 @@ describe.skipIf(!enabled)("Super Admin approval, real disposable PostgreSQL and 
     const r=await pool.query("SELECT status,approved_at FROM public.payroll_runs WHERE id=33");
     expect(r.rows[0]).toMatchObject({status:"draft",approved_at:null});
   });
+
+  it("PROD-sized roster remains blocked until every synthetic item is explicitly configured",async()=>{
+    // De-identified shape of CST PROD readiness on 17 Nov 2026:
+    // 14 active, 13 incomplete Payroll profiles, 1 complete. NO actual
+    // employee names, identities, bank data, or real salary values are copied.
+    const extra=Array.from({length:13},(_,i)=>102+i);
+    const people=extra.map(id=>`(${id},1,'active')`).join(",");
+    await pool.query("INSERT INTO public.employees(id,company_id,status) VALUES "+people);
+    const preview=await fetch(base+"/api/payroll/runs/32/super-admin-approval-preview");
+    expect(preview.status).toBe(200);
+    const incomplete=await preview.json() as {canApprove:boolean;blockedReasons:string[];itemCount:number;readyForPayment:boolean};
+    expect(incomplete.canApprove).toBe(false);
+    expect(incomplete.blockedReasons).toContain("ACTIVE_EMPLOYEE_COVERAGE_INCOMPLETE");
+    expect(incomplete.itemCount).toBe(1);
+    expect(incomplete.readyForPayment).toBe(false);
+    expect((await post()).status).toBe(409);
+    const untouched=await pool.query("SELECT status,approved_at,notes FROM public.payroll_runs WHERE id=32");
+    expect(untouched.rows[0]).toMatchObject({status:"draft",approved_at:null,notes:null});
+
+    // In disposable PostgreSQL ONLY, simulate explicit HR completion.
+    // These figures are imaginary and are not copied from real payroll.
+    const fictional=extra.map((employeeId,i)=>({
+      id:21+i,employeeId,baseSalary:"3000000.00",allowance:"0.00",
+      grossSalary:"3000000.00",bpjsJhtEmployee:"0.00",bpjsKesEmployee:"0.00",
+      pph21:"0.00",otherDeductions:"0.00",kasbonDeduction:"0.00",
+      totalDeductions:"0.00",netSalary:"3000000.00",
+    }));
+    const values=fictional.map(x=>`(${x.id},32,${x.employeeId},3000000,0,3000000,0,0,0,0,0,0,3000000)`).join(",");
+    await pool.query("INSERT INTO public.payroll_items(id,run_id,employee_id,base_salary,allowance,gross_salary,bpjs_jht_employee,bpjs_kes_employee,pph21,other_deductions,kasbon_deduction,total_deductions,net_salary) VALUES "+values);
+    const complete=await fetch(base+"/api/payroll/runs/32/super-admin-approval-preview");
+    expect(complete.status).toBe(200);
+    const ready=await complete.json() as {canApprove:boolean;itemCount:number;readyForPayment:boolean};
+    expect(ready.canApprove).toBe(true);
+    expect(ready.itemCount).toBe(14);
+    expect(ready.readyForPayment).toBe(false);
+
+    const fullDigest=payrollSuperAdminApprovalDigest(1,32,[item,...fictional]);
+    const codes=(await Promise.all([post(32,fullDigest),post(32,fullDigest)])).map(x=>x.status).sort((a,b)=>a-b);
+    expect(codes).toEqual([200,409]);
+    expect((await post(32,fullDigest)).status).toBe(409);
+    const final=await pool.query("SELECT status,approved_at,notes,accounting_entry_id,payment_entry_id FROM public.payroll_runs WHERE id=32");
+    expect(final.rows[0].status).toBe("reviewed");
+    expect(final.rows[0].approved_at).not.toBeNull();
+    expect(final.rows[0].accounting_entry_id).toBeNull();
+    expect(final.rows[0].payment_entry_id).toBeNull();
+    // No salary payout, kasbon settlement or GL posting is part of this approval.
+  });
 });
