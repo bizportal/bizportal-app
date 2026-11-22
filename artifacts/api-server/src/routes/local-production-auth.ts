@@ -51,13 +51,20 @@ function createSession(user: { id: string; email: string }): ProductionSession {
 }
 
 async function findUserByEmail(email: string): Promise<RawUser | null> {
+  const signedDev = isSignedOtpDevEnabled();
+  // A disabled historical account is not a second eligible OTP identity.
+  // Still reject two active rows and preserve the unchanged PROD lookup.
+  const activeOnly = signedDev
+    ? " and u.is_active = true and (u.status is null or lower(btrim(u.status)) = 'active')"
+    : "";
   const result = await pool.query<{ user_data: Record<string, unknown> }>(
     `select to_jsonb(u) as user_data
        from public.users u
-      where lower(coalesce(to_jsonb(u)->>'email', '')) = $1
-      limit 1`,
+      where lower(coalesce(to_jsonb(u)->>'email', '')) = $1${activeOnly}
+      limit ${signedDev ? 2 : 1}`,
     [email],
   );
+  if (signedDev && result.rows.length !== 1) return null;
   const data = result.rows[0]?.user_data;
   if (!data || typeof data.id !== "string" || typeof data.email !== "string") return null;
 

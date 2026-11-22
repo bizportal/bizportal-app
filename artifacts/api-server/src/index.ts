@@ -192,5 +192,31 @@ const stopBackgroundTimers = () => {
     startupInitializationTimer = null;
   }
 };
-process.once("SIGTERM", stopBackgroundTimers);
-process.once("SIGINT", stopBackgroundTimers);
+
+// The former signal handler only cancelled timers, leaving the HTTP listener
+// bound forever. This prevents a clean DEV rollback and can strand old
+// processes after a systemd stop. Close the listener and existing idle
+// connections; bound shutdown if an in-flight request does not finish.
+let shutdownRequested = false;
+const shutdownApi = (signal: "SIGTERM" | "SIGINT"): void => {
+  if (shutdownRequested) return;
+  shutdownRequested = true;
+  stopBackgroundTimers();
+  const deadline = setTimeout(() => {
+    logger.error({ signal }, "HTTP shutdown deadline exceeded");
+    process.exit(1);
+  }, 10_000);
+  server.close((error) => {
+    clearTimeout(deadline);
+    if (error) {
+      logger.error({ error, signal }, "HTTP listener failed to close");
+      process.exit(1);
+      return;
+    }
+    logger.info({ signal }, "HTTP server stopped cleanly");
+    process.exit(0);
+  });
+  server.closeIdleConnections();
+};
+process.once("SIGTERM", () => shutdownApi("SIGTERM"));
+process.once("SIGINT", () => shutdownApi("SIGINT"));
