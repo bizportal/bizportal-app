@@ -1,0 +1,30 @@
+name: QRIS #292 Read-only Release Parity Inventory
+on:
+  pull_request:
+    paths:
+      - "scripts/audit-qris292-release-parity.mjs"
+      - "docs/audits/issue-292-release-parity-2026-11-14.md"
+      - ".github/workflows/qris292-parity-audit.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report blocked release dependencies (NO financial execution)
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/audit-qris292-release-parity.mjs > "$RUNNER_TEMP/qris292-parity.json"
+          cat "$RUNNER_TEMP/qris292-parity.json"
+          node -e '
+            const r=require(process.argv[1]);
+            if(r.contract!=="issue292-release-parity-inventory-v1") process.exit(1);
+            if(r.releaseAuthorized!==false || r.actualHostingerRuntimeVerified!==false) process.exit(1);
+            if(!Array.isArray(r.checks) || !r.checks.length) process.exit(1);
+            if(r.missingCount>0 && r.result!=="BLOCKED_MISSING_DEPENDENCIES") process.exit(1);
+          ' "$RUNNER_TEMP/qris292-parity.json"
+          echo "STATIC_INVENTORY_VALIDATED_NOT_RELEASE_AUTHORIZED"
