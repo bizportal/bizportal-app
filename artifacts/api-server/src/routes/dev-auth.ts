@@ -74,7 +74,19 @@ export function isSignedOtpDevEnabled(): boolean {
   return process.env.APP_ENV?.trim().toLowerCase() === "development"
     && isDevelopmentEnvironment()
     && process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV === "true"
+    && process.env.BIZPORTAL_SIGNED_PASSWORD_ENABLED_DEV !== "true"
     && getExplicitSessionSecret() !== null;
+}
+
+/** Reuse the existing DEV preview boundary: requesting signed authentication
+ * closes legacy email-only access even before its signing key is ready.
+ * This does not implement password auth or widen production behavior.
+ */
+function isSignedDevAuthRequested(): boolean {
+  return isDevelopmentEnvironment() && (
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV === "true"
+    || process.env.BIZPORTAL_SIGNED_PASSWORD_ENABLED_DEV === "true"
+  );
 }
 
 export async function initializeProductionSessionSigning(): Promise<void> {
@@ -239,7 +251,7 @@ function decodeSignedCookie<T>(request: Request, cookieName: string): T | null {
 }
 
 export function getDevSession(request: Request): DevAuthUser | null {
-  if (!isDevelopmentEnvironment()) return null;
+  if (!isDevelopmentEnvironment() || isSignedDevAuthRequested()) return null;
 
   const secret = getSessionSecret();
   const raw = getCookie(request, DEV_SESSION_COOKIE);
@@ -473,12 +485,16 @@ export function createDevAuthRouter(): Router {
   });
 
   router.get("/auth/dev-users", (_request, response) => {
-    if (!isDevelopmentEnvironment()) return response.status(404).json({ error: "Not found" });
+    if (!isDevelopmentEnvironment() || isSignedDevAuthRequested()) {
+      return response.status(404).json({ error: "Not found" });
+    }
     return response.json({ users: getDevUsers() });
   });
 
   router.post("/auth/dev-login", async (request, response) => {
-    if (!isDevelopmentEnvironment()) return response.status(404).json({ error: "Not found" });
+    if (!isDevelopmentEnvironment() || isSignedDevAuthRequested()) {
+      return response.status(404).json({ error: "Not found" });
+    }
 
     const email =
       typeof request.body?.email === "string"

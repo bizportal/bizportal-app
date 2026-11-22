@@ -76,11 +76,12 @@ const itemSQL = `SELECT pi.id, pi.employee_id, pi.base_salary::text,
  WHERE pi.run_id=$2 ORDER BY pi.id`;
 
 async function inspect(query: Query, companyId: number, runId: number) {
-  const [active, items, allItems] = await Promise.all([
-    query("SELECT count(*)::integer AS total FROM public.employees WHERE company_id=$1 AND status='active' AND deleted_at IS NULL", [companyId]),
-    query(itemSQL,[companyId,runId]),
-    query("SELECT count(*)::integer AS total FROM public.payroll_items WHERE run_id=$1",[runId]),
-  ]);
+  // Approval writes pass one PostgreSQL client bound to one transaction.
+  // Await sequentially; concurrent client.query() calls are deprecated in pg 8
+  // and risk being rejected by future pg releases.
+  const active = await query("SELECT count(*)::integer AS total FROM public.employees WHERE company_id=$1 AND status='active' AND deleted_at IS NULL", [companyId]);
+  const items = await query(itemSQL,[companyId,runId]);
+  const allItems = await query("SELECT count(*)::integer AS total FROM public.payroll_items WHERE run_id=$1",[runId]);
   const rows = items.rows as ItemRow[];
   const ids = rows.map(r => Number(r.employee_id));
   const normalized: PayrollPreviewItem[] = rows.map(r => ({

@@ -185,8 +185,10 @@ describe("signed OTP HTTP admin middleware under explicit DEV opt-in", () => {
   });
 
   it("rejects a signed OTP session when its database user ID is replaced", async () => {
-    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
+    // Existing preview behavior: old cookie predates OTP activation. New legacy
+    // sessions cannot be issued once signed authentication is requested.
     const both = await legacyDevCookie() + "; " + cookie();
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
     mocks.query.mockResolvedValue({ rows: [{ user_data: {
       id: "different-user-id", email: "admin@example.com", role: "admin",
       company_id: 7, is_active: true, status: "active",

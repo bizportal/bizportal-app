@@ -4,7 +4,7 @@ import { devApprovalDedicatedEnabled, getDevApprovalPool } from "./payroll-dev-a
 
 const ref = "xssrfshdrtdfupgqwfdw";
 const credential = (host: string, user: string) =>
-  "postgresql://" + encodeURIComponent(user) + ":ci-only-not-a-real-password@" + host + ":5432/postgres";
+  "postgresql://" + encodeURIComponent(user) + ":ci-only-not-a-real-password@" + host + ":5432/postgres?sslmode=verify-full";
 
 describe("separate DEV Payroll approval database identity (source-only)", () => {
   afterEach(() => vi.unstubAllEnvs());
@@ -40,13 +40,33 @@ describe("separate DEV Payroll approval database identity (source-only)", () => 
       expect(devApprovalDedicatedEnabled()).toBe(true);
     }
   });
-  it("keeps approval routes unmounted from the shipped API", () => {
+  it("refuses direct URLs without verified TLS and duplicate connection overrides", () => {
+    vi.stubEnv("APP_ENV", "development");
+    const safe = credential("db." + ref + ".supabase.co", "bizportal_payroll_approver_dev");
+    for (const url of [
+      safe.replace("?sslmode=verify-full", ""),
+      safe.replace("verify-full", "require"),
+      safe + "&sslmode=disable",
+      safe + "&user=postgres",
+      safe + "&host=attacker.example",
+      safe.replace("/postgres?", "/other?"),
+    ]) {
+      vi.stubEnv("PAYROLL_APPROVAL_DATABASE_URL_DEV", url);
+      expect(devApprovalDedicatedEnabled()).toBe(false);
+      expect(() => getDevApprovalPool()).toThrow("PAYROLL_DEV_APPROVAL_DEDICATED_WRITER_REQUIRED");
+    }
+  });
+  it("keeps the separate approval handler under an explicit DEV-only mount gate", () => {
     const index = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
     const payroll = readFileSync(new URL("./payroll.ts", import.meta.url), "utf8");
-    for (const source of [index, payroll]) {
-      expect(source).not.toContain("registerPayrollSuperAdminApprovalRoutes");
-      expect(source).not.toContain("super-admin-approve");
-    }
+    expect(index).not.toContain("registerPayrollSuperAdminApprovalRoutes");
+    expect(payroll).toContain('process.env.APP_ENV?.trim().toLowerCase() === "development"');
+    expect(payroll).toContain('process.env.PAYROLL_DEV_SUPER_ADMIN_ROUTE_MOUNT_ENABLED === "true"');
+    expect(payroll).toContain("registerPayrollSuperAdminApprovalRoutes(approvalRouter)");
+    expect(payroll).toContain("getProductionSession(req)");
+    expect(payroll).toContain("getProductionUser(signedSession)");
+    // The regression HTTP suite proves this gated source is still 404 in PROD
+    // and by default, and cannot write without an independent DEV approver.
   });
   it("never enables the DEV writer in production", () => {
     vi.stubEnv("APP_ENV", "production");

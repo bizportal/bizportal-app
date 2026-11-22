@@ -47,6 +47,14 @@ export function centsToMoney(value:bigint):string {
   if(value<0n)throw Error("NEGATIVE_KASBON_AMOUNT");
   return `${value/100n}.${(value%100n).toString().padStart(2,"0")}`;
 }
+/** Existing advance invariant: cash repayment and noncash settlement are
+ * disjoint totals. A Payroll deduction is a noncash settlement, not another
+ * cash repayment. No historical value is repaired or guessed here.
+ */
+export function assertKasbonPrincipalBalance(amount:string,paid:string,settled:string,remaining:string):void {
+  const principal=moneyToCents(amount),cash=moneyToCents(paid),noncash=moneyToCents(settled),balance=moneyToCents(remaining);
+  if(principal!==cash+noncash+balance)throw Error("KASBON_BALANCE_MISMATCH");
+}
 export function payrollMonth(year:number,month:number):string {
   if(!Number.isSafeInteger(year)||year<2020||year>2100||
      !Number.isInteger(month)||month<1||month>12)throw Error("INVALID_PAYROLL_PERIOD");
@@ -81,11 +89,7 @@ export function calculateKasbonAutoDeduction(
     seen.add(a.id);
     if(a.companyId!==companyId||a.employeeId!==employeeId)throw Error("CROSS_COMPANY_KASBON");
     const balance=moneyToCents(a.remainingAmount);
-    const amount=moneyToCents(a.amount);
-    const paid=moneyToCents(a.paidAmount);
-    const settled=moneyToCents(a.settledAmount);
-    if(balance>amount||paid+settled>amount||balance!==amount-paid-settled)
-      throw Error("KASBON_BALANCE_MISMATCH");
+    assertKasbonPrincipalBalance(a.amount,a.paidAmount,a.settledAmount,a.remainingAmount);
     if(a.type!=="kasbon"||!["IDR",null].includes(a.currency))
       throw Error("INVALID_KASBON_SOURCE");
     // Draft has an apparent positive remaining amount but MUST NOT be charged.
@@ -125,6 +129,11 @@ export function calculateKasbonAutoDeduction(
     if(other.length>0) {
       rows.push({advanceId:a.id,choice:plan.choice,balance:centsToMoney(balance),
         proposed:null,issue:"POTONGAN_PERIODE_LAIN_BELUM_DIKONFIRMASI",existingPreparation:false});
+      blocked=true;continue;
+    }
+    if(prepared.some(x=>x.advanceId===a.id && x.period===period && x.state==="confirmed")) {
+      rows.push({advanceId:a.id,choice:plan.choice,balance:centsToMoney(balance),proposed:null,
+        issue:"POTONGAN_PERIODE_SUDAH_DIKONFIRMASI",existingPreparation:true});
       blocked=true;continue;
     }
     const same=prepared.filter(x=>x.advanceId===a.id && x.period===period && x.state==="prepared");

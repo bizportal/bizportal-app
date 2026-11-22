@@ -1,0 +1,213 @@
+--- a/artifacts/api-server/src/lib/accounting.ts
++++ b/artifacts/api-server/src/lib/accounting.ts
+@@ -75,0 +76,2 @@
++    // An explicitly transaction-bound audit must fail with its transaction.
++    if (opts.client && opts.client !== db) throw err;
+@@ -356,0 +359,2 @@
++    // Never escape a caller-owned transaction through a global DB fallback.
++    if (client !== db) throw seqErr;
+@@ -559,0 +564 @@
++      if (client !== db) throw err;
+@@ -635,0 +641,3 @@
++      // Migrations cannot self-heal through an unrelated connection while
++      // a caller transaction is already aborted.
++      if (client !== db && pgCode === "22P02") throw insertErr;
+@@ -712,0 +721,21 @@
++  if (client !== db) {
++    // Real DEV immutable-journal guards reject ALL updates after posting.
++    // Finish caller-transaction metadata while the newly created entry is
++    // still draft; never relax guards or use correction/bypass settings.
++    const previousEntryId = source === "reversal" && typeof sourceId === "number" ? sourceId : null;
++    const checksumHash = createHash("sha256").update(JSON.stringify({
++      entryNumber: entry.entryNumber, source, sourceId, totalDebit, totalCredit,
++      companyId: requireAccountingCompanyId(input.companyId), date: dateStr,
++    })).digest("hex");
++    const metadata = await client.execute(sql`
++      UPDATE accounting_entries
++      SET checksum_hash = ${checksumHash}, previous_entry_id = ${previousEntryId}
++      WHERE id = ${entry.id} AND company_id = ${requireAccountingCompanyId(input.companyId)}
++        AND status = 'draft' AND checksum_hash IS NULL
++      RETURNING id
++    `);
++    const metadataRows = (metadata as unknown as { rows?: unknown[] }).rows
++      ?? (Array.isArray(metadata) ? metadata : []);
++    if (metadataRows.length !== 1) throw new Error("JOURNAL_DRAFT_METADATA_NOT_FINALIZED");
++  }
++
+@@ -723,14 +752,52 @@
+-  // Emit POST ledger event without awaiting it. It intentionally uses global
+-  // db rather than the caller's transaction client so an audit-event failure
+-  // cannot poison the posting transaction. This is important when a governed
+-  // correction is posted inside the Finance Review transaction.
+-  const entryPeriod = input.date.toISOString().slice(0, 7);
+-  const eventType = (source === "reversal") ? "REVERSE" : "POST";
+-  void postLedgerEvent({
+-    companyId:  requireAccountingCompanyId(input.companyId),
+-    eventType,
+-    period:     entryPeriod,
+-    entryId:    entry!.id,
+-    actor:      input.createdById ?? null,
+-    payload: {
+-      entryNumber: entry!.entryNumber,
++  if (client !== db) {
++    // Caller-owned transaction: journal, audit, checksum and durable outbox
++    // share ONE connection. Do not publish external effects before COMMIT.
++    const period = input.date.toISOString().slice(0, 7);
++    await postLedgerEvent({
++      companyId: requireAccountingCompanyId(input.companyId),
++      eventType: source === "reversal" ? "REVERSE" : "POST",
++      period, entryId: entry.id, actor: input.createdById ?? null,
++      payload: { entryNumber: entry.entryNumber, source, sourceId, totalDebit, totalCredit },
++      client,
++    });
++    // Reuses the existing outbox schema/payload. It must be provisioned before
++    // activation: absent or failing outbox rolls back, never auto-creates DDL.
++    const payload = {
++      eventType: source === "reversal" ? "JOURNAL_VOIDED" : "JOURNAL_CREATED",
++      entryId: entry.id, sourceType: source,
++      sourceId: sourceId != null ? String(sourceId) : null,
++      amount: totalDebit, actor: input.createdById ?? "SYSTEM",
++      companyId: requireAccountingCompanyId(input.companyId),
++    };
++    await client.execute(sql`
++      INSERT INTO financial_outbox_events (event_type, payload, entry_id, company_id)
++      VALUES (${payload.eventType}, ${JSON.stringify(payload)}, ${entry.id}, ${payload.companyId})
++    `);
++  } else {
++    // Emit POST ledger event without awaiting it. It intentionally uses global
++    // db rather than the caller's transaction client so an audit-event failure
++    // cannot poison the posting transaction. This is important when a governed
++    // correction is posted inside the Finance Review transaction.
++    const entryPeriod = input.date.toISOString().slice(0, 7);
++    const eventType = (source === "reversal") ? "REVERSE" : "POST";
++    void postLedgerEvent({
++      companyId:  requireAccountingCompanyId(input.companyId),
++      eventType,
++      period:     entryPeriod,
++      entryId:    entry!.id,
++      actor:      input.createdById ?? null,
++      payload: {
++        entryNumber: entry!.entryNumber,
++        source,
++        sourceId,
++        totalDebit:  Number(entry!.totalDebit),
++        totalCredit: Number(entry!.totalCredit),
++      },
++      // client intentionally omitted → uses global db, never poisons caller's tx
++    });
++
++    // ── Rule 6: Compute + persist checksum_hash + previous_entry_id ─────────
++    // Non-blocking UPDATE — tidak memblok return, non-fatal jika gagal.
++    const previousEntryId = (source === "reversal" && typeof sourceId === "number") ? sourceId : null;
++    const checksumPayload = JSON.stringify({
++      entryNumber: entry.entryNumber,
+@@ -739,42 +806,30 @@
+-      totalDebit:  Number(entry!.totalDebit),
+-      totalCredit: Number(entry!.totalCredit),
+-    },
+-    // client intentionally omitted → uses global db, never poisons caller's tx
+-  });
+-
+-  // ── Rule 6: Compute + persist checksum_hash + previous_entry_id ─────────
+-  // Non-blocking UPDATE — tidak memblok return, non-fatal jika gagal.
+-  const previousEntryId = (source === "reversal" && typeof sourceId === "number") ? sourceId : null;
+-  const checksumPayload = JSON.stringify({
+-    entryNumber: entry.entryNumber,
+-    source,
+-    sourceId,
+-    totalDebit,
+-    totalCredit,
+-    companyId: requireAccountingCompanyId(input.companyId),
+-    date: dateStr,
+-  });
+-  const checksumHash = createHash("sha256").update(checksumPayload).digest("hex");
+-  void db.execute(sql`
+-    UPDATE accounting_entries
+-    SET checksum_hash     = ${checksumHash},
+-        previous_entry_id = ${previousEntryId}
+-    WHERE id = ${entry!.id}
+-  `).catch(() => {});
+-
+-  // ── Rule 3: Write to outbox (non-blocking) ───────────────────────────────
+-  void (import("./accounting/outboxProcessor.js") as unknown as Promise<{ writeToOutbox: (p: Record<string, unknown>) => Promise<void> }>)
+-    .then(({ writeToOutbox }) => writeToOutbox({
+-      eventType:  source === "reversal" ? "JOURNAL_VOIDED" : "JOURNAL_CREATED",
+-      entryId:    entry!.id,
+-      sourceType: source,
+-      sourceId:   sourceId != null ? String(sourceId) : null,
+-      amount:     totalDebit,
+-      actor:      input.createdById ?? null,
+-      companyId:  input.companyId ?? null,
+-    })).catch(() => {});
+-
+-  // ── Rule 4: Event-driven spot check (non-blocking) ───────────────────────
+-  void (import("./jobs/ledgerConsistencyCheck.js") as Promise<{ scheduleSpotCheck: (id: number) => void }>)
+-    .then(({ scheduleSpotCheck }) => scheduleSpotCheck(entry!.id))
+-    .catch(() => {});
++      totalDebit,
++      totalCredit,
++      companyId: requireAccountingCompanyId(input.companyId),
++      date: dateStr,
++    });
++    const checksumHash = createHash("sha256").update(checksumPayload).digest("hex");
++    void db.execute(sql`
++      UPDATE accounting_entries
++      SET checksum_hash     = ${checksumHash},
++          previous_entry_id = ${previousEntryId}
++      WHERE id = ${entry!.id}
++    `).catch(() => {});
++
++    // ── Rule 3: Write to outbox (non-blocking) ───────────────────────────────
++    void (import("./accounting/outboxProcessor.js") as unknown as Promise<{ writeToOutbox: (p: Record<string, unknown>) => Promise<void> }>)
++      .then(({ writeToOutbox }) => writeToOutbox({
++        eventType:  source === "reversal" ? "JOURNAL_VOIDED" : "JOURNAL_CREATED",
++        entryId:    entry!.id,
++        sourceType: source,
++        sourceId:   sourceId != null ? String(sourceId) : null,
++        amount:     totalDebit,
++        actor:      input.createdById ?? null,
++        companyId:  input.companyId ?? null,
++      })).catch(() => {});
++
++    // ── Rule 4: Event-driven spot check (non-blocking) ───────────────────────
++    void (import("./jobs/ledgerConsistencyCheck.js") as Promise<{ scheduleSpotCheck: (id: number) => void }>)
++      .then(({ scheduleSpotCheck }) => scheduleSpotCheck(entry!.id))
++      .catch(() => {});
++  }
+--- a/artifacts/api-server/src/lib/payroll/PayrollJournalService.ts
++++ b/artifacts/api-server/src/lib/payroll/PayrollJournalService.ts
+@@ -32,0 +33 @@
++  otherDeductionPayableAccountId?: number;
+@@ -54,2 +55,2 @@
+-async function requireJournal(companyId: number, type: "bank" | "cash" | "general") {
+-  const rows = await db.execute<{ id: number; code: string }>(sql`
++async function requireJournal(companyId: number, type: "bank" | "cash" | "general", client: DbClient = db) {
++  const rows = await client.execute<{ id: number; code: string }>(sql`
+@@ -60 +61 @@
+-  const j = rows[0] ?? await db.execute<{ id: number; code: string }>(sql`
++  const j = rows[0] ?? await client.execute<{ id: number; code: string }>(sql`
+@@ -75,0 +77,2 @@
++  /** Explicitly mapped non-kasbon deductions; never inferred or zero-filled. */
++  totalOtherDeductions?: number;
+@@ -117,2 +120,8 @@
+-  async postAccrualJournal(mapping: PayrollAccountMapping, p: AccrualJournalParams): Promise<AccrualJournalResult> {
+-    const j = await requireJournal(p.companyId, "general");
++  transactionalAccrualVersion: "payroll-accrual-atomic-v1" as const,
++  async postAccrualJournal(mapping: PayrollAccountMapping, p: AccrualJournalParams, client: DbClient = db): Promise<AccrualJournalResult> {
++    const other = p.totalOtherDeductions ?? 0;
++    if (!Number.isFinite(other) || other < 0 || (other > 0 &&
++        (!Number.isSafeInteger(mapping.otherDeductionPayableAccountId) || mapping.otherDeductionPayableAccountId! <= 0))) {
++      throw new AccountingConfigError("PAYROLL_OTHER_DEDUCTION_MAPPING_REQUIRED");
++    }
++    const j = await requireJournal(p.companyId, "general", client);
+@@ -143 +152,9 @@
+-    const entry = await postEntry(
++    if (other > 0) {
++      lines.push({ accountId: mapping.otherDeductionPayableAccountId!, debit: 0, credit: other,
++        description: "Potongan Lainnya" });
++    }
++
++    const post = client === db
++      ? postEntry
++      : (input: PostingInput, code: string) => postEntryWithClient(client, input, code);
++    const entry = await post(

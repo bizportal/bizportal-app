@@ -1,0 +1,38 @@
+POSTGRES 16.15 FIXTURE_ONLY true
+BASELINE_REPRODUCED journal_rolled_back_but_external_audit_and_outbox_remained
+PASS baseline regression reproduced on actual PostgreSQL
+PASS APPLICATION service commits native journal, real repayment ledger, balance, confirmation and run link together
+PASS APPLICATION replay verifies existing journal lines and exact repayment ledger without another deduction
+PASS APPLICATION rollback on cash_advances failure leaves zero financial and audit residue
+PASS APPLICATION rollback on cash_advance_repayments failure leaves zero financial and audit residue
+PASS APPLICATION rollback on payroll_kasbon_auto_reservations failure leaves zero financial and audit residue
+PASS APPLICATION rollback on payroll_runs failure leaves zero financial and audit residue
+PASS APPLICATION concurrent calls create one journal and one repayment with bounded serialization retry
+PASS APPLICATION RLS rejects foreign company
+PASS APPLICATION closed period refused before writer
+PASS APPLICATION salary snapshot changed after approval is refused
+PASS APPLICATION changed kasbon balance is refused
+PASS APPLICATION financial_outbox_events failure rolls back without global escape
+PASS APPLICATION ledger_events failure rolls back without global escape
+PASS APPLICATION journal_sequences failure rolls back without global escape
+PASS APPLICATION replay rejects non-posted journal
+PASS APPLICATION replay rejects altered account lines even with identical totals
+PASS APPLICATION replay rejects missing repayment without silently recreating it
+PASS APPLICATION replay rejects changed repayment amount
+PASS APPLICATION reads real advance approval metadata rather than fixture constants
+PASS APPLICATION refuses loan belonging to a different employee
+PASS APPLICATION refuses reservation from a different Payroll period
+PASS APPLICATION loads and validates actual five-account mapping
+PASS APPLICATION blocks overlap with pre-existing legacy allocation ledger
+PASS APPLICATION rejects a writer claiming a nonexistent journal
+PASS APPLICATION rejects wrong journal lines before settling kasbon
+PASS APPLICATION fails closed on missing fiscal period
+PASS APPLICATION refuses inconsistent advance totals
+PASS APPLICATION writer stays OFF by default
+PASS APPLICATION preserves PostgreSQL microsecond approval time and records posting time
+PASS APPLICATION blocks loans with pending legacy installment schedules to prevent double settlement
+PASS APPLICATION refuses the unpatched global-posting native service before opening a connection
+PASS APPLICATION full kasbon settlement reaches zero with one repayment and no salary transfer
+PASS APPLICATION zero-kasbon payroll does not create a repayment or alter an unrelated balance
+PASS APPLICATION full 17-person roster posts one balanced accrual using database-loaded values
+APPLICATION_REAL_POSTGRES_CHECKS_PASS 35 LIVE_CST_DEV_OR_PROD_USED false BANK_TRANSFER_SENT false
