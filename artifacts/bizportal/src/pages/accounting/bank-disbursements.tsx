@@ -237,6 +237,10 @@ interface OutstandingInvoice {
 }
 
 interface OutstandingInvoicesResponse {
+  // DEV canonical reader returns review-only balances, not payment authorization.
+  reviewOnly?: boolean;
+  canPay?: boolean;
+  coverage?: string;
   apAccountId: number | null;
   apAccountName: string | null;
   invoices: OutstandingInvoice[];
@@ -2530,6 +2534,11 @@ function CreateDisbDialog({
 
   // ── Quick-create vendor invoice from OCR data ──────────────────────────────
   const handleQuickCreateVendorInvoice = async () => {
+    // Review-only outstanding data is not permission to create or post invoices.
+    if (outstandingData?.reviewOnly) {
+      toast({ title: "Mode pemeriksaan", description: "Pembuatan invoice melalui panel pembayaran tidak tersedia dalam mode review-only.", variant: "destructive" });
+      return;
+    }
     if (!ocrResult || !activeCompanyId) return;
 
     // Prefer explicit header totals from the OCR breakdown; fall back to the
@@ -2696,6 +2705,10 @@ function CreateDisbDialog({
   const whtAccounts = accountsByType["tax_payment"]?.filter((a) => a.type === "liability") ?? [];
 
   const handleSubmit = async () => {
+    if (paymentMode === "vendor_invoice" && outstandingData?.reviewOnly) {
+      toast({ title: "Invoice hanya untuk pemeriksaan", description: "Data outstanding dari reader DEV tidak mengizinkan pembayaran. Gunakan layanan pembayaran resmi setelah validasi selesai.", variant: "destructive" });
+      return;
+    }
     if (!form.journalId) { toast({ title: "Pilih jurnal bank/kas", variant: "destructive" }); return; }
     if (!form.date) { toast({ title: "Tanggal wajib diisi", variant: "destructive" }); return; }
 
@@ -3142,7 +3155,7 @@ function CreateDisbDialog({
               <Label className="text-sm font-semibold mb-2 block">Invoice Vendor Outstanding</Label>
 
               {/* Quick-create from OCR — only shown when OCR data is already applied */}
-              {ocrApplied && ocrResult && (outstandingData?.invoices ?? []).length === 0 && !loadingInvoices && (
+              {!outstandingData?.reviewOnly && ocrApplied && ocrResult && (outstandingData?.invoices ?? []).length === 0 && !loadingInvoices && (
                 <div className="mb-3 flex items-center gap-3 rounded-xl px-4 py-3 bg-indigo-50 border border-indigo-200">
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-semibold text-indigo-800">Data OCR sudah tersedia — buat Vendor Invoice langsung?</p>
@@ -3165,11 +3178,16 @@ function CreateDisbDialog({
                 </div>
               )}
 
+              {outstandingData?.reviewOnly && (
+                <div role="status" className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                  Data outstanding hanya untuk pemeriksaan. Pembayaran dari daftar ini belum diaktifkan.
+                </div>
+              )}
               {loadingInvoices ? (
                 <div className="flex justify-center py-8"><Loader2 className="h-5 w-5 animate-spin text-slate-400" /></div>
               ) : (
                 <VendorInvoicePanel
-                  allInvoices={outstandingData?.invoices ?? []}
+                  allInvoices={outstandingData?.reviewOnly ? [] : (outstandingData?.invoices ?? [])}
                   allSuppliers={outstandingData?.suppliers}
                   apAccountName={outstandingData?.apAccountName}
                   lines={invoiceLines}
@@ -3403,7 +3421,7 @@ function CreateDisbDialog({
           <Button variant="outline" onClick={() => { onOpenChange(false); resetForm(); }} disabled={saving}>
             Batal
           </Button>
-          <Button onClick={handleSubmit} disabled={saving || isUploadingAttachment} className="bg-orange-500 hover:bg-orange-600">
+          <Button onClick={handleSubmit} disabled={saving || isUploadingAttachment || (paymentMode === "vendor_invoice" && outstandingData?.reviewOnly === true)} className="bg-orange-500 hover:bg-orange-600">
             {saving ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Menyimpan...</> : "Simpan & Post Jurnal"}
           </Button>
         </DialogFooter>

@@ -119,6 +119,20 @@ function requestedCompanyId(req: Request): number | null {
   return companyId;
 }
 
+/** Strict company scope for DEV-only Bank Disbursement readers.
+ * A company passed in the URL cannot itself grant tenant access.
+ * Do not change the legacy multi-company Accounting endpoints here.
+ */
+function bankDisbursementReadCompanyId(req: Request): number | null {
+  const actorCompany = (req as AccountingRequest).accountingUser?.companyId;
+  if (typeof actorCompany !== "number" ||
+      !Number.isSafeInteger(actorCompany) || actorCompany <= 0) {
+    return null;
+  }
+  const requested = requestedCompanyId(req);
+  return requested === actorCompany ? actorCompany : null;
+}
+
 function companyFilter(req: Request, values: QueryValue[], column = "gl.company_id"): string {
   const companyId = requestedCompanyId(req);
   if (companyId === null) return "";
@@ -1535,6 +1549,267 @@ router.get("/accounting/hub/general-ledger", async (req, res): Promise<void> => 
       openingBalance, closingBalance: openingBalance + totalDebit - totalCredit });
   } catch (error) {
     reportError(req, res, error);
+  }
+});
+
+
+// DEV-only read parity for the historical bank-disbursement list.
+// No journal writer, void, posting or payment endpoint is registered here.
+// Inherits the existing Accounting authentication middleware above.
+router.get("/accounting/bank-disbursements", async (req, res): Promise<void> => {
+  if (!isDevelopmentEnvironment() ||
+      process.env.BIZPORTAL_DEV_BD_READONLY_ENABLED !== "true") {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  res.setHeader("Cache-Control", "private, no-store");
+  let companyId: number | null;
+  try {
+    companyId = bankDisbursementReadCompanyId(req);
+  } catch {
+    res.status(400).json({ error: "Invalid company" });
+    return;
+  }
+  // Never read across companies, even for a global Accounting actor.
+  if (companyId === null) {
+    res.status(400).json({ error: "Company is required" });
+    return;
+  }
+  const rawLimit = first(req.query.limit);
+  const limit = rawLimit === undefined ? 50 : Number(rawLimit);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    res.status(400).json({ error: "Invalid limit" });
+    return;
+  }
+  try {
+    const result = await pool.query<{
+      id: number; disbursement_number: string | null; journal_id: number;
+      date: string | Date; ref: string | null; memo: string | null;
+      total_amount: string; status: string; entry_id: number | null;
+      created_at: string | Date; attachment_url: string | null;
+      counterparty_name: string | null; counterparty_type: string | null;
+      counterparty_id: number | null; source_module: string | null;
+      expense_id: number | null; source_number: string | null;
+    }>(
+      `select id, disbursement_number, journal_id, date, ref, memo,
+              total_amount, status, entry_id, created_at, attachment_url,
+              counterparty_name, counterparty_type, counterparty_id,
+              source_module, expense_id, source_number
+         from public.bank_disbursements
+        where company_id = $1
+        order by date desc, id desc
+        limit $2`,
+      [companyId, limit],
+    );
+    res.json(result.rows.map(row => ({
+      id: row.id, disbursementNumber: row.disbursement_number,
+      journalId: row.journal_id, date: row.date, ref: row.ref,
+      memo: row.memo, totalAmount: Number(row.total_amount),
+      status: row.status, entryId: row.entry_id, createdAt: row.created_at,
+      attachmentUrl: row.attachment_url,
+      counterpartyName: row.counterparty_name,
+      counterpartyType: row.counterparty_type,
+      counterpartyId: row.counterparty_id, sourceModule: row.source_module,
+      expenseId: row.expense_id, sourceNumber: row.source_number,
+    })));
+  } catch (error) {
+    req.log.error({ error }, "DEV bank disbursement read parity failed");
+    res.status(503).json({ error: "Bank disbursement read unavailable" });
+  }
+});
+
+
+// DEV-only historical detail companion to the list adapter above.
+// No payment posting, journal mutation, or void action is enabled.
+router.get("/accounting/bank-disbursements/:id", async (req, res): Promise<void> => {
+  if (!isDevelopmentEnvironment() ||
+      process.env.BIZPORTAL_DEV_BD_READONLY_ENABLED !== "true") {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  res.setHeader("Cache-Control", "private, no-store");
+  const rawId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const id = typeof rawId === "string" && /^[1-9][0-9]*$/.test(rawId)
+    ? Number(rawId) : NaN;
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    res.status(400).json({ error: "Invalid disbursement ID" });
+    return;
+  }
+  let companyId: number | null;
+  try {
+    companyId = bankDisbursementReadCompanyId(req);
+  } catch {
+    res.status(400).json({ error: "Invalid company" });
+    return;
+  }
+  if (companyId === null) {
+    res.status(400).json({ error: "Company is required" });
+    return;
+  }
+  try {
+    const header = await pool.query<{
+      id: number; company_id: number; disbursement_number: string | null;
+      journal_id: number; date: string | Date; ref: string | null;
+      memo: string | null; total_amount: string; status: string;
+      entry_id: number | null; void_entry_id: number | null;
+      void_reason: string | null; created_at: string | Date;
+      attachment_url: string | null; counterparty_name: string | null;
+      counterparty_type: string | null; counterparty_id: number | null;
+      source_module: string | null; source_id: number | null;
+      expense_id: number | null; source_number: string | null;
+    }>(
+      `select id,company_id,disbursement_number,journal_id,date,ref,memo,
+              total_amount,status,entry_id,void_entry_id,void_reason,
+              created_at,attachment_url,counterparty_name,counterparty_type,
+              counterparty_id,source_module,source_id,expense_id,source_number
+         from public.bank_disbursements
+        where id = $1 and company_id = $2`,
+      [id, companyId],
+    );
+    const row = header.rows[0];
+    if (!row) {
+      res.status(404).json({ error: "Not found" });
+      return;
+    }
+    const lines = await pool.query<{
+      id: number; seq: number; transaction_type: string;
+      account_id: number | null; description: string | null;
+      amount: string; notes: string | null; purchase_document_id: number | null;
+      wht_amount: string | null; wht_account_id: number | null;
+      party_name: string | null;
+    }>(
+      `select item.id,item.seq,item.transaction_type,item.account_id,
+              item.description,item.amount,item.notes,item.purchase_document_id,
+              item.wht_amount,item.wht_account_id,item.party_name
+         from public.bank_disbursement_items item
+         join public.bank_disbursements bd
+           on bd.id = item.disbursement_id
+        where bd.id = $1 and bd.company_id = $2
+        order by item.seq,item.id`,
+      [id, companyId],
+    );
+    res.json({
+      id: row.id, companyId: row.company_id,
+      disbursementNumber: row.disbursement_number,
+      journalId: row.journal_id, date: row.date, ref: row.ref,
+      memo: row.memo, totalAmount: Number(row.total_amount),
+      status: row.status, entryId: row.entry_id,
+      voidEntryId: row.void_entry_id, voidReason: row.void_reason,
+      createdAt: row.created_at, attachmentUrl: row.attachment_url,
+      counterpartyName: row.counterparty_name,
+      counterpartyType: row.counterparty_type,
+      counterpartyId: row.counterparty_id, sourceModule: row.source_module,
+      sourceId: row.source_id, expenseId: row.expense_id,
+      sourceNumber: row.source_number,
+      items: lines.rows.map(item => ({
+        id: item.id, seq: item.seq, transactionType: item.transaction_type,
+        accountId: item.account_id, description: item.description,
+        amount: Number(item.amount), notes: item.notes,
+        purchaseDocumentId: item.purchase_document_id,
+        whtAmount: Number(item.wht_amount ?? 0),
+        whtAccountId: item.wht_account_id, partyName: item.party_name,
+      })),
+      // Full journal details require the separately verified Accounting reader.
+      entry: null,
+    });
+  } catch (error) {
+    req.log.error({ error }, "DEV bank disbursement detail read failed");
+    res.status(503).json({ error: "Bank disbursement detail unavailable" });
+  }
+});
+
+
+// DEV-only, review-only Vendor Invoice outstanding snapshot. It deliberately
+// excludes purchase_documents and payment execution eligibility until their
+// distinct settlement semantics have been independently verified.
+// Mirrors canonical purchase-workflow's reconciled active-allocation CTE.
+router.get("/accounting/bank-disbursements/vendor-invoices/outstanding", async (req, res): Promise<void> => {
+  if (!isDevelopmentEnvironment() ||
+      process.env.BIZPORTAL_DEV_BD_READONLY_ENABLED !== "true") {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  res.setHeader("Cache-Control", "private, no-store");
+  let companyId: number | null;
+  try {
+    companyId = bankDisbursementReadCompanyId(req);
+  } catch {
+    res.status(400).json({ error: "Invalid company" });
+    return;
+  }
+  if (companyId === null) {
+    res.status(400).json({ error: "Company is required" });
+    return;
+  }
+  try {
+    const result = await pool.query<{
+      id: number; invoice_number: string; vendor_invoice_ref: string | null;
+      supplier_id: number | null; supplier_name: string | null;
+      grand_total: string; tax_amount: string; due_date: string | null;
+      withholding_tax_amount: string | null; reconciled_amount_paid: string;
+    }>(
+      `with reconciled_vendor_invoice_payments as (
+        select
+          coalesce(nullif(to_jsonb(pa)->>'vendor_invoice_id', ''),
+                   nullif(to_jsonb(pa)->>'invoice_id', ''))::bigint as invoice_id,
+          nullif(to_jsonb(pa)->>'company_id', '')::bigint as company_id,
+          sum(coalesce(
+            nullif(to_jsonb(pa)->>'amount', '')::numeric,
+            nullif(to_jsonb(pa)->>'allocated_amount', '')::numeric,
+            nullif(to_jsonb(pa)->>'allocation_amount', '')::numeric, 0
+          )) as paid_amount
+        from public.payment_allocations pa
+        left join public.payment_matching_groups pmg
+          on pmg.id = nullif(to_jsonb(pa)->>'group_id', '')::bigint
+        left join public.bank_mutations bm
+          on bm.id = nullif(to_jsonb(pa)->>'mutation_id', '')::bigint
+         and bm.company_id = nullif(to_jsonb(pa)->>'company_id', '')::bigint
+        where nullif(to_jsonb(pa)->>'company_id', '')::bigint = $1
+          and lower(coalesce(to_jsonb(pa)->>'is_active', 'true')) in ('true','t','1')
+          and (
+            lower(coalesce(pmg.status, '')) in ('final','posted','reconciled')
+            or lower(coalesce(to_jsonb(pa)->>'status', '')) in ('final','posted','reconciled')
+            or lower(coalesce(to_jsonb(bm)->>'status', '')) in ('final','posted')
+          )
+        group by 1, 2
+      )
+      select vi.id,vi.invoice_number,vi.vendor_invoice_ref,vi.supplier_id,
+             vi.supplier_name,vi.grand_total::text,vi.tax_amount::text,
+             vi.due_date::text,vi.withholding_tax_amount::text,
+             coalesce(rvip.paid_amount,0)::text reconciled_amount_paid
+        from public.vendor_invoices vi
+        left join reconciled_vendor_invoice_payments rvip
+          on rvip.invoice_id = vi.id and rvip.company_id = vi.company_id
+       where vi.company_id = $1 and vi.cancelled_at is null
+         and vi.status::text in ('posted','matched','paid')
+         and vi.grand_total > coalesce(rvip.paid_amount,0)
+       order by vi.due_date asc nulls last,vi.id asc
+       limit 100`,
+      [companyId],
+    );
+    const invoices = result.rows.map(row => {
+      const grandTotal = Number(row.grand_total);
+      const amountPaid = Number(row.reconciled_amount_paid);
+      const withholdingTaxAmount = Number(row.withholding_tax_amount ?? 0);
+      return {
+        id: row.id, docNumber: row.invoice_number, billNumber: row.invoice_number,
+        vendorInvoiceRef: row.vendor_invoice_ref, supplierId: row.supplier_id,
+        supplierName: row.supplier_name ?? "—", grandTotal, amountPaid,
+        outstanding: Math.max(0, grandTotal - amountPaid),
+        withholdingTaxAmount, payableToSupplier: Math.max(0, grandTotal - withholdingTaxAmount),
+        dueDate: row.due_date, currency: "IDR", source: "vendor_invoice" as const,
+        // Display-only: not a payment authorization or approval.
+        reviewOnly: true as const, canPay: false as const,
+      };
+    });
+    res.json({
+      apAccountId: null, apAccountName: null, invoices, suppliers: [],
+      reviewOnly: true, canPay: false,
+      coverage: "vendor_invoice_only",
+    });
+  } catch (error) {
+    req.log.error({ error }, "DEV outstanding vendor invoice review failed");
+    res.status(503).json({ error: "Vendor outstanding review unavailable" });
   }
 });
 

@@ -25,6 +25,27 @@ describe("bank reconciliation post contract", () => {
     expect(ui).toContain('/api/bank-reconciliation/${mutId}/post');
   });
 
+  it("never acknowledges posted replay before tenant and live-journal verification", () => {
+    const start = api.indexOf('router.post("/bank-reconciliation/:mutationId/post"');
+    const end = api.indexOf("\n});", start);
+    const route = api.slice(start, end);
+    expect(start).toBeGreaterThan(-1);
+    const tenant = route.indexOf("COMPANY_SCOPE_FORBIDDEN");
+    const verified = route.indexOf("POSTED_JOURNAL_RECEIPT_INVALID");
+    const replay = route.indexOf('res.json({ ok: true, status: "posted", journal_entry_id: mutation.journal_entry_id, idempotent: true })');
+    expect(tenant).toBeGreaterThan(-1);
+    expect(verified).toBeGreaterThan(tenant);
+    expect(replay).toBeGreaterThan(verified);
+    expect(route).toContain("select status,journal_entry_id,company_id");
+    expect(route).toContain("actor.companyId != null && Number(mutation.company_id) !== actor.companyId");
+    expect(route).toContain("id=$1 and company_id=$2 and status='posted'");
+    expect(route).toContain("cancelled_at is null and voided_at is null");
+    expect(route).toContain("source::text as source,source_id");
+    expect(route).toContain('linkedEntry.source === "bank_reconciliation"');
+    expect(route).toContain("Number(linkedEntry.source_id) !== mutationId");
+    expect(route).toContain("POSTED_JOURNAL_SOURCE_MISMATCH");
+  });
+
   it("allows governed direct-bank posting when the rule does not require a candidate", () => {
     expect(api).toContain("governedDirectAllocation");
     expect(api).toContain("meta->>'manual_coa_override'");
