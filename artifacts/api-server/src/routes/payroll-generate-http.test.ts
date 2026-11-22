@@ -6,6 +6,7 @@ import { once } from "node:events";
 const mock = vi.hoisted(() => ({
   role: "admin", companyId: null as number | null, exists: true, status: "draft",
   invalid: 0, added: 2, queries: [] as string[], released: 0,
+  dedicated: true, invalidCredential: false, sharedConnects: 0, scopes: [] as number[],
 }));
 vi.mock("./dev-auth", () => ({
   isDevelopmentEnvironment: () => true,
@@ -15,6 +16,16 @@ vi.mock("./dev-auth", () => ({
 }));
 vi.mock("@workspace/db", () => ({
   pool: {
+    connect: async () => { mock.sharedConnects++; throw Error("SHARED_DB_POOL_FORBIDDEN"); },
+    query: async () => { mock.sharedConnects++; throw Error("SHARED_DB_POOL_FORBIDDEN"); },
+  },
+}));
+vi.mock("./payroll-db", () => ({
+  payrollDedicatedEnabled: () => {
+    if (mock.invalidCredential) throw Error("private-credential-should-not-leak");
+    return mock.dedicated;
+  },
+  getPayrollPool: () => ({
     connect: async () => ({
       query: async (sql: string) => {
         mock.queries.push(sql);
@@ -27,8 +38,12 @@ vi.mock("@workspace/db", () => ({
       },
       release: () => { mock.released++; },
     }),
-    query: async () => { throw new Error("Unexpected pool query"); },
+  }),
+  setPayrollCompanyScope: async (client: {query: (sql:string)=>Promise<unknown>}, id:number) => {
+    mock.scopes.push(id);
+    await client.query("SELECT set_config('app.payroll_company_id',$1,true)");
   },
+  payrollScopedQuery: async () => { throw Error("UNEXPECTED_PAYROLL_READ"); },
 }));
 
 describe("DEV payroll generation", () => {
@@ -44,6 +59,7 @@ describe("DEV payroll generation", () => {
   beforeEach(() => {
     mock.role = "admin"; mock.companyId = null; mock.exists = true; mock.status = "draft";
     mock.invalid = 0; mock.added = 2; mock.queries = []; mock.released = 0;
+    mock.dedicated = true; mock.invalidCredential = false; mock.sharedConnects = 0; mock.scopes = [];
     delete process.env.PAYROLL_DEV_GENERATE_ENABLED;
   });
   afterEach(() => { delete process.env.PAYROLL_DEV_GENERATE_ENABLED; });
@@ -56,6 +72,23 @@ describe("DEV payroll generation", () => {
   it("rejects finance even with flag", async () => {
     process.env.PAYROLL_DEV_GENERATE_ENABLED = "true"; mock.role = "finance"; mock.companyId = 1;
     expect((await send()).status).toBe(403);
+    expect(mock.queries).toHaveLength(0);
+  });
+  it("rejects generation when the dedicated DEV Payroll role is unavailable, without shared pool fallback", async () => {
+    process.env.PAYROLL_DEV_GENERATE_ENABLED = "true";
+    mock.dedicated = false;
+    expect((await send()).status).toBe(503);
+    expect(mock.sharedConnects).toBe(0);
+    expect(mock.queries).toHaveLength(0);
+    expect(mock.scopes).toHaveLength(0);
+  });
+  it("rejects malformed dedicated DEV credentials without leaking values or touching shared DB", async () => {
+    process.env.PAYROLL_DEV_GENERATE_ENABLED = "true";
+    mock.invalidCredential = true;
+    const response = await send();
+    expect(response.status).toBe(503);
+    expect((await response.text())).not.toContain("private-credential-should-not-leak");
+    expect(mock.sharedConnects).toBe(0);
     expect(mock.queries).toHaveLength(0);
   });
   it("rejects foreign or non-draft run and releases lock", async () => {
@@ -87,5 +120,7 @@ describe("DEV payroll generation", () => {
     expect(sql).not.toMatch(/accounting_entries|cash_advances|salary_payments/);
     expect(mock.queries.at(-1)).toBe("COMMIT");
     expect(mock.released).toBe(1);
+    expect(mock.sharedConnects).toBe(0);
+    expect(mock.scopes).toEqual([1]);
   });
 });
