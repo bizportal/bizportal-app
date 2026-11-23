@@ -321,4 +321,119 @@ router.get("/auth/dev/customer-invoice-attestation", async (
   }
 });
 
+
+/**
+ * CST-DEV only: signed, recent OTP-session consent for a Super Admin who
+ * reviews their OWN company affiliation request. This is not Invoice consent.
+ * A separate purpose/domain prevents replaying an Invoice proof.
+ */
+const COMPANY_SELF_PROOF_DOMAIN="CST_BIZPORTAL_COMPANY_SELF_APPROVAL_DEV_V1\n";
+function companySelfChallenge(raw:unknown) {
+  if(typeof raw!=="string" || raw.length<60 || raw.length>1600 ||
+     !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(raw))return null;
+  try {
+    const [part,sig]=raw.split(".");
+    if(sig.length!==43)return null;
+    const decoded=Buffer.from(part,"base64url").toString("utf8");
+    if(Buffer.from(decoded).toString("base64url")!==part)return null;
+    const v=JSON.parse(decoded) as Record<string,unknown>;
+    const now=Date.now();
+    if(v.v!==1 || v.purpose!=="cst-portal-company-self-approval" ||
+       v.companyId!==1 ||
+       !Number.isSafeInteger(v.requestId) || Number(v.requestId)<1 ||
+       !Number.isSafeInteger(v.portalUserId) || Number(v.portalUserId)<1 ||
+       v.applicantId!==v.portalUserId ||
+       typeof v.portalEmail!=="string" ||
+       v.portalEmail.length<3 || v.portalEmail.length>320 ||
+       v.portalEmail!==v.portalEmail.trim().toLowerCase() ||
+       !v.portalEmail.includes("@") ||
+       typeof v.nonce!=="string" || !/^[a-f0-9]{32}$/.test(v.nonce) ||
+       !Number.isSafeInteger(v.iat) || !Number.isSafeInteger(v.exp) ||
+       Number(v.iat)>now+5000 || Number(v.exp)<=now ||
+       Number(v.exp)>now+90000 || Number(v.exp)-Number(v.iat)!==90000)return null;
+    return {
+      requestId:Number(v.requestId),companyId:1,applicantId:Number(v.applicantId),
+      portalUserId:Number(v.portalUserId),portalEmail:v.portalEmail as string,
+    };
+  }catch{return null;}
+}
+router.get("/auth/dev/customer-company-self-approval", async (
+  request:Request,response:Response,
+):Promise<void>=>{
+  response.setHeader("Cache-Control","no-store");
+  response.setHeader("Referrer-Policy","no-referrer");
+  response.setHeader("X-Content-Type-Options","nosniff");
+  response.setHeader("X-Frame-Options","DENY");
+  response.setHeader("Vary","Cookie");
+  if(!isCustomerInvoiceAttestationDevEnabled() ||
+     process.env.BIZPORTAL_COMPANY_SELF_APPROVAL_DEV!=="true"){
+    response.status(404).json({error:"Not found"});return;
+  }
+  const challenge=typeof request.query.challenge==="string"?request.query.challenge:"";
+  const claims=companySelfChallenge(challenge);
+  if(!claims){response.status(400).json({error:"Invalid affiliation challenge"});return;}
+  try {
+    const session=getProductionSession(request);
+    const actor=session?await getProductionUser(session):null;
+    const now=Date.now();
+    // A signed historical session is insufficient. Re-login with the existing
+    // OTP channel if this independent BizPortal session is older than 5 min.
+    if(!actor || actor.id!==session?.id ||
+       actor.email.trim().toLowerCase()!==session.email ||
+       actor.email.trim().toLowerCase()!==claims.portalEmail ||
+       actor.role!=="super_admin" ||
+       (actor.companyId!==null && Number(actor.companyId)!==1) ||
+       !Number.isSafeInteger(session.issuedAt) ||
+       now-session.issuedAt<0 || now-session.issuedAt>300000 ||
+       !Number.isSafeInteger(session.expiresAt) || session.expiresAt<=now) {
+      response.status(401).json({error:"Fresh signed CST Super Admin session required"});return;
+    }
+    const target=(process.env.BIZPORTAL_CUSTOMER_PORTAL_ORIGIN_DEV??"").trim();
+    let origin:URL;
+    try {origin=new URL(target);}
+    catch {response.status(503).json({error:"Trusted Portal origin unavailable"});return;}
+    if(origin.origin!==target || origin.username || origin.password ||
+       !(origin.protocol==="https:" ||
+         (origin.protocol==="http:" && origin.hostname==="127.0.0.1"))){
+      response.status(503).json({error:"Trusted Portal origin unavailable"});return;
+    }
+    const proofClaims={
+      v:1,purpose:"cst-company-affiliation-self-approval",aud:"CST_CUSTOMER_PORTAL_DEV",
+      actorId:actor.id,email:actor.email.trim().toLowerCase(),
+      companyId:1,requestId:claims.requestId,applicantId:claims.applicantId,
+      portalUserId:claims.portalUserId,
+      challengeDigest:createHash("sha256").update(challenge,"utf8").digest("hex"),
+      nonce:randomBytes(16).toString("hex"),iat:now,exp:now+60000,
+    };
+    const part=Buffer.from(JSON.stringify(proofClaims)).toString("base64url");
+    const signature=sign(null,Buffer.from(COMPANY_SELF_PROOF_DOMAIN+part),getSigningKey())
+      .toString("base64url");
+    const proof=part+"."+signature;
+    const cspNonce=randomBytes(16).toString("base64url");
+    response.setHeader("Content-Security-Policy",
+      "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; "+
+      "script-src 'nonce-"+cspNonce+"'");
+    const message=JSON.stringify({
+      type:"CST_COMPANY_SELF_APPROVAL_BIZPORTAL_V1",challenge,proof,
+    });
+    response.status(200).type("html").send(
+      "<!doctype html><html lang=\"id\"><meta charset=\"utf-8\">"+
+      "<title>Verifikasi Afiliasi CST DEV</title><body>"+
+      "<h1>Persetujuan afiliasi CST</h1>"+
+      "<p>Perusahaan: PT Cahaya Sejati Teknologi (CST, ID 1)</p>"+
+      "<p>Nomor permohonan: "+claims.requestId+"</p>"+
+      "<p>Akun pengaju: "+esc(claims.portalEmail)+"</p>"+
+      "<p>Hanya akun Super Admin ini yang boleh menyetujui afiliasi dirinya sendiri. "+
+      "Persetujuan dibuktikan melalui sesi BizPortal yang baru dan berlaku 60 detik.</p>"+
+      "<button type=\"button\" id=\"approve\">Verifikasi dan setujui satu kali</button>"+
+      "<script nonce=\""+cspNonce+"\">"+
+      "document.getElementById('approve').addEventListener('click',()=>{"+
+      "window.opener?.postMessage("+message+","+JSON.stringify(target)+");"+
+      "window.close();});</script></body></html>"
+    );
+  }catch{
+    response.status(503).json({error:"Company self-approval attestation unavailable"});
+  }
+});
+
 export default router;
