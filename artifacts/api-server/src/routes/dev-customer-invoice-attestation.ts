@@ -357,65 +357,95 @@ function companySelfChallenge(raw:unknown) {
     };
   }catch{return null;}
 }
-router.get("/auth/dev/customer-company-self-approval", async (
-  request:Request,response:Response,
-):Promise<void>=>{
+
+type ConsentEntry={
+  challengeDigest:string;
+  actorId:string;
+  actorEmail:string;
+  sessionIssuedAt:number;
+  expiresAt:number;
+};
+const pendingCompanyConsents=new Map<string,ConsentEntry>();
+function pruneCompanyConsents(now:number){
+  for(const [key,entry] of pendingCompanyConsents)
+    if(entry.expiresAt<=now)pendingCompanyConsents.delete(key);
+}
+function consentKey(value:string){
+  return createHash("sha256").update(value,"utf8").digest("hex");
+}
+function companySelfFeatureEnabled(){
+  return isCustomerInvoiceAttestationDevEnabled() &&
+    process.env.BIZPORTAL_COMPANY_SELF_APPROVAL_DEV==="true";
+}
+async function checkedCompanySelfActor(
+  request:Request,claims:{portalEmail:string},now=Date.now()
+){
+  const session=getProductionSession(request);
+  const actor=session?await getProductionUser(session):null;
+  if(!actor || actor.id!==session?.id ||
+     actor.email.trim().toLowerCase()!==session.email ||
+     actor.email.trim().toLowerCase()!==claims.portalEmail ||
+     actor.role!=="super_admin" ||
+     (actor.companyId!==null&&Number(actor.companyId)!==1) ||
+     !Number.isSafeInteger(session.issuedAt) ||
+     now-session.issuedAt<0||now-session.issuedAt>300000||
+     !Number.isSafeInteger(session.expiresAt)||session.expiresAt<=now)
+    return null;
+  return {actor,session};
+}
+function companySelfTrustedPortalOrigin(){
+  const target=(process.env.BIZPORTAL_CUSTOMER_PORTAL_ORIGIN_DEV??"").trim();
+  let u:URL;
+  try{u=new URL(target);}catch{return null;}
+  if(u.origin!==target||u.username||u.password||
+     !(u.protocol==="https:"||(u.protocol==="http:"&&u.hostname==="127.0.0.1")))
+    return null;
+  return target;
+}
+function setCompanySelfResponseHeaders(response:Response){
   response.setHeader("Cache-Control","no-store");
   response.setHeader("Referrer-Policy","no-referrer");
   response.setHeader("X-Content-Type-Options","nosniff");
   response.setHeader("X-Frame-Options","DENY");
   response.setHeader("Vary","Cookie");
-  if(!isCustomerInvoiceAttestationDevEnabled() ||
-     process.env.BIZPORTAL_COMPANY_SELF_APPROVAL_DEV!=="true"){
+}
+
+router.get("/auth/dev/customer-company-self-approval",async(
+  request:Request,response:Response,
+):Promise<void>=>{
+  setCompanySelfResponseHeaders(response);
+  if(!companySelfFeatureEnabled()){
     response.status(404).json({error:"Not found"});return;
   }
   const challenge=typeof request.query.challenge==="string"?request.query.challenge:"";
   const claims=companySelfChallenge(challenge);
   if(!claims){response.status(400).json({error:"Invalid affiliation challenge"});return;}
-  try {
-    const session=getProductionSession(request);
-    const actor=session?await getProductionUser(session):null;
-    const now=Date.now();
-    // A signed historical session is insufficient. Re-login with the existing
-    // OTP channel if this independent BizPortal session is older than 5 min.
-    if(!actor || actor.id!==session?.id ||
-       actor.email.trim().toLowerCase()!==session.email ||
-       actor.email.trim().toLowerCase()!==claims.portalEmail ||
-       actor.role!=="super_admin" ||
-       (actor.companyId!==null && Number(actor.companyId)!==1) ||
-       !Number.isSafeInteger(session.issuedAt) ||
-       now-session.issuedAt<0 || now-session.issuedAt>300000 ||
-       !Number.isSafeInteger(session.expiresAt) || session.expiresAt<=now) {
+  try{
+    const identity=await checkedCompanySelfActor(request,claims);
+    if(!identity){
       response.status(401).json({error:"Fresh signed CST Super Admin session required"});return;
     }
-    const target=(process.env.BIZPORTAL_CUSTOMER_PORTAL_ORIGIN_DEV??"").trim();
-    let origin:URL;
-    try {origin=new URL(target);}
-    catch {response.status(503).json({error:"Trusted Portal origin unavailable"});return;}
-    if(origin.origin!==target || origin.username || origin.password ||
-       !(origin.protocol==="https:" ||
-         (origin.protocol==="http:" && origin.hostname==="127.0.0.1"))){
+    const target=companySelfTrustedPortalOrigin();
+    if(!target){
       response.status(503).json({error:"Trusted Portal origin unavailable"});return;
     }
-    const proofClaims={
-      v:1,purpose:"cst-company-affiliation-self-approval",aud:"CST_CUSTOMER_PORTAL_DEV",
-      actorId:actor.id,email:actor.email.trim().toLowerCase(),
-      companyId:1,requestId:claims.requestId,applicantId:claims.applicantId,
-      portalUserId:claims.portalUserId,
+    const now=Date.now();
+    pruneCompanyConsents(now);
+    if(pendingCompanyConsents.size>=64){
+      response.status(503).json({error:"Pending approvals full"});return;
+    }
+    const consentToken=randomBytes(32).toString("base64url");
+    pendingCompanyConsents.set(consentKey(consentToken),{
       challengeDigest:createHash("sha256").update(challenge,"utf8").digest("hex"),
-      nonce:randomBytes(16).toString("hex"),iat:now,exp:now+60000,
-    };
-    const part=Buffer.from(JSON.stringify(proofClaims)).toString("base64url");
-    const signature=sign(null,Buffer.from(COMPANY_SELF_PROOF_DOMAIN+part),getSigningKey())
-      .toString("base64url");
-    const proof=part+"."+signature;
+      actorId:identity.actor.id,actorEmail:identity.actor.email.trim().toLowerCase(),
+      sessionIssuedAt:identity.session.issuedAt,expiresAt:now+90000,
+    });
+    // Crucially, GET returns NO financial or affiliation proof. Only the POST
+    // caused by the explicit button click may sign one proof.
     const cspNonce=randomBytes(16).toString("base64url");
     response.setHeader("Content-Security-Policy",
       "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; "+
-      "script-src 'nonce-"+cspNonce+"'");
-    const message=JSON.stringify({
-      type:"CST_COMPANY_SELF_APPROVAL_BIZPORTAL_V1",challenge,proof,
-    });
+      "connect-src 'self'; script-src 'nonce-"+cspNonce+"'");
     response.status(200).type("html").send(
       "<!doctype html><html lang=\"id\"><meta charset=\"utf-8\">"+
       "<title>Verifikasi Afiliasi CST DEV</title><body>"+
@@ -423,14 +453,88 @@ router.get("/auth/dev/customer-company-self-approval", async (
       "<p>Perusahaan: PT Cahaya Sejati Teknologi (CST, ID 1)</p>"+
       "<p>Nomor permohonan: "+claims.requestId+"</p>"+
       "<p>Akun pengaju: "+esc(claims.portalEmail)+"</p>"+
-      "<p>Hanya akun Super Admin ini yang boleh menyetujui afiliasi dirinya sendiri. "+
-      "Persetujuan dibuktikan melalui sesi BizPortal yang baru dan berlaku 60 detik.</p>"+
+      "<p>Persetujuan hanya berlaku untuk permohonan di atas.</p>"+
       "<button type=\"button\" id=\"approve\">Verifikasi dan setujui satu kali</button>"+
+      "<p id=\"status\" role=\"status\"></p>"+
       "<script nonce=\""+cspNonce+"\">"+
-      "document.getElementById('approve').addEventListener('click',()=>{"+
-      "window.opener?.postMessage("+message+","+JSON.stringify(target)+");"+
-      "window.close();});</script></body></html>"
+      "const consentToken="+JSON.stringify(consentToken)+";"+
+      "const challenge="+JSON.stringify(challenge)+";"+
+      "document.getElementById('approve').addEventListener('click',async()=>{"+
+      "const button=document.getElementById('approve');button.disabled=true;"+
+      "try{const r=await fetch('/api/auth/dev/customer-company-self-approval',"+
+      "{method:'POST',credentials:'same-origin',"+
+      "headers:{'Content-Type':'application/json'},body:JSON.stringify({challenge,consentToken})});"+
+      "if(!r.ok)throw Error('Verifikasi gagal');"+
+      "const data=await r.json();"+
+      "if(typeof data.proof!=='string')throw Error('Bukti tidak tersedia');"+
+      "window.opener?.postMessage({type:'CST_COMPANY_SELF_APPROVAL_BIZPORTAL_V1',"+
+      "challenge,proof:data.proof},"+JSON.stringify(target)+");window.close();"+
+      "}catch{document.getElementById('status').textContent='Verifikasi gagal. Buka ulang persetujuan.';}"+
+      "});</script></body></html>"
     );
+  }catch{
+    response.status(503).json({error:"Company self-approval consent unavailable"});
+  }
+});
+
+router.post("/auth/dev/customer-company-self-approval",async(
+  request:Request,response:Response,
+):Promise<void>=>{
+  setCompanySelfResponseHeaders(response);
+  if(!companySelfFeatureEnabled()){
+    response.status(404).json({error:"Not found"});return;
+  }
+  // Never accept cross-site form submits, even if a browser happens to attach
+  // a signed session. Validate an exact same-origin browser POST AND one-time
+  // server nonce generated by the preceding authenticated GET.
+  const host=request.get("host")??"";
+  const proto=String(request.headers["x-forwarded-proto"]??request.protocol).split(",")[0].trim();
+  const expectedOrigin=(proto==="https"||proto==="http")&&host?
+    proto+"://"+host:null;
+  if(request.headers["sec-fetch-site"]!=="same-origin" ||
+     !expectedOrigin || request.headers.origin!==expectedOrigin ||
+     !String(request.headers["content-type"]??"").startsWith("application/json")){
+    response.status(403).json({error:"Invalid consent origin"});return;
+  }
+  const challenge=typeof request.body?.challenge==="string"?request.body.challenge:"";
+  const consentToken=typeof request.body?.consentToken==="string"?request.body.consentToken:"";
+  const claims=companySelfChallenge(challenge);
+  if(!claims || !/^[A-Za-z0-9_-]{43}$/.test(consentToken)){
+    response.status(400).json({error:"Invalid consent challenge"});return;
+  }
+  const now=Date.now();
+  pruneCompanyConsents(now);
+  const key=consentKey(consentToken);
+  const pending=pendingCompanyConsents.get(key);
+  if(!pending||pending.expiresAt<=now||
+     pending.challengeDigest!==createHash("sha256").update(challenge,"utf8").digest("hex")){
+    response.status(403).json({error:"Consent expired or already used"});return;
+  }
+  // Consume BEFORE any await/sign operation: replay and parallel double-click
+  // can never obtain another consent proof from the same pending nonce.
+  pendingCompanyConsents.delete(key);
+  try{
+    const identity=await checkedCompanySelfActor(request,claims,now);
+    if(!identity || identity.actor.id!==pending.actorId ||
+       identity.actor.email.trim().toLowerCase()!==pending.actorEmail ||
+       identity.session.issuedAt!==pending.sessionIssuedAt){
+      response.status(401).json({error:"Fresh signed CST Super Admin session required"});return;
+    }
+    const target=companySelfTrustedPortalOrigin();
+    if(!target){
+      response.status(503).json({error:"Trusted Portal origin unavailable"});return;
+    }
+    const proofClaims={
+      v:1,purpose:"cst-company-affiliation-self-approval",aud:"CST_CUSTOMER_PORTAL_DEV",
+      actorId:identity.actor.id,email:identity.actor.email.trim().toLowerCase(),
+      companyId:1,requestId:claims.requestId,applicantId:claims.applicantId,
+      portalUserId:claims.portalUserId,challengeDigest:pending.challengeDigest,
+      nonce:randomBytes(16).toString("hex"),iat:now,exp:now+60000,
+    };
+    const part=Buffer.from(JSON.stringify(proofClaims)).toString("base64url");
+    const signature=sign(null,Buffer.from(COMPANY_SELF_PROOF_DOMAIN+part),getSigningKey())
+      .toString("base64url");
+    response.status(200).json({proof:part+"."+signature,expiresInSeconds:60});
   }catch{
     response.status(503).json({error:"Company self-approval attestation unavailable"});
   }
