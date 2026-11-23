@@ -551,6 +551,11 @@ function EmailLoginSection() {
         </form>
       ) : !otpSent ? (
         <>
+          {requiresSignedOtp && !signedOtpReady && (
+            <p className="text-xs leading-5 text-red-400 text-center">
+              Layanan signed OTP DEV belum siap. Login legacy dinonaktifkan sampai konfigurasi autentikasi pulih.
+            </p>
+          )}
           <p className="text-xs leading-5 text-slate-400 text-center">
             Kode sekali pakai akan dikirim ke email admin dan berlaku selama 5 menit.
           </p>
