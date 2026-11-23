@@ -55,6 +55,8 @@ export function SupabaseAuthProvider({ children }: { children: React.ReactNode }
   const [apiReadinessError, setApiReadinessError] = useState<string | null>(null);
   const [requiresSignedOtp, setRequiresSignedOtp] = useState(false);
   const [signedOtpReady, setSignedOtpReady] = useState(true);
+  const [authPolicyRetryKey, setAuthPolicyRetryKey] = useState(0);
+  const authPolicyRetryTimerRef = useRef<number | undefined>(undefined);
   const [readinessRetryKey, setReadinessRetryKey] = useState(0);
   const apiHasBeenReadyRef = useRef(false);
 
@@ -205,42 +207,58 @@ export function SupabaseAuthProvider({ children }: { children: React.ReactNode }
     let cancelled = false;
 
     const loadUser = async () => {
-      if (IS_DEV) {
-        try {
-          const response = await fetch("/api/auth/dev-auth-policy", {
+      try {
+        const response = await fetch("/api/auth/dev-auth-policy", {
             credentials: "same-origin",
-            cache: "no-store",
-          });
-          if (!response.ok) throw new Error("DEV auth policy unavailable");
-          const policy = await response.json() as {
-            signedOtpRequired?: unknown;
-            signedOtpReady?: unknown;
-          };
-          if (typeof policy.signedOtpRequired !== "boolean" || typeof policy.signedOtpReady !== "boolean") {
-            throw new Error("DEV auth policy malformed");
-          }
-          if (cancelled) return;
-          setRequiresSignedOtp(policy.signedOtpRequired);
-          setSignedOtpReady(policy.signedOtpReady);
-          if (policy.signedOtpRequired) {
-            writeCache(null);
-            setUser(null);
-            await fetchUser();
-            return;
-          }
-          if (await createDevSession()) {
-            if (!cancelled) setIsLoading(false);
-            return;
-          }
-        } catch {
-          if (cancelled) return;
+          cache: "no-store",
+        });
+        if (!response.ok) throw new Error("DEV auth policy unavailable");
+        const policy = await response.json() as {
+          signedOtpRequired?: unknown;
+          signedOtpReady?: unknown;
+        };
+        if (typeof policy.signedOtpRequired !== "boolean" || typeof policy.signedOtpReady !== "boolean") {
+          throw new Error("DEV auth policy malformed");
+        }
+        if (cancelled) return;
+        if (authPolicyRetryTimerRef.current !== undefined) {
+          window.clearTimeout(authPolicyRetryTimerRef.current);
+          authPolicyRetryTimerRef.current = undefined;
+        }
+        setRequiresSignedOtp(policy.signedOtpRequired);
+        setSignedOtpReady(policy.signedOtpReady);
+        if (policy.signedOtpRequired) {
+          writeCache(null);
+          setUser(null);
+          await fetchUser();
+          return;
+        }
+        if (IS_DEV && await createDevSession()) {
+          if (!cancelled) setIsLoading(false);
+          return;
+        }
+      } catch {
+        if (cancelled) return;
+        if (IS_DEV) {
+          // Do not create/trust legacy identity while the DEV policy is unknown.
           setRequiresSignedOtp(true);
           setSignedOtpReady(false);
           writeCache(null);
           setUser(null);
           setIsLoading(false);
+          if (authPolicyRetryTimerRef.current !== undefined) {
+            window.clearTimeout(authPolicyRetryTimerRef.current);
+          }
+          authPolicyRetryTimerRef.current = window.setTimeout(() => {
+            authPolicyRetryTimerRef.current = undefined;
+            setAuthPolicyRetryKey((key) => key + 1);
+          }, 2_000);
           return;
         }
+        // In production the policy always reports signedOtpRequired=false.
+        // If its optional read is unavailable, preserve the established auth path.
+        await fetchUser();
+        return;
       }
       await fetchUser();
     };
@@ -248,8 +266,12 @@ export function SupabaseAuthProvider({ children }: { children: React.ReactNode }
     void loadUser();
     return () => {
       cancelled = true;
+      if (authPolicyRetryTimerRef.current !== undefined) {
+        window.clearTimeout(authPolicyRetryTimerRef.current);
+        authPolicyRetryTimerRef.current = undefined;
+      }
     };
-  }, [createDevSession, fetchUser]);
+  }, [authPolicyRetryKey, createDevSession, fetchUser]);
 
   const exchangeToken = useCallback(async (access_token: string): Promise<{ error: string | null }> => {
     try {
