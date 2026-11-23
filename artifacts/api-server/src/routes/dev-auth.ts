@@ -475,9 +475,10 @@ export function createDevAuthRouter(): Router {
   });
 
   router.get("/auth/dev-auth-policy", (_request, response) => {
-    if (!isDevelopmentEnvironment()) return response.status(404).json({ error: "Not found" });
     response.setHeader("Cache-Control", "no-store");
-    const signedOtpRequired = isSignedOtpDevRequired();
+    // This route is also queried by production-built frontends deployed to a
+    // DEV API. Production must explicitly report that DEV-only OTP is not required.
+    const signedOtpRequired = isDevelopmentEnvironment() && isSignedOtpDevRequired();
     return response.json({
       signedOtpRequired,
       signedOtpReady: !signedOtpRequired || isSignedOtpDevEnabled(),
