@@ -238,7 +238,7 @@ export function SupabaseAuthProvider({ children }: { children: React.ReactNode }
           setSignedOtpReady(false);
           writeCache(null);
           setUser(null);
-          await fetchUser();
+          setIsLoading(false);
           return;
         }
       }
