@@ -67,6 +67,7 @@ describe("existing signed OTP BizPortal Super Admin -> Customer Invoice attestat
   beforeAll(async()=>{
     const app=express();
     app.use((req,_res,next)=>{(req as any).log={error:vi.fn()};next();});
+    app.use(express.json());
     app.use("/api",route);
     app.get("/api/portal/dev/invoice-owner-handoff/:ticket/review",
       (_req,res)=>res.json(reviewResult));
@@ -307,7 +308,26 @@ describe("existing signed OTP BizPortal Super Admin -> Customer Invoice attestat
       encodeURIComponent(challenge),{headers:signed?{Cookie:"bizportal_supabase_session=SIGNED_QA"}:{}});
     return {res,html:await res.text()};
   };
-  it("self-affiliation signs a separate short-lived consent proof, never an Invoice proof",async()=>{
+  const extractConsent=(html:string)=>{
+    const found=html.match(/const consentToken="([A-Za-z0-9_-]{43})"/);
+    expect(found).not.toBeNull();
+    return found![1];
+  };
+  const consentPost=async(challenge:string,consentToken:string,options:{
+    origin?:string;site?:string;cookie?:string;
+  }={})=>{
+    return fetch(base+"/api/auth/dev/customer-company-self-approval",{
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json",
+        "Sec-Fetch-Site":options.site??"same-origin",
+        Origin:options.origin??base,
+        Cookie:options.cookie??"bizportal_supabase_session=SIGNED_QA",
+      },
+      body:JSON.stringify({challenge,consentToken}),
+    });
+  };
+  it("GET shows consent only, POST issues one purpose-separated proof after click",async()=>{
     const challenge=selfChallenge();
     const {res,html}=await selfGet(challenge);
     expect(res.status).toBe(200);
@@ -317,22 +337,42 @@ describe("existing signed OTP BizPortal Super Admin -> Customer Invoice attestat
     expect(html).toContain("Nomor permohonan: 17");
     expect(html).toContain("Verifikasi dan setujui satu kali");
     expect(html).toContain("addEventListener('click'");
-    expect(html).not.toContain("window.opener?.postMessage("+JSON.stringify({foo:"auto"}));
-    expect(html).toContain("CST_COMPANY_SELF_APPROVAL_BIZPORTAL_V1");
-    const found=html.match(/"proof":"([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)"/);
-    expect(found).not.toBeNull();
-    const [part,sig]=found![1].split(".");
+    expect(html).not.toContain('"proof":');
+    expect(html).not.toContain("CST_COMPANY_SELF_APPROVAL_BIZPORTAL_V1");
+    expect(html).not.toContain(process.env.SESSION_SECRET);
+    const consentToken=extractConsent(html);
+    const post=await consentPost(challenge,consentToken);
+    expect(post.status).toBe(200);
+    const {proof,expiresInSeconds}=await post.json() as {proof:string;expiresInSeconds:number};
+    expect(expiresInSeconds).toBe(60);
+    const [part,sig]=proof.split(".");
     const claims=JSON.parse(Buffer.from(part,"base64url").toString());
     expect(claims).toMatchObject({
       purpose:"cst-company-affiliation-self-approval",aud:"CST_CUSTOMER_PORTAL_DEV",
       requestId:17,companyId:1,applicantId:9,portalUserId:9,
       actorId:id,email,challengeDigest:createHash("sha256").update(challenge).digest("hex"),
     });
-    const pub=createPublicKey({key:Buffer.from(getCustomerInvoiceAttestationPublicKeyDev(),"base64"),format:"der",type:"spki"});
+    const pub=createPublicKey({
+      key:Buffer.from(getCustomerInvoiceAttestationPublicKeyDev(),"base64"),
+      format:"der",type:"spki",
+    });
     expect(verify(null,Buffer.from("CST_BIZPORTAL_COMPANY_SELF_APPROVAL_DEV_V1\n"+part),
       pub,Buffer.from(sig,"base64url"))).toBe(true);
-    expect(verify(null,Buffer.from(PROOF_DOMAIN+part),pub,Buffer.from(sig,"base64url"))).toBe(false);
-    expect(html).not.toContain(process.env.SESSION_SECRET);
+    expect(verify(null,Buffer.from(PROOF_DOMAIN+part),
+      pub,Buffer.from(sig,"base64url"))).toBe(false);
+    // The same one-time nonce is not reusable.
+    expect((await consentPost(challenge,consentToken)).status).toBe(403);
+  });
+  it("POST rejects cross-origin, cross-site, tampered or sessionless consent",async()=>{
+    const challenge=selfChallenge();
+    const consentToken=extractConsent((await selfGet(challenge)).html);
+    expect((await consentPost(challenge,consentToken,{site:"cross-site"})).status).toBe(403);
+    expect((await consentPost(challenge,consentToken,{origin:"https://attacker.invalid"})).status).toBe(403);
+    expect((await consentPost(challenge,consentToken,{cookie:""})).status).toBe(401);
+    // A denied consent consumes its nonce; a fresh GET is required.
+    expect((await consentPost(challenge,consentToken)).status).toBe(403);
+    const second=extractConsent((await selfGet(challenge)).html);
+    expect((await consentPost(selfChallenge({requestId:18}),second)).status).toBe(403);
   });
   it("self-affiliation requires fresh signed Super Admin session for the same applicant email",async()=>{
     let result=await selfGet(selfChallenge(),false);
