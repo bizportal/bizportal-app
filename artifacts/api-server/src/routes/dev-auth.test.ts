@@ -242,6 +242,43 @@ describe("development login bridge", () => {
     expect(repeated.headers.location).toBe("/");
   });
 
+
+  it("disables legacy DEV auto-login when signed OTP is enabled", async () => {
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
+
+    const loginResponse = await requestApi("POST", "/api/auth/dev-login", {
+      email: allowedEmail,
+    });
+
+    expect(loginResponse.status).toBe(404);
+    expect(JSON.parse(loginResponse.body)).toEqual({
+      error: "Legacy DEV login is disabled; use verified email OTP.",
+    });
+    expect(loginResponse.headers["set-cookie"]).toBeUndefined();
+  });
+
+  it("never accepts a legacy DEV cookie as a signed OTP session", async () => {
+    const legacyLogin = await requestApi("POST", "/api/auth/dev-login", {
+      email: allowedEmail,
+    });
+    expect(legacyLogin.status).toBe(200);
+    const legacyCookie = legacyLogin.headers["set-cookie"]?.[0]?.split(";", 1)[0];
+    expect(legacyCookie).toMatch(/^bizportal_dev_session=/);
+
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
+    const authUser = await requestApi("GET", "/api/auth/user", undefined, legacyCookie);
+    expect(authUser.status).toBe(401);
+    expect(JSON.parse(authUser.body)).toEqual({
+      error: "Signed email OTP session required",
+    });
+
+    const profile = await requestApi("GET", "/api/users/me", undefined, legacyCookie);
+    expect(profile.status).toBe(401);
+    expect(JSON.parse(profile.body)).toEqual({
+      error: "Signed email OTP session required",
+    });
+  });
+
   it("rejects external redirect targets during logout", async () => {
     const response = await requestApi("GET", "/api/logout?redirect=%2F%2Fevil.example");
     expect(response.status).toBe(302);
