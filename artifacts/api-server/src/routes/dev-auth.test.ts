@@ -34,6 +34,7 @@ const originalEnvironment = {
   DEV_LOGIN_EMAILS: process.env.DEV_LOGIN_EMAILS,
   SESSION_SECRET: process.env.SESSION_SECRET,
   BIZPORTAL_SESSION_SECRET: process.env.BIZPORTAL_SESSION_SECRET,
+  BIZPORTAL_SIGNED_OTP_ENABLED_DEV: process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV,
   SUPABASE_DATABASE_URL: process.env.SUPABASE_DATABASE_URL,
   DATABASE_URL: process.env.DATABASE_URL,
 };
@@ -145,6 +146,7 @@ beforeEach(() => {
   process.env.BIZPORTAL_API_ORIGIN_DEV = "https://development.example.test";
   process.env.DEV_LOGIN_EMAILS = allowedEmail;
   process.env.SESSION_SECRET = sessionSecret;
+  delete process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV;
 });
 
 afterEach(() => {
