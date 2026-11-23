@@ -366,8 +366,11 @@ function WaLoginSection() {
 }
 
 function EmailLoginSection() {
-  const { signInWithEmail, sendEmailOtp, verifyEmailOtp, devLogin } = useSupabaseAuth();
-  const [mode, setMode] = React.useState<"password" | "otp">("password");
+  const { signInWithEmail, sendEmailOtp, verifyEmailOtp, devLogin, requiresSignedOtp, signedOtpReady } = useSupabaseAuth();
+  const [mode, setMode] = React.useState<"password" | "otp">(requiresSignedOtp ? "otp" : "password");
+  React.useEffect(() => {
+    if (requiresSignedOtp) setMode("otp");
+  }, [requiresSignedOtp]);
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [devUsers, setDevUsers] = React.useState<DevUser[] | null>(null);
@@ -413,6 +416,11 @@ function EmailLoginSection() {
   const handlePasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email.trim() || loading) return;
+    if (requiresSignedOtp) {
+      setMode("otp");
+      setError("Login DEV ini wajib menggunakan OTP Email.");
+      return;
+    }
     setLoading(true);
     setError(null);
     let availableDevUsers = devUsers;
@@ -435,6 +443,7 @@ function EmailLoginSection() {
       email,
       password,
       devEmails: availableDevUsers?.map((user) => user.email) ?? [],
+      signedOtpRequired: requiresSignedOtp,
     });
     const result = loginMode === "dev"
       ? await devLogin(email)
@@ -484,6 +493,7 @@ function EmailLoginSection() {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex rounded-lg bg-slate-800/80 p-1 gap-1">
+        {!requiresSignedOtp && (
         <button
           type="button"
           onClick={() => { setMode("password"); setOtpSent(false); setError(null); }}
@@ -491,6 +501,7 @@ function EmailLoginSection() {
         >
           Password
         </button>
+        )}
         <button
           type="button"
           onClick={() => { setMode("otp"); setError(null); }}
@@ -547,7 +558,7 @@ function EmailLoginSection() {
           <button
             type="button"
             onClick={handleSendOtp}
-            disabled={loading || !email.trim()}
+            disabled={loading || !email.trim() || (requiresSignedOtp && !signedOtpReady)}
             className="rounded-lg bg-indigo-600 px-6 py-2.5 text-sm font-medium text-white shadow hover:bg-indigo-500 active:scale-95 transition-all disabled:opacity-50"
           >
             {loading ? "Mengirim..." : "Kirim OTP ke Email"}
@@ -598,6 +609,7 @@ function EmailLoginSection() {
 }
 
 function LoginScreen() {
+  const { requiresSignedOtp } = useSupabaseAuth();
   const [loginMode, setLoginMode] = React.useState<"email" | "wa">("email");
 
   return (
@@ -634,7 +646,7 @@ function LoginScreen() {
         {loginMode === "email" ? <EmailLoginSection /> : <WaLoginSection />}
       </div>
 
-      {IS_DEV && (
+      {IS_DEV && !requiresSignedOtp && (
         <div className="w-72">
           <DevLoginSection />
         </div>
