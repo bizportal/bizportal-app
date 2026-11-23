@@ -208,15 +208,27 @@ export function SupabaseAuthProvider({ children }: { children: React.ReactNode }
 
     const loadUser = async () => {
       try {
-        const response = await fetch("/api/auth/dev-auth-policy", {
-            credentials: "same-origin",
-          cache: "no-store",
-        });
-        if (!response.ok) throw new Error("DEV auth policy unavailable");
-        const policy = await response.json() as {
+        const policyController = new AbortController();
+        const policyTimeout = window.setTimeout(() => policyController.abort(), 5_000);
+        let policy: {
           signedOtpRequired?: unknown;
           signedOtpReady?: unknown;
         };
+        try {
+          const response = await fetch("/api/auth/dev-auth-policy", {
+            credentials: "same-origin",
+            cache: "no-store",
+            signal: policyController.signal,
+          });
+          if (!response.ok) throw new Error("DEV auth policy unavailable");
+          policy = await response.json() as {
+            signedOtpRequired?: unknown;
+            signedOtpReady?: unknown;
+          };
+        } finally {
+          // Covers both the network request and reading the response body.
+          window.clearTimeout(policyTimeout);
+        }
         if (typeof policy.signedOtpRequired !== "boolean" || typeof policy.signedOtpReady !== "boolean") {
           throw new Error("DEV auth policy malformed");
         }
