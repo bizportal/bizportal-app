@@ -245,6 +245,16 @@ describe("development login bridge", () => {
   });
 
 
+  it("keeps signed OTP policy disabled for production API deployments", async () => {
+    process.env.APP_ENV = "production";
+    process.env.NODE_ENV = "production";
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
+    const response = await requestApi("GET", "/api/auth/dev-auth-policy");
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ signedOtpRequired: false, signedOtpReady: true });
+    expect(response.headers["cache-control"]).toBe("no-store");
+  });
+
   it("publishes signed OTP policy without exposing credentials", async () => {
     process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
     const response = await requestApi("GET", "/api/auth/dev-auth-policy");
