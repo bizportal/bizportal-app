@@ -22,6 +22,7 @@ const KEYS=[
   "BIZPORTAL_CUSTOMER_INVOICE_ATTEST_DEV","BIZPORTAL_CUSTOMER_PORTAL_ORIGIN_DEV",
   "BIZPORTAL_CUSTOMER_INVOICE_HANDOFF_DEV",
   "BIZPORTAL_CUSTOMER_INVOICE_SIGNED_REVIEW_SNAPSHOT_DEV",
+  "BIZPORTAL_COMPANY_SELF_APPROVAL_DEV",
 ];
 const originals=Object.fromEntries(KEYS.map(k=>[k,process.env[k]]));
 const email="qa-bizportal-super@example.invalid", id="qa-signed-bizportal-actor";
@@ -82,6 +83,7 @@ describe("existing signed OTP BizPortal Super Admin -> Customer Invoice attestat
     process.env.SESSION_SECRET="qa-original-bizportal-session-secret-32-plus-character-string";
     delete process.env.BIZPORTAL_SESSION_SECRET;
     process.env.BIZPORTAL_CUSTOMER_INVOICE_ATTEST_DEV="true";
+    process.env.BIZPORTAL_COMPANY_SELF_APPROVAL_DEV="true";
     process.env.BIZPORTAL_CUSTOMER_PORTAL_ORIGIN_DEV="https://portal-qa.example.invalid";
     m.signedAuthEnabled.mockReturnValue(true);
     m.getProductionSession.mockImplementation(req=>
@@ -291,4 +293,78 @@ describe("existing signed OTP BizPortal Super Admin -> Customer Invoice attestat
     const r=await get(issuedChallenge(),{accept:"application/json"});
     expect(r.res.status).toBe(404);
   });
+  const selfChallenge=(changes:Record<string,unknown>={})=>{
+    const now=Date.now();
+    const c={
+      v:1,purpose:"cst-portal-company-self-approval",requestId:17,companyId:1,
+      applicantId:9,portalUserId:9,portalEmail:email,
+      iat:now,exp:now+90000,nonce:"b".repeat(32),...changes,
+    };
+    return Buffer.from(JSON.stringify(c)).toString("base64url")+"."+"a".repeat(43);
+  };
+  const selfGet=async(challenge:string,signed=true)=>{
+    const res=await fetch(base+"/api/auth/dev/customer-company-self-approval?challenge="+
+      encodeURIComponent(challenge),{headers:signed?{Cookie:"bizportal_supabase_session=SIGNED_QA"}:{}});
+    return {res,html:await res.text()};
+  };
+  it("self-affiliation signs a separate short-lived consent proof, never an Invoice proof",async()=>{
+    const challenge=selfChallenge();
+    const {res,html}=await selfGet(challenge);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
+    expect(html).toContain("Persetujuan afiliasi CST");
+    expect(html).toContain("Nomor permohonan: 17");
+    expect(html).toContain("Verifikasi dan setujui satu kali");
+    expect(html).toContain("addEventListener('click'");
+    expect(html).not.toContain("window.opener?.postMessage("+JSON.stringify({foo:"auto"}));
+    expect(html).toContain("CST_COMPANY_SELF_APPROVAL_BIZPORTAL_V1");
+    const found=html.match(/"proof":"([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)"/);
+    expect(found).not.toBeNull();
+    const [part,sig]=found![1].split(".");
+    const claims=JSON.parse(Buffer.from(part,"base64url").toString());
+    expect(claims).toMatchObject({
+      purpose:"cst-company-affiliation-self-approval",aud:"CST_CUSTOMER_PORTAL_DEV",
+      requestId:17,companyId:1,applicantId:9,portalUserId:9,
+      actorId:id,email,challengeDigest:createHash("sha256").update(challenge).digest("hex"),
+    });
+    const pub=createPublicKey({key:Buffer.from(getCustomerInvoiceAttestationPublicKeyDev(),"base64"),format:"der",type:"spki"});
+    expect(verify(null,Buffer.from("CST_BIZPORTAL_COMPANY_SELF_APPROVAL_DEV_V1\n"+part),
+      pub,Buffer.from(sig,"base64url"))).toBe(true);
+    expect(verify(null,Buffer.from(PROOF_DOMAIN+part),pub,Buffer.from(sig,"base64url"))).toBe(false);
+    expect(html).not.toContain(process.env.SESSION_SECRET);
+  });
+  it("self-affiliation requires fresh signed Super Admin session for the same applicant email",async()=>{
+    let result=await selfGet(selfChallenge(),false);
+    expect(result.res.status).toBe(401);
+    m.getProductionSession.mockReturnValueOnce({
+      id,email,issuedAt:Date.now()-301000,expiresAt:Date.now()+20000,
+    });
+    result=await selfGet(selfChallenge());
+    expect(result.res.status).toBe(401);
+    m.getProductionUser.mockResolvedValueOnce({id,email,role:"admin",companyId:1});
+    result=await selfGet(selfChallenge());
+    expect(result.res.status).toBe(401);
+    m.getProductionUser.mockResolvedValueOnce({id,email,role:"super_admin",companyId:3});
+    result=await selfGet(selfChallenge());
+    expect(result.res.status).toBe(401);
+    result=await selfGet(selfChallenge({portalEmail:"another@example.invalid"}));
+    expect(result.res.status).toBe(401);
+  });
+  it("self-affiliation rejects malformed requests and remains disabled on PROD",async()=>{
+    let r=await selfGet(selfChallenge({companyId:3}));
+    expect(r.res.status).toBe(400);
+    r=await selfGet(selfChallenge({applicantId:999}));
+    expect(r.res.status).toBe(400);
+    r=await selfGet(selfChallenge({exp:Date.now()-1}));
+    expect(r.res.status).toBe(400);
+    delete process.env.BIZPORTAL_COMPANY_SELF_APPROVAL_DEV;
+    r=await selfGet(selfChallenge());
+    expect(r.res.status).toBe(404);
+    process.env.BIZPORTAL_COMPANY_SELF_APPROVAL_DEV="true";
+    process.env.APP_ENV="production";
+    r=await selfGet(selfChallenge());
+    expect(r.res.status).toBe(404);
+  });
+
 });
