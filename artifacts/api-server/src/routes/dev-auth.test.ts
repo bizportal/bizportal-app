@@ -245,6 +245,27 @@ describe("development login bridge", () => {
   });
 
 
+  it("publishes signed OTP policy without exposing credentials", async () => {
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
+    const response = await requestApi("GET", "/api/auth/dev-auth-policy");
+    expect(response.status).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(JSON.parse(response.body)).toEqual({ signedOtpRequired: true, signedOtpReady: true });
+  });
+
+  it("fails closed when signed OTP is required but its explicit secret is missing", async () => {
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
+    delete process.env.SESSION_SECRET;
+    delete process.env.BIZPORTAL_SESSION_SECRET;
+    const policy = await requestApi("GET", "/api/auth/dev-auth-policy");
+    expect(JSON.parse(policy.body)).toEqual({ signedOtpRequired: true, signedOtpReady: false });
+    const login = await requestApi("POST", "/api/auth/dev-login", { email: allowedEmail });
+    expect(login.status).toBe(404);
+    expect(login.headers["set-cookie"]).toBeUndefined();
+    const user = await requestApi("GET", "/api/auth/user");
+    expect(user.status).toBe(503);
+  });
+
   it("disables legacy DEV auto-login when signed OTP is enabled", async () => {
     process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
 
