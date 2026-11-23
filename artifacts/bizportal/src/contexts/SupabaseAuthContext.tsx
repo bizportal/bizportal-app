@@ -112,7 +112,7 @@ export function SupabaseAuthProvider({ children }: { children: React.ReactNode }
           );
           const res = await fetch("/api/health/ready", {
             credentials: "same-origin",
-            cache: "no-store",
+          cache: "no-store",
             signal: controller.signal,
           });
           const data = await res.json().catch(() => null) as { ready?: boolean } | null;
