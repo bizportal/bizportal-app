@@ -11,6 +11,8 @@ interface AuthContextValue {
   isApiAvailable: boolean;
   isApiReady: boolean;
   apiReadinessError: string | null;
+  requiresSignedOtp: boolean;
+  signedOtpReady: boolean;
   retryApiReadiness: () => void;
   signInWithGoogle: () => void;
   signInWithEmail: (email: string, password: string) => Promise<{ error: string | null }>;
@@ -51,6 +53,8 @@ export function SupabaseAuthProvider({ children }: { children: React.ReactNode }
   const [isApiAvailable, setIsApiAvailable] = useState(!IS_DEV);
   const [isApiReady, setIsApiReady] = useState(!IS_DEV);
   const [apiReadinessError, setApiReadinessError] = useState<string | null>(null);
+  const [requiresSignedOtp, setRequiresSignedOtp] = useState(false);
+  const [signedOtpReady, setSignedOtpReady] = useState(true);
   const [readinessRetryKey, setReadinessRetryKey] = useState(0);
   const apiHasBeenReadyRef = useRef(false);
 
@@ -201,10 +205,42 @@ export function SupabaseAuthProvider({ children }: { children: React.ReactNode }
     let cancelled = false;
 
     const loadUser = async () => {
-      // Development uses the configured admin session automatically.
-      if (IS_DEV && await createDevSession()) {
-        if (!cancelled) setIsLoading(false);
-        return;
+      if (IS_DEV) {
+        try {
+          const response = await fetch("/api/auth/dev-auth-policy", {
+            credentials: "same-origin",
+            cache: "no-store",
+          });
+          if (!response.ok) throw new Error("DEV auth policy unavailable");
+          const policy = await response.json() as {
+            signedOtpRequired?: unknown;
+            signedOtpReady?: unknown;
+          };
+          if (typeof policy.signedOtpRequired !== "boolean" || typeof policy.signedOtpReady !== "boolean") {
+            throw new Error("DEV auth policy malformed");
+          }
+          if (cancelled) return;
+          setRequiresSignedOtp(policy.signedOtpRequired);
+          setSignedOtpReady(policy.signedOtpReady);
+          if (policy.signedOtpRequired) {
+            writeCache(null);
+            setUser(null);
+            await fetchUser();
+            return;
+          }
+          if (await createDevSession()) {
+            if (!cancelled) setIsLoading(false);
+            return;
+          }
+        } catch {
+          if (cancelled) return;
+          setRequiresSignedOtp(true);
+          setSignedOtpReady(false);
+          writeCache(null);
+          setUser(null);
+          await fetchUser();
+          return;
+        }
       }
       await fetchUser();
     };
@@ -408,6 +444,8 @@ export function SupabaseAuthProvider({ children }: { children: React.ReactNode }
     isApiAvailable,
     isApiReady,
     apiReadinessError,
+    requiresSignedOtp,
+    signedOtpReady,
     retryApiReadiness,
     signInWithGoogle,
     signInWithEmail,
