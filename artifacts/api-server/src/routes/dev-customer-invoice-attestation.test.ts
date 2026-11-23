@@ -87,9 +87,12 @@ describe("existing signed OTP BizPortal Super Admin -> Customer Invoice attestat
     process.env.BIZPORTAL_COMPANY_SELF_APPROVAL_DEV="true";
     process.env.BIZPORTAL_CUSTOMER_PORTAL_ORIGIN_DEV="https://portal-qa.example.invalid";
     m.signedAuthEnabled.mockReturnValue(true);
+    // Mirror a real signed cookie: issuedAt is immutable across HTTP requests.
+    const signedIssuedAt=Date.now()-1000;
+    const signedExpiresAt=Date.now()+10_000;
     m.getProductionSession.mockImplementation(req=>
       req.headers.cookie==="bizportal_supabase_session=SIGNED_QA"
-        ? {id,email,issuedAt:Date.now()-1000,expiresAt:Date.now()+10_000}
+        ? {id,email,issuedAt:signedIssuedAt,expiresAt:signedExpiresAt}
         : null);
     m.getProductionUser.mockResolvedValue({id,email,role:"super_admin",companyId:null});
   });
