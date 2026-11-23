@@ -338,7 +338,8 @@ describe("existing signed OTP BizPortal Super Admin -> Customer Invoice attestat
     expect(html).toContain("Verifikasi dan setujui satu kali");
     expect(html).toContain("addEventListener('click'");
     expect(html).not.toContain('"proof":');
-    expect(html).not.toContain("CST_COMPANY_SELF_APPROVAL_BIZPORTAL_V1");
+    // The message TYPE is static client code; signed proof itself is absent on GET.
+    expect(html).not.toMatch(/"proof":"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"/);
     expect(html).not.toContain(process.env.SESSION_SECRET);
     const consentToken=extractConsent(html);
     const post=await consentPost(challenge,consentToken);
