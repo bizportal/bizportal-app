@@ -13,6 +13,7 @@ import businessDashboardRouter from "./business-dashboard";
 import localProductionAuthRouter from "./local-production-auth";
 import devCustomerInvoiceAttestationRouter from "./dev-customer-invoice-attestation";
 import issue238QaOwnerOtpRouter from "./dev-issue238-qa-owner-otp";
+import issue238ConsentUiRouter from "./dev-issue238-qa-consent-ui";
 import salesCoreRouter from "./sales-core";
 import adminRealtimeRouter from "./admin-realtime";
 import driverGeofenceRouter from "./driver-geofence";
@@ -48,6 +49,7 @@ router.use(createDevAuthRouter());
 router.use(devCustomerInvoiceAttestationRouter);
 // QA #238: purpose-separated Owner OTP consent; disabled by default.
 router.use(issue238QaOwnerOtpRouter);
+router.use(issue238ConsentUiRouter);
 
 // Production auth is local to this deployment and is mounted before the
 // remaining API-owned routes.

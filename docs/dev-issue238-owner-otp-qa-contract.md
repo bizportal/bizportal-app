@@ -9,6 +9,7 @@ issue or verify an OTP itself; no second user login or second signing secret is 
   AND existing signed OTP enabled: otherwise endpoints return 404.
 - `BIZPORTAL_ISSUE238_OWNER_ORIGIN_DEV=https://dev-bizportal.cstlogistic.co.id`
   required for same-origin POST. It is not enabled automatically.
+- `GET /api/auth/dev/issue238-qa/consent`: a real Owner-only web page with a test selector and explicit consent button. It obtains and signs a short-lived QA claim, but **does not send the proof to the VPS runner or execute PostgreSQL**. Always displays this limitation.
 - `GET /api/auth/dev/issue238-qa/challenge?test=<allowlisted-test>`: signed
   session younger than 10 minutes, active Super Admin, CST scope; creates exact
   SHA-bounded claims, 60-second consent challenge.
