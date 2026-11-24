@@ -13,10 +13,9 @@ export function scopeBankMutationRead(
   actorCompanyId: number | null,
   verifiedSuperAdmin = false,
 ): { where: string; values: unknown[] } {
-  // A DB-verified cross-company Super Admin may read one explicitly selected
-  // company even when the account has no permanent company binding.
-  // Refuse unscoped/consolidated requests; do not widen any other role.
-  if (actorCompanyId === null && verifiedSuperAdmin) {
+  // Only a database-revalidated signed Super Admin can explicitly select
+  // another company. No missing/'all' scope may grant all-company reads.
+  if (verifiedSuperAdmin && selected.companyId !== null) {
     const selectedId = selected.companyId;
     if (typeof selectedId !== "number" || !Number.isSafeInteger(selectedId) || selectedId <= 0) {
       throw new Error("UNVERIFIED_ACTOR_COMPANY");
