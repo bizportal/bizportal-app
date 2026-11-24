@@ -47,6 +47,19 @@ describe("DEV bank Sheet reader error sanitization", () => {
     expect(classify({code:"UNTRUSTED",message:secret})).toBe("BANK_SHEET_READER_UNAVAILABLE");
     expect(classify(null)).toBe("BANK_SHEET_READER_UNAVAILABLE");
   });
+  it("distinguishes known PostgreSQL schema and query compatibility failures", () => {
+    expect(classify({code:"42703",message:"may contain private column name"})).toBe("BANK_SHEET_READER_DB_SCHEMA_MISSING");
+    expect(classify({code:"42883"})).toBe("BANK_SHEET_READER_DB_SCHEMA_MISSING");
+    expect(classify({code:"22P02"})).toBe("BANK_SHEET_READER_DB_QUERY_INCOMPATIBLE");
+  });
+  it("classifies wrapped transport errors without exposing the cause", () => {
+    expect(classify({message:"fetch failed",cause:{code:"ECONNRESET",message:"secret content"}}))
+      .toBe("BANK_SHEET_READER_UPSTREAM_CONNECTIVITY");
+    expect(classify({cause:{code:"ERR_TLS_CERT_ALTNAME_INVALID",message:"private host"}}))
+      .toBe("BANK_SHEET_READER_UPSTREAM_TLS_FAILED");
+    expect(classify({cause:{code:"SOME_UNKNOWN",message:"password"}}))
+      .toBe("BANK_SHEET_READER_UNAVAILABLE");
+  });
   it("does not allow similar-looking error messages", () => {
     expect(classify(new Error("PR147_DEV_SHEET_READER_NOT_CONFIGURED: " + "password")))
       .toBe("BANK_SHEET_READER_UNAVAILABLE");
