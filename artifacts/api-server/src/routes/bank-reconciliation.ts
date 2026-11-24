@@ -72,6 +72,7 @@ interface ApprovalBody {
 interface ApprovalActor {
   email: string;
   companyId: number | null;
+  role?: string;
 }
 
 type MatchingMode = "new" | "retry_unmatched" | "rematch_non_final";
@@ -366,12 +367,12 @@ async function getApprovalActor(request: Request): Promise<ApprovalActor | null>
   if (signedSession) {
     const user = await getProductionUser(signedSession);
     if (!user || !allowedRoles.has(user.role.toLowerCase())) return null;
-    return { email: user.email, companyId: user.companyId };
+    return { email: user.email, companyId: user.companyId, role: user.role.toLowerCase() };
   }
   if (!isDevelopmentEnvironment()) return null;
   const user = getDevSession(request);
   if (!user || !allowedRoles.has(user.role.toLowerCase())) return null;
-  return { email: user.email, companyId: user.companyId };
+  return { email: user.email, companyId: user.companyId, role: user.role.toLowerCase() };
 }
 
 function normalizeMatchText(value: unknown): string {
@@ -7822,7 +7823,7 @@ router.get("/bank-reconciliation/mutations", async (req, res): Promise<void> => 
   const actor = await getApprovalActor(req).catch(() => null);
   if (!actor) { res.status(401).json({ error: "Unauthorized" }); return; }
   try {
-    const { where, values } = scopeBankMutationRead(buildMutationFilters(req), actor.companyId);
+    const { where, values } = scopeBankMutationRead(buildMutationFilters(req), actor.companyId, actor.role === "super_admin");
     const requestedLimit = parsePositiveInt(queryString(req.query.limit));
     const requestedOffset = Number(queryString(req.query.offset) ?? 0);
     const limit = Math.min(requestedLimit ?? 20, 1_000);
@@ -7877,7 +7878,7 @@ router.get("/bank-reconciliation/summary", async (req, res): Promise<void> => {
   const actor = await getApprovalActor(req).catch(() => null);
   if (!actor) { res.status(401).json({ error: "Unauthorized" }); return; }
   try {
-    const { where, values } = scopeBankMutationRead(buildMutationFilters(req), actor.companyId);
+    const { where, values } = scopeBankMutationRead(buildMutationFilters(req), actor.companyId, actor.role === "super_admin");
     const result = await pool.query(
       `select bm.status, count(*)::text as count, coalesce(sum(bm.amount), 0)::text as total_amount
          from public.bank_mutations bm
