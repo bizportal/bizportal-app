@@ -21,6 +21,7 @@ const TenantWorkspacePage = React.lazy(() => import("@/pages/tenant/workspace"))
 const AdministrationHubPage = React.lazy(() => import("@/pages/administration/index"));
 const AdministrationWorkspacePage = React.lazy(() => import("@/pages/administration/workspace"));
 const CrossCompanyAccessPage = React.lazy(() => import("@/pages/administration/cross-company-access"));
+const Pr147SuperAdminVerificationPage = React.lazy(() => import("@/pages/administration/pr147-super-admin-verification"));
 const ExecutiveHubPage = React.lazy(() => import("@/pages/executive/hub"));
 const ExecutiveWorkspacePage = React.lazy(() => import("@/pages/executive/workspace"));
 const FinanceTransactionsPage = React.lazy(() => import("@/pages/finance/transactions"));
@@ -646,6 +647,7 @@ export function AppRoutes({ rootGuard }: { rootGuard?: React.ComponentType }) {
       <Route path="/reports/inventory-valuation" component={PR(InventoryValuationPage)} />
 
       {/* ── Finance CFO ────────────────────────────────────────────────── */}
+      <Route path="/administration/pr147-verification" component={PR(Pr147SuperAdminVerificationPage)} />
       <Route path="/finance/settlement-pattern" component={PR(SettlementPatternPage)} />
       <Route path="/finance/allocation/create" component={PR(AllocationCreatePage)} />
       <Route path="/finance/allocation" component={PR(AllocationCenterPage)} />

@@ -1,5 +1,6 @@
 import { Router, type IRouter } from "express";
 import healthRouter from "./health";
+import pr147SuperAdminVerificationRouter from "./pr147-super-admin-verification";
 import companiesRouter from "./companies";
 import payrollRouter from "./payroll";
 import hrdRouter from "./hrd-routes";
@@ -48,6 +49,8 @@ router.use(devCustomerInvoiceAttestationRouter);
 // Production auth is local to this deployment and is mounted before the
 // remaining API-owned routes.
 router.use(localProductionAuthRouter);
+// Signed Super Admin release evidence is opt-in and disabled outside DEV.
+router.use(pr147SuperAdminVerificationRouter);
 
 // Canonical DEV-only document-template API, imported from verified legacy implementation.
 // OFF by default; do not activate before signed-session and A4 PDF E2E verification.

@@ -333,7 +333,12 @@ function SheetConfigManager() {
   const testOne = async (cfg: SheetConfig) => {
     setTesting(prev => ({ ...prev, [cfg.id]: true }));
     try {
-      const r = await fetch(`/api/bank-reconciliation/sheet-configs/${cfg.id}/test`, {
+      const companyId = cfg.company_id ?? activeCompanyId;
+      if (!Number.isInteger(companyId) || (companyId ?? 0) <= 0) {
+        throw new Error("Pilih perusahaan sebelum menguji koneksi Google Sheet.");
+      }
+      const params = new URLSearchParams({ company_id: String(companyId) });
+      const r = await fetch(`/api/bank-reconciliation/sheet-configs/${cfg.id}/test?${params}`, {
         method: "POST", credentials: "include",
       });
       const data = await r.json() as TestResult;
@@ -7888,7 +7893,7 @@ function SheetConfigCollapsed() {
       ? activeCompanyId
       : null;
 
-  const { data: configsData, isLoading } = useQuery({
+  const { data: configsData, isLoading, isError: sheetConfigsError, error: sheetConfigsFetchError, refetch: retrySheetConfigs } = useQuery({
     queryKey: ["sheet-configs", isConsolidated ? "all" : sheetCompanyId],
     queryFn: async () => {
       const params = new URLSearchParams();
@@ -7947,7 +7952,12 @@ function SheetConfigCollapsed() {
   const testOne = async (cfg: SheetConfig) => {
     setTesting(p => ({ ...p, [cfg.id]: true }));
     try {
-      const r      = await fetch(`/api/bank-reconciliation/sheet-configs/${cfg.id}/test`, { method: "POST", credentials: "include" });
+      const companyId = cfg.company_id ?? sheetCompanyId;
+      if (!Number.isInteger(companyId) || (companyId ?? 0) <= 0) {
+        throw new Error("Pilih perusahaan sebelum menguji koneksi Google Sheet.");
+      }
+      const params = new URLSearchParams({ company_id: String(companyId) });
+      const r      = await fetch(`/api/bank-reconciliation/sheet-configs/${cfg.id}/test?${params}`, { method: "POST", credentials: "include" });
       const result = await r.json();
       setTestResults(p => ({ ...p, [cfg.id]: result }));
     } catch (e: any) {
@@ -8035,7 +8045,7 @@ function SheetConfigCollapsed() {
               {isLoading ? <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" /> :
                lastSyncOk ? <Wifi className="w-4 h-4 text-green-500" /> : <WifiOff className="w-4 h-4 text-orange-500" />}
               <span className="text-sm font-medium">Google Sheet</span>
-              <Badge variant="secondary" className="text-xs">{configs.length} koneksi</Badge>
+              <Badge variant="secondary" className="text-xs">{sheetConfigsError ? "Gagal memuat koneksi" : `${configs.length} koneksi`}</Badge>
               {activeConfigs.length > 0 && (
                 <span className="text-xs text-muted-foreground hidden sm:inline">
                   · Sync terakhir: {fmtDateTime(activeConfigs[0]?.last_synced_at)}
@@ -8043,7 +8053,7 @@ function SheetConfigCollapsed() {
               )}
             </div>
             <div className="flex items-center gap-2">
-              <Button size="sm" variant="outline" className="h-6 text-xs gap-1" onClick={e => { e.stopPropagation(); openCreate(); }}>
+              <Button size="sm" variant="outline" className="h-6 text-xs gap-1" disabled={sheetConfigsError || isLoading} onClick={e => { e.stopPropagation(); openCreate(); }}>
                 <Plus className="w-3 h-3" /> Tambah
               </Button>
               {expanded ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
@@ -8052,7 +8062,17 @@ function SheetConfigCollapsed() {
 
           {expanded && (
             <div className="mt-3 space-y-2 border-t pt-3">
-              {configs.length === 0 ? (
+              {sheetConfigsError ? (
+                <div role="alert" className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+                  <p>Daftar koneksi Google Sheet gagal dimuat. Konfigurasi yang sudah ada tidak akan diubah.</p>
+                  <p className="mt-1 text-xs">{sheetConfigsFetchError instanceof Error ? sheetConfigsFetchError.message.slice(0, 240) : "Periksa koneksi API rekonsiliasi."}</p>
+                  <Button className="mt-2" size="sm" variant="outline" onClick={() => void retrySheetConfigs()}>
+                    Coba lagi
+                  </Button>
+                </div>
+              ) : isLoading ? (
+                <p role="status" className="text-sm text-muted-foreground text-center py-4">Memuat konfigurasi Google Sheet...</p>
+              ) : configs.length === 0 ? (
                 <p className="text-sm text-muted-foreground text-center py-4">
                   Belum ada koneksi. Klik <strong>Tambah</strong> untuk menambahkan.
                 </p>

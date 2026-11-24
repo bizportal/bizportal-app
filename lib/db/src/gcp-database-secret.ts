@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import { readFileSync, statSync } from "node:fs";
+import path from "node:path";
 
 type ServiceAccountCredentials = {
   project_id?: string;
@@ -31,8 +33,26 @@ function signJwt(input: string, privateKey: string): string {
   return signer.sign(privateKey, "base64url");
 }
 
-function getCredentials(): ServiceAccountCredentials {
-  const raw = process.env.GCP_SECRET_MANAGER_BOOTSTRAP_JSON;
+function getCredentials(secretName: string): ServiceAccountCredentials {
+  let raw = process.env.GCP_SECRET_MANAGER_BOOTSTRAP_JSON;
+
+  // Restricted fallback for the existing Finance company bundle on DEV only.
+  // systemd delivers the already-approved GCP credential privately to the
+  // service process; there is no key export, storage, or browser-token reuse.
+  if (!raw && process.env.APP_ENV === "development"
+      && secretName === "bizportal-marketplace-finance-dev-companies"
+      && process.env.PR147_BANK_SHEET_COMPANIES_GCP_SECRET_NAME_DEV === secretName) {
+    const directory = process.env.CREDENTIALS_DIRECTORY;
+    if (!directory?.startsWith("/run/credentials/")) {
+      throw new Error("PR147_SYSTEMD_CREDENTIAL_DIRECTORY_REQUIRED");
+    }
+    const filename = path.join(directory, "gcp-secret-manager-bootstrap.json");
+    const stat = statSync(filename);
+    if (!stat.isFile() || stat.size > 8192 || stat.uid !== 0 || stat.gid !== 0 || (stat.mode & 0o027) !== 0) {
+      throw new Error("PR147_SYSTEMD_CREDENTIAL_PERMISSIONS_INVALID");
+    }
+    raw = readFileSync(filename, "utf8");
+  }
   if (!raw) {
     throw new Error("GCP_SECRET_MANAGER_BOOTSTRAP_JSON is not configured");
   }
@@ -48,6 +68,13 @@ function getCredentials(): ServiceAccountCredentials {
     throw new Error("GCP Secret Manager credentials are missing project_id, client_email, or private_key");
   }
 
+  if (!process.env.GCP_SECRET_MANAGER_BOOTSTRAP_JSON
+      && secretName === "bizportal-marketplace-finance-dev-companies") {
+    if (credentials.project_id !== "secret-504012"
+        || credentials.client_email !== "bizportal-finance-dev-reader@secret-504012.iam.gserviceaccount.com") {
+      throw new Error("PR147_SYSTEMD_CREDENTIAL_IDENTITY_MISMATCH");
+    }
+  }
   return credentials;
 }
 
@@ -93,7 +120,7 @@ export async function readSecret(
   secretName: string,
   options: { signal?: AbortSignal } = {},
 ): Promise<string> {
-  const credentials = getCredentials();
+  const credentials = getCredentials(secretName);
   const accessToken = await getAccessToken(credentials, options.signal);
   const resource = [
     "https://secretmanager.googleapis.com/v1",
