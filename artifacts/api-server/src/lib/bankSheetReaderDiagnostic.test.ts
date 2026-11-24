@@ -11,6 +11,36 @@ describe("DEV bank Sheet reader error sanitization", () => {
     expect(classify({code:"42501",message:"private table"})).toBe("BANK_SHEET_READER_DB_PERMISSION_DENIED");
     expect(classify({code:"ETIMEDOUT"})).toBe("BANK_SHEET_READER_DB_CONNECTIVITY");
   });
+  it("classifies existing GCP bootstrap errors without exposing JSON", () => {
+    expect(classify(new Error("GCP_SECRET_MANAGER_BOOTSTRAP_JSON is not valid JSON")))
+      .toBe("BANK_SHEET_GCP_BOOTSTRAP_INVALID");
+    expect(classify(new Error("GCP Secret Manager credentials are missing project_id, client_email, or private_key")))
+      .toBe("BANK_SHEET_GCP_BOOTSTRAP_INVALID");
+    expect(classify(new Error("GCP_SECRET_MANAGER_BOOTSTRAP_JSON is not configured")))
+      .toBe("BANK_SHEET_GCP_BOOTSTRAP_MISSING");
+  });
+  it("distinguishes GCP OAuth failures and Secret Manager IAM/404", () => {
+    expect(classify(new Error("GCP OAuth token request failed (400)")))
+      .toBe("BANK_SHEET_GCP_OAUTH_AUTH_FAILED");
+    expect(classify(new Error("GCP OAuth token request failed (500)")))
+      .toBe("BANK_SHEET_GCP_OAUTH_UNAVAILABLE");
+    expect(classify(new Error("GCP Secret Manager read failed for bizportal-marketplace-finance-dev-companies (403)")))
+      .toBe("BANK_SHEET_GCP_SECRET_ACCESS_DENIED");
+    expect(classify(new Error("GCP Secret Manager read failed for bizportal-marketplace-finance-dev-companies (404)")))
+      .toBe("BANK_SHEET_GCP_SECRET_NOT_FOUND");
+    expect(classify(new Error("GCP secret bizportal-marketplace-finance-dev-companies has no payload")))
+      .toBe("BANK_SHEET_GCP_SECRET_EMPTY_PAYLOAD");
+  });
+  it("never classifies arbitrary secret names or credential-bearing strings", () => {
+    for (const candidate of [
+      "GCP Secret Manager read failed for my-secret-password (403)",
+      "GCP Secret Manager read failed for bizportal-marketplace-finance-dev-companies (403) : token=secret",
+      "GCP OAuth token request failed (400): password=secret",
+      "GCP secret unknown-private-secret has no payload",
+    ]) {
+      expect(classify(new Error(candidate))).toBe("BANK_SHEET_READER_UNAVAILABLE");
+    }
+  });
   it("never passes unknown error contents, URL, or password", () => {
     const secret = "postgresql://reader:supersecret@private.test/postgres";
     expect(classify(new Error(secret))).toBe("BANK_SHEET_READER_UNAVAILABLE");

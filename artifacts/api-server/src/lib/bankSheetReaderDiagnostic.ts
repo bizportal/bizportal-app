@@ -22,6 +22,41 @@ export function classifyBankSheetReaderFailure(error: unknown): string {
   if (!error || typeof error !== "object") return "BANK_SHEET_READER_UNAVAILABLE";
   const obj = error as { message?: unknown; code?: unknown };
   if (typeof obj.message === "string" && READER_CODES.has(obj.message)) return obj.message;
+  // GCP bootstrap and REST client errors are raised by the existing secret
+  // client as fixed strings (not structured codes). Map only known literals
+  // and exact status patterns. Never echo a raw error or secret name.
+  if (typeof obj.message === "string") {
+    switch (obj.message) {
+      case "GCP_SECRET_MANAGER_BOOTSTRAP_JSON is not configured":
+        return "BANK_SHEET_GCP_BOOTSTRAP_MISSING";
+      case "GCP_SECRET_MANAGER_BOOTSTRAP_JSON is not valid JSON":
+      case "GCP Secret Manager credentials are missing project_id, client_email, or private_key":
+        return "BANK_SHEET_GCP_BOOTSTRAP_INVALID";
+      case "GCP OAuth response did not contain an access token":
+        return "BANK_SHEET_GCP_OAUTH_MISSING_TOKEN";
+      case "PR147_SYSTEMD_CREDENTIAL_DIRECTORY_REQUIRED":
+      case "PR147_SYSTEMD_CREDENTIAL_PERMISSIONS_INVALID":
+      case "PR147_SYSTEMD_CREDENTIAL_IDENTITY_MISMATCH":
+        return "BANK_SHEET_GCP_SYSTEMD_CREDENTIAL_INVALID";
+    }
+    const oauthStatus = /^GCP OAuth token request failed \(([1-5][0-9]{2})\)$/.exec(obj.message);
+    if (oauthStatus) {
+      if (oauthStatus[1] === "400" || oauthStatus[1] === "401" || oauthStatus[1] === "403") {
+        return "BANK_SHEET_GCP_OAUTH_AUTH_FAILED";
+      }
+      return "BANK_SHEET_GCP_OAUTH_UNAVAILABLE";
+    }
+    const secretStatus = /^GCP Secret Manager read failed for (bizportal-marketplace-finance-dev-companies|bizportal-pr147-bank-sheet-cst-dev|bizportal-pr147-bank-sheet-diva-dev) \(([1-5][0-9]{2})\)$/.exec(obj.message);
+    if (secretStatus) {
+      switch (secretStatus[2]) {
+        case "401": case "403": return "BANK_SHEET_GCP_SECRET_ACCESS_DENIED";
+        case "404": return "BANK_SHEET_GCP_SECRET_NOT_FOUND";
+        default: return "BANK_SHEET_GCP_SECRET_READ_FAILED";
+      }
+    }
+    const noPayload = /^GCP secret (bizportal-marketplace-finance-dev-companies|bizportal-pr147-bank-sheet-cst-dev|bizportal-pr147-bank-sheet-diva-dev) has no payload$/.exec(obj.message);
+    if (noPayload) return "BANK_SHEET_GCP_SECRET_EMPTY_PAYLOAD";
+  }
   switch (obj.code) {
     case "28P01": return "BANK_SHEET_READER_DB_AUTH_FAILED";
     case "42501": return "BANK_SHEET_READER_DB_PERMISSION_DENIED";
