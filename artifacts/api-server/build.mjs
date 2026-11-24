@@ -30,6 +30,10 @@ async function buildAll() {
     external: [
       "*.node",
       "sharp",
+      // Zod 4 uses runtime class factories; keep its ESM package external to avoid
+      // constructor loss in the bundled ESM graph. Root package.json installs it.
+      "zod",
+      "zod/*",
       "better-sqlite3",
       "sqlite3",
       "canvas",
