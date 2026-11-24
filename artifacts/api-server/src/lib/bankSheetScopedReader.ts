@@ -1,5 +1,6 @@
 import { Pool } from "pg";
 import { readSecret } from "@workspace/db";
+import { SUPABASE_POOLER_ROOT_2021_CA } from "./supabasePoolerRootCA";
 
 type SheetReaderPool = Pool;
 const readers = new Map<number, { url: string; pool: SheetReaderPool }>();
@@ -71,7 +72,7 @@ function createDevBankSheetReader(companyId: number, raw: string): SheetReaderPo
     user: decodeURIComponent(parsed.username),
     password: decodeURIComponent(parsed.password),
     database: "postgres",
-    ssl: { rejectUnauthorized: true, servername: parsed.hostname },
+    ssl: { ca: SUPABASE_POOLER_ROOT_2021_CA, rejectUnauthorized: true, servername: parsed.hostname },
     max: 1,
     idleTimeoutMillis: 5_000,
     connectionTimeoutMillis: 8_000,
