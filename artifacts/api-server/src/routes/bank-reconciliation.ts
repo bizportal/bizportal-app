@@ -10,6 +10,7 @@ import {
 import { inspectSpreadsheet } from "../lib/google-sheets";
 import { bankSheetConfigAccountJoin } from "../lib/bankSheetConfigAccountJoin";
 import { getDevBankSheetReaderFromConfiguredSource } from "../lib/bankSheetScopedReader";
+import { classifyBankSheetReaderFailure } from "../lib/bankSheetReaderDiagnostic";
 import {
   syncAllBankSheetConfigs,
   syncOneBankSheetConfig,
@@ -8110,8 +8111,16 @@ router.get("/bank-reconciliation/sheet-configs", async (req, res): Promise<void>
     );
     res.json({ configs: result.rows });
   } catch (error) {
-    req.log.error({ error }, "Failed to load sheet configurations");
-    res.status(503).json({ error: "Konfigurasi Google Sheet tidak dapat dimuat" });
+    if (isDevelopmentEnvironment()) {
+      // Log only a finite safe code. Never log raw exceptions: secret and
+      // database connector errors may embed credentials or connection URLs.
+      const code = classifyBankSheetReaderFailure(error);
+      req.log.error({ code, companyId }, "Failed to load sheet configurations");
+      res.status(503).json({ error: "Konfigurasi Google Sheet tidak dapat dimuat", code });
+    } else {
+      req.log.error({ error }, "Failed to load sheet configurations");
+      res.status(503).json({ error: "Konfigurasi Google Sheet tidak dapat dimuat" });
+    }
   }
 });
 

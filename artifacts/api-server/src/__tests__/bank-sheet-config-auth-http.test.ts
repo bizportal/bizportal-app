@@ -6,6 +6,7 @@ import { once } from "node:events";
 const mock = vi.hoisted(() => ({
   actor: null as null | { email: string; companyId: number | null; role: string },
   queries: [] as Array<{sql: string; params: unknown[]}>,
+  readerFailure: null as null | string,
 }));
 vi.mock("../routes/dev-auth", () => ({
   isDevelopmentEnvironment: () => process.env.APP_ENV === "development",
@@ -32,7 +33,9 @@ vi.mock("@workspace/db", () => ({
 }));
 
 vi.mock("../lib/bankSheetScopedReader", () => ({
-  getDevBankSheetReaderFromConfiguredSource: async (companyId: number) => ({
+  getDevBankSheetReaderFromConfiguredSource: async (companyId: number) => {
+    if (mock.readerFailure) throw new Error(mock.readerFailure);
+    return ({
     query: async (sql: string, params: unknown[] = []) => {
       mock.queries.push({sql, params});
       if (sql.includes("select sheet_id, tab_name from public.bank_sheet_configs")) {
@@ -44,7 +47,8 @@ vi.mock("../lib/bankSheetScopedReader", () => ({
         {id:3,company_id:1,label:"kas besar",tab_name:"kasbesar",bank_account_id:2,is_active:true},
       ]};
     },
-  }),
+  });
+  },
 }));
 import router from "../routes/bank-reconciliation";
 
@@ -71,6 +75,7 @@ describe("bank Sheet company-scoped HTTP authorization gate", () => {
     vi.stubEnv("APP_ENV","development");
     mock.actor=null;
     mock.queries.length=0;
+    mock.readerFailure=null;
   });
   afterEach(()=>vi.unstubAllEnvs());
   const get=(path:string)=>fetch(base+"/api"+path);
@@ -93,6 +98,24 @@ describe("bank Sheet company-scoped HTTP authorization gate", () => {
     expect(mock.queries).toHaveLength(1);
     expect(mock.queries[0].params).toEqual([1]);
     expect(mock.queries[0].sql).toContain("where config.company_id=$1");
+  });
+  it("returns a safe DEV reader failure code without leaking raw exception text", async()=>{
+    mock.actor={email:"owner@pr95.invalid",companyId:1,role:"super_admin"};
+    mock.readerFailure="PR147_DEV_SHEET_READER_NOT_CONFIGURED";
+    const known=await get("/bank-reconciliation/sheet-configs?company_id=1");
+    expect(known.status).toBe(503);
+    expect(await known.json()).toEqual({
+      error:"Konfigurasi Google Sheet tidak dapat dimuat",
+      code:"PR147_DEV_SHEET_READER_NOT_CONFIGURED",
+    });
+    mock.readerFailure="postgresql://secret:password@private.invalid";
+    const unknown=await get("/bank-reconciliation/sheet-configs?company_id=1");
+    expect(unknown.status).toBe(503);
+    const body=await unknown.text();
+    expect(body).toContain('"code":"BANK_SHEET_READER_UNAVAILABLE"');
+    expect(body).not.toContain("password");
+    expect(body).not.toContain("private.invalid");
+    expect(mock.queries).toHaveLength(0);
   });
   it("requires explicit company for unscoped Super Admin DEV Sheet listing", async()=>{
     mock.actor={email:"owner@pr95.invalid",companyId:null,role:"super_admin"};
