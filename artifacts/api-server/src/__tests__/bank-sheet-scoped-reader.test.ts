@@ -13,6 +13,7 @@ vi.mock("pg", () => ({
   },
 }));
 import { getDevBankSheetReader, getDevBankSheetReaderFromConfiguredSource, closeDevBankSheetReaders } from "../lib/bankSheetScopedReader";
+import { SUPABASE_POOLER_ROOT_2021_CA } from "../lib/supabasePoolerRootCA";
 
 const cstUrl = "postgresql://bizportal_finance_cst_login_dev.xssrfshdrtdfupgqwfdw:isolated-only@aws-1-ap-southeast-2.pooler.supabase.com:6543/postgres?sslmode=verify-full";
 const divaUrl = "postgresql://bizportal_finance_diva_login_dev.xssrfshdrtdfupgqwfdw:isolated-only@aws-1-ap-southeast-2.pooler.supabase.com:6543/postgres?sslmode=verify-full";
@@ -159,13 +160,13 @@ describe("PR147 dedicated DEV Sheet reader identity boundary", () => {
     }
     expect(poolSpy.create).not.toHaveBeenCalled();
   });
-  it("ignores legacy sslrootcert hint while pinning system TLS identity", () => {
+  it("ignores legacy sslrootcert hint while pinning Supabase root and hostname", () => {
     vi.stubEnv("PR147_BANK_SHEET_CST_DATABASE_URL_DEV",cstUrl+"&sslrootcert=/tmp/untrusted");
     expect(getDevBankSheetReader(1)).toBeDefined();
     expect(poolSpy.create).toHaveBeenCalledTimes(1);
     const opts=poolSpy.create.mock.calls[0][0] as Record<string,unknown>;
     expect(opts.ssl).toEqual({
-      rejectUnauthorized:true,servername:"aws-1-ap-southeast-2.pooler.supabase.com"
+      ca:SUPABASE_POOLER_ROOT_2021_CA,rejectUnauthorized:true,servername:"aws-1-ap-southeast-2.pooler.supabase.com"
     });
     expect(Object.keys(opts)).not.toContain("sslrootcert");
   });
@@ -190,7 +191,7 @@ describe("PR147 dedicated DEV Sheet reader identity boundary", () => {
       "bizportal_finance_diva_login_dev.xssrfshdrtdfupgqwfdw",
     ]);
     expect(opts.every(x=>JSON.stringify(x.ssl) === JSON.stringify({
-      rejectUnauthorized:true,servername:"aws-1-ap-southeast-2.pooler.supabase.com"
+      ca:SUPABASE_POOLER_ROOT_2021_CA,rejectUnauthorized:true,servername:"aws-1-ap-southeast-2.pooler.supabase.com"
     }))).toBe(true);
   });
 });
