@@ -14,9 +14,17 @@ describe("legacy CST-DEV Google Sheet connection read-only compatibility", () =>
     expect(bankSheetConfigAccountJoin).toContain("regexp_replace");
     expect(bankSheetConfigAccountJoin).toContain("count(*)");
     expect(bankSheetConfigAccountJoin).toContain(") = 1");
+    expect(bankSheetConfigAccountJoin).toContain("nullif(to_jsonb(config)->>'bank_account_id','') is null");
     expect(bankSheetConfigAccountJoin).not.toContain("config.bank_account_id");
     expect(bankSheetConfigAccountJoin.trimStart().startsWith("left join lateral")).toBe(true);
     expect(bankSheetConfigAccountJoin).not.toMatch(/\b(insert|update|delete|alter|create|drop)\b/i);
+  });
+
+  it("preserves explicit account IDs on migrated schemas and never falls back from a broken explicit binding", () => {
+    expect(bankSheetConfigAccountJoin).toContain("account.id::text = to_jsonb(config)->>'bank_account_id'");
+    expect(bankSheetConfigAccountJoin).toContain("nullif(to_jsonb(config)->>'bank_account_id','') is not null");
+    expect(bankSheetConfigAccountJoin).toContain("nullif(to_jsonb(config)->>'bank_account_id','') is null");
+    expect(bankSheetConfigAccountJoin).toContain("account.company_id = config.company_id");
   });
 
   it("uses the compatibility mapping for GET sheet connections", () => {

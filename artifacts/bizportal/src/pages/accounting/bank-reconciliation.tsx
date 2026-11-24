@@ -333,7 +333,12 @@ function SheetConfigManager() {
   const testOne = async (cfg: SheetConfig) => {
     setTesting(prev => ({ ...prev, [cfg.id]: true }));
     try {
-      const r = await fetch(`/api/bank-reconciliation/sheet-configs/${cfg.id}/test`, {
+      const companyId = cfg.company_id ?? activeCompanyId;
+      if (!Number.isInteger(companyId) || (companyId ?? 0) <= 0) {
+        throw new Error("Pilih perusahaan sebelum menguji koneksi Google Sheet.");
+      }
+      const params = new URLSearchParams({ company_id: String(companyId) });
+      const r = await fetch(`/api/bank-reconciliation/sheet-configs/${cfg.id}/test?${params}`, {
         method: "POST", credentials: "include",
       });
       const data = await r.json() as TestResult;
@@ -7947,7 +7952,12 @@ function SheetConfigCollapsed() {
   const testOne = async (cfg: SheetConfig) => {
     setTesting(p => ({ ...p, [cfg.id]: true }));
     try {
-      const r      = await fetch(`/api/bank-reconciliation/sheet-configs/${cfg.id}/test`, { method: "POST", credentials: "include" });
+      const companyId = cfg.company_id ?? sheetCompanyId;
+      if (!Number.isInteger(companyId) || (companyId ?? 0) <= 0) {
+        throw new Error("Pilih perusahaan sebelum menguji koneksi Google Sheet.");
+      }
+      const params = new URLSearchParams({ company_id: String(companyId) });
+      const r      = await fetch(`/api/bank-reconciliation/sheet-configs/${cfg.id}/test?${params}`, { method: "POST", credentials: "include" });
       const result = await r.json();
       setTestResults(p => ({ ...p, [cfg.id]: result }));
     } catch (e: any) {
