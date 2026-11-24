@@ -23,6 +23,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Settings as SettingsIcon, Upload, X, Send, CheckCircle2, Clock, Plus, Pencil, Trash2 } from "lucide-react";
 import { useUpload } from "@shared/object-storage-web";
 import { Link } from "wouter";
+import { GojekRentalApprovalCard } from "./GojekRentalApprovalCard";
 
 type SettingsForm = Required<UpdateAccountingSettingsBody>;
 
@@ -394,6 +395,8 @@ export default function AccountingSettingsPage() {
           <h1 className="text-2xl font-bold flex items-center gap-2"><SettingsIcon className="h-6 w-6" />Pengaturan Akunting</h1>
           <p className="text-sm text-muted-foreground">Mapping akun &amp; jurnal default untuk auto-posting semua modul</p>
         </div>
+
+        {typeof window !== "undefined" && window.location.hostname === "dev-bizportal.cstlogistic.co.id" && Number(activeCompanyId) === 3 && <GojekRentalApprovalCard />}
 
         <Card>
           <CardHeader><CardTitle>Profil Perusahaan</CardTitle></CardHeader>

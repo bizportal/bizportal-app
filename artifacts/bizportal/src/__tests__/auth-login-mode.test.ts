@@ -2,6 +2,15 @@ import { describe, expect, it } from "vitest";
 import { resolveEmailLoginMode } from "@/lib/authLoginMode";
 
 describe("resolveEmailLoginMode", () => {
+  it("forces the email flow when signed OTP is required for a DEV allowlisted admin", () => {
+    expect(resolveEmailLoginMode({
+      email: "admcst001@gmail.com",
+      password: "",
+      devEmails: ["admcst001@gmail.com"],
+      signedOtpRequired: true,
+    })).toBe("email");
+  });
+
   it("uses the development login for an allowlisted email with no password", () => {
     expect(
       resolveEmailLoginMode({

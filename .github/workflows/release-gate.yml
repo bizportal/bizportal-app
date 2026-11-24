@@ -34,6 +34,27 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Only source-only Invoice tests require the exact deployed public Portal verifier.
+      # Without these files (default main), there is no extra checkout.
+      - name: Checkout exact CST-DEV Customer Portal verifier for Invoice contract tests
+        if: ${{ hashFiles('artifacts/api-server/src/routes/dev-customer-invoice-handoff-crossrepo.test.ts') != '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: Travelintrips/CST-CUSTOMER-PORTAL
+          ref: e81fbd92ae485caa054dd9c0d433c9336dc3bc74
+          path: vendor/customer-portal
+          persist-credentials: false
+
+      - name: Require unchanged pinned Portal verifier source
+        if: ${{ hashFiles('artifacts/api-server/src/routes/dev-customer-invoice-handoff-crossrepo.test.ts') != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C vendor/customer-portal rev-parse HEAD)" = e81fbd92ae485caa054dd9c0d433c9336dc3bc74
+          test -f vendor/customer-portal/server/dev-bizportal-invoice-attestation.mjs
+          test -f vendor/customer-portal/server/dev-invoice-owner-handoff.mjs
+          test -f vendor/customer-portal/server/dev-invoice-owner-review-snapshot.mjs
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
