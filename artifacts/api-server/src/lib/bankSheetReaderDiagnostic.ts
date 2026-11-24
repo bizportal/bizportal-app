@@ -20,7 +20,7 @@ const READER_CODES = new Set([
 
 export function classifyBankSheetReaderFailure(error: unknown): string {
   if (!error || typeof error !== "object") return "BANK_SHEET_READER_UNAVAILABLE";
-  const obj = error as { message?: unknown; code?: unknown };
+  const obj = error as { message?: unknown; code?: unknown; cause?: unknown };
   if (typeof obj.message === "string" && READER_CODES.has(obj.message)) return obj.message;
   // GCP bootstrap and REST client errors are raised by the existing secret
   // client as fixed strings (not structured codes). Map only known literals
@@ -60,12 +60,27 @@ export function classifyBankSheetReaderFailure(error: unknown): string {
   switch (obj.code) {
     case "28P01": return "BANK_SHEET_READER_DB_AUTH_FAILED";
     case "42501": return "BANK_SHEET_READER_DB_PERMISSION_DENIED";
-    case "42P01": return "BANK_SHEET_READER_DB_SCHEMA_MISSING";
+    case "42P01": case "42703": case "42883": return "BANK_SHEET_READER_DB_SCHEMA_MISSING";
+    case "22P02": case "42804": return "BANK_SHEET_READER_DB_QUERY_INCOMPATIBLE";
     case "3D000": return "BANK_SHEET_READER_DB_NOT_FOUND";
     case "ETIMEDOUT": case "ECONNREFUSED": case "ENOTFOUND": case "EAI_AGAIN":
+    case "ECONNRESET": case "EPIPE":
       return "BANK_SHEET_READER_DB_CONNECTIVITY";
     case "UNABLE_TO_VERIFY_LEAF_SIGNATURE": case "CERT_HAS_EXPIRED": case "ERR_TLS_CERT_ALTNAME_INVALID":
+    case "SELF_SIGNED_CERT_IN_CHAIN": case "DEPTH_ZERO_SELF_SIGNED_CERT":
       return "BANK_SHEET_READER_DB_TLS_FAILED";
-    default: return "BANK_SHEET_READER_UNAVAILABLE";
+    default: {
+      // Node fetch may wrap the transport code in a cause. Only inspect one
+      // explicit code, never serialize the cause or error message.
+      const cause = obj.cause;
+      if (cause && typeof cause === "object" && cause !== error) {
+        const causeCode = (cause as { code?: unknown }).code;
+        if (["ETIMEDOUT", "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ECONNRESET", "EPIPE"].includes(String(causeCode)))
+          return "BANK_SHEET_READER_UPSTREAM_CONNECTIVITY";
+        if (["UNABLE_TO_VERIFY_LEAF_SIGNATURE", "CERT_HAS_EXPIRED", "ERR_TLS_CERT_ALTNAME_INVALID", "SELF_SIGNED_CERT_IN_CHAIN", "DEPTH_ZERO_SELF_SIGNED_CERT"].includes(String(causeCode)))
+          return "BANK_SHEET_READER_UPSTREAM_TLS_FAILED";
+      }
+      return "BANK_SHEET_READER_UNAVAILABLE";
+    }
   }
 }
