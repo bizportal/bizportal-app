@@ -115,7 +115,17 @@ function requireAdmin(request: LocalRequest, response: Response): boolean {
   return false;
 }
 
-router.use(authenticateLocalUser);
+// Scope this middleware to the routes owned by this router. A global use()
+// would reject signed Sales OTP sessions before the canonical Sales router runs.
+router.use([
+  "/purchase/dashboard-kpi",
+  "/sales/dashboard-widget",
+  "/logistic/orders/dashboard-kpi",
+  "/sport-center/kpi-live",
+  "/internal-tasks",
+  "/intelligence-alerts",
+  "/audit-logs",
+], authenticateLocalUser);
 
 router.get("/purchase/dashboard-kpi", async (request, response): Promise<void> => {
   try {
