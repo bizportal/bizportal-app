@@ -16,6 +16,7 @@ import {
   syncOneBankSheetConfig,
   previewCashSheetRows,
   planCashSheetImportDryRun,
+  auditCashSheetRunningBalances,
 } from "../lib/bank-sheet-sync";
 import {
   getDevSession,
@@ -8452,9 +8453,11 @@ router.get("/bank-reconciliation/sheet-configs/5/preview", async (req, res): Pro
     ));
     const replay = planCashSheetImportDryRun(rows, scope, transient);
     const afterRollback = planCashSheetImportDryRun(rows, scope);
+    const balanceAudit = auditCashSheetRunningBalances(rows);
     res.json({
       ok: preview.safeToImport, configId: 5, accountId: 18, ...preview,
       cashDryRun: {
+        balanceAudit,
         proposedRows: initial.totalParsedRows,
         freshCandidates: initial.newRows,
         repeatedPayloadRows: initial.repeatedPayloadRows,
