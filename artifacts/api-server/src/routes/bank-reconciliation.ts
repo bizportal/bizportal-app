@@ -8033,8 +8033,14 @@ router.use(["/bank-reconciliation/sheet-configs", "/bank-reconciliation/sheet-sy
   const sheetConnectivityTest = req.method === "POST"
     && requestPath.includes("/bank-reconciliation/sheet-configs/")
     && requestPath.endsWith("/test");
+  // Single DEV-only metadata correction for CST config #3; other writes stay locked.
+  const narrowCstTabEdit = isDevelopmentEnvironment()
+    && process.env.BANK_SHEET_DEV_TAB_EDIT_ENABLED === "true"
+    && req.method === "PUT"
+    && /\/bank-reconciliation\/sheet-configs\/3$/.test(requestPath)
+    && actor.signedSuperAdmin === true;
   const sheetMutation = req.method !== "GET" && req.method !== "HEAD"
-    && !sheetConnectivityTest;
+    && !sheetConnectivityTest && !narrowCstTabEdit;
   if (isDevelopmentEnvironment()
       && process.env.BANK_SHEET_DEV_WRITES_ENABLED !== "true"
       && sheetMutation) {
@@ -8201,6 +8207,48 @@ router.put("/bank-reconciliation/sheet-configs/:id", async (req, res): Promise<v
     return;
   }
 
+  // A single company-scoped, metadata-only correction. Never enable generic
+  // BANK_SHEET_DEV_WRITES_ENABLED to repair a tab name.
+  if (isDevelopmentEnvironment() && id === 3 && process.env.BANK_SHEET_DEV_TAB_EDIT_ENABLED === "true") {
+    const actor = res.locals.sheetActor as ApprovalActor | undefined;
+    if (!actor?.signedSuperAdmin) {
+      res.status(403).json({ error: "Signed Super Admin required" }); return;
+    }
+    const body = req.body as Record<string, unknown> | null;
+    const keys = body && typeof body === "object" && !Array.isArray(body) ? Object.keys(body) : [];
+    const allowed = ["company_id", "bank_account_id", "label", "sheet_id", "tab_name"];
+    if (keys.length !== allowed.length || !keys.every((key) => allowed.includes(key))
+        || Number(body?.company_id) !== 1 || Number(body?.bank_account_id) !== 2
+        || (actor.companyId !== null && actor.companyId !== 1)
+        || typeof body?.tab_name !== "string" || body.tab_name.trim().length < 1
+        || body.tab_name.trim().length > 100) {
+      res.status(400).json({ error: "Hanya perubahan nama tab CST #3 yang diizinkan" }); return;
+    }
+    try {
+      const result = await pool.query<SheetConfigRow>(
+        `update public.bank_sheet_configs cfg
+            set tab_name=$1, updated_at=now()
+          where cfg.id=3 and cfg.company_id=1
+            and cfg.label=$2 and cfg.sheet_id=$3
+            and exists (
+              select 1 from public.company_bank_accounts a
+               where a.id=2 and a.company_id=cfg.company_id
+                 and regexp_replace(coalesce(a.account_number,''), '[^0-9]', '', 'g') =
+                     regexp_replace(coalesce(cfg.bank_account_number,''), '[^0-9]', '', 'g')
+            )
+          returning *`,
+        [body.tab_name.trim(), body.label, body.sheet_id],
+      );
+      if (result.rowCount !== 1) {
+        res.status(409).json({ error: "Konfigurasi berubah atau tidak cocok; muat ulang sebelum menyimpan" }); return;
+      }
+      res.json(result.rows[0]);
+    } catch (error) {
+      req.log.error({ code: (error as { code?: string }).code }, "DEV CST Sheet tab-only update failed");
+      res.status(503).json({ error: "Penyimpanan nama tab belum tersedia" });
+    }
+    return;
+  }
   const input = normalizeInput(req.body);
   try {
     const currentResult = await pool.query<{
