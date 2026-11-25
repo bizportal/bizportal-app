@@ -508,11 +508,18 @@ export function previewCashSheetRows(rows: string[][]): {
   const openingBalanceRowNumbers = rows.slice(1).flatMap((row, index) => {
     if (!row?.some((cell) => String(cell ?? "").trim())) return [];
     if (acceptedRowNumbers.has(index + 2)) return [];
-    const label = String(row[debitIndex] ?? "").trim().toUpperCase().replace(/\\s+/g, " ");
+    // A saldo-awal label may appear in any cell, not necessarily Debit.
+    // Its date may be non-transactional. Never count it as a mutation.
+    const normalizedCells = row.map((cell) =>
+      String(cell ?? "").trim().toUpperCase().replace(/\s+/g, " "));
+    const hasOpeningLabel = normalizedCells.some((cell) =>
+      /(?:^|\b)SALDO AWAL(?:\b|$)/.test(cell));
+    const debit = String(row[debitIndex] ?? "").trim();
     const credit = String(row[creditIndex] ?? "").trim();
+    const sidesHaveNoTransactions = [debit, credit].every((value) =>
+      !value || /^(?:SALDO AWAL)$/.test(value.toUpperCase().replace(/\s+/g, " ")));
     const saldo = saldoIndex < 0 ? 0 : parseAmount(String(row[saldoIndex] ?? ""));
-    const date = parseDate(String(row[dateIndex] ?? ""), "DMY");
-    return label === "SALDO AWAL" && !credit && saldo > 0 && date !== null
+    return hasOpeningLabel && sidesHaveNoTransactions && saldo > 0
       ? [index + 2] : [];
   });
   const openingBalanceRowSet = new Set(openingBalanceRowNumbers);
