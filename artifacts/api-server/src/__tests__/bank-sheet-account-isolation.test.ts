@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { assertBankMutationWriterAccountType, auditCashSheetRunningBalances, planCashSheetImportDryRun, previewCashSheetRows } from "../lib/bank-sheet-sync";
+import { assertBankMutationWriterAccountType, auditCashSheetRunningBalances, explainCashRawBalanceDifferences, planCashSheetImportDryRun, previewCashSheetRows } from "../lib/bank-sheet-sync";
 
 const routeSource = readFileSync(
   resolve(process.cwd(), "src/routes/bank-reconciliation.ts"),
@@ -212,6 +212,45 @@ describe("Cash source-only dry-run replay and rollback", () => {
     expect(routeSource).toContain('mode: "simulated_only_no_database_changes"');
     expect(routeSource).toContain("readyForCommit: false");
     expect(routeSource).not.toContain("res.json(initial.proposed)");
+  });
+});
+
+describe("Read-only exact raw cash running balance audit", () => {
+  const mismatches = [
+    { rowNumber: 262, direction: "OUT" as const },
+    { rowNumber: 305, direction: "IN" as const },
+    { rowNumber: 325, direction: "OUT" as const },
+  ];
+  it("separates real Rp4,006 difference from display-only precision", () => {
+    const rows = [
+      { rowNumber: 261, debitRaw: null, creditRaw: 100, saldoRaw: 166795.16 },
+      { rowNumber: 262, debitRaw: null, creditRaw: 23139, saldoRaw: 147662.16 },
+      { rowNumber: 304, debitRaw: null, creditRaw: 50, saldoRaw: 872225.16 },
+      { rowNumber: 305, debitRaw: 347.34, creditRaw: null, saldoRaw: 872572.50 },
+      { rowNumber: 324, debitRaw: null, creditRaw: 5, saldoRaw: 1113379 },
+      { rowNumber: 325, debitRaw: null, creditRaw: 500000, saldoRaw: null },
+    ];
+    expect(explainCashRawBalanceDifferences(mismatches, rows)).toEqual([
+      { rowNumber: 262, rawDifference: 4006, category: "RAW_SOURCE_MISMATCH" },
+      { rowNumber: 305, rawDifference: 0, category: "DISPLAY_PRECISION_ONLY" },
+      { rowNumber: 325, rawDifference: null, category: "SOURCE_NUMERIC_UNAVAILABLE" },
+    ]);
+  });
+  it("never changes source rows or exposes descriptions in raw classifications", () => {
+    const rows = [
+      { rowNumber: 304, debitRaw: null, creditRaw: null, saldoRaw: 872225.16 },
+      { rowNumber: 305, debitRaw: 347.34, creditRaw: null, saldoRaw: 872572.5 },
+    ];
+    const before = JSON.stringify(rows);
+    const result = explainCashRawBalanceDifferences([mismatches[1]!], rows);
+    expect(JSON.stringify(rows)).toBe(before);
+    expect(result[0]).not.toHaveProperty("description");
+    expect(result[0]).not.toHaveProperty("counterparty");
+  });
+  it("limits source-cell reads to flagged source rows plus immediately preceding rows", () => {
+    expect(routeSource).toContain("mismatchRows.map((n) => n - 1)");
+    expect(routeSource).toContain("rawBalanceReconciliation");
+    expect(routeSource).toContain("balanceAudit.mismatchDetails");
   });
 });
 
