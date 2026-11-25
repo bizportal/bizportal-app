@@ -154,6 +154,63 @@ export function spreadsheetCellRange(
   return `${quoteSheetName(tabName)}!${letters}${rowNumber}`;
 }
 
+/** Exact read-only numeric/FORMULA evidence for at most 20 cash mismatch rows. */
+export async function readCashMismatchCellEvidence(
+  spreadsheetId: string,
+  tabName: string,
+  columns: { debit: number; credit: number; saldo: number },
+  rowNumbers: number[],
+): Promise<Array<{
+  rowNumber: number;
+  debitRaw: number | null;
+  creditRaw: number | null;
+  saldoRaw: number | null;
+  debitFormula: boolean;
+  creditFormula: boolean;
+  saldoFormula: boolean;
+}>> {
+  const selected = [...new Set(rowNumbers)].filter((n) =>
+    Number.isInteger(n) && n >= 2 && n <= 100000).slice(0, 20);
+  if (!selected.length) return [];
+  if (Object.values(columns).some((n) => !Number.isInteger(n) || n < 0 || n > 100)) {
+    throw new Error("CASH_AUDIT_HEADER_UNSUPPORTED");
+  }
+  const credentials = getCredentials();
+  const token = await getAccessToken(credentials);
+  const cellNames = ["debit", "credit", "saldo"] as const;
+  const ranges = selected.flatMap((rowNumber) =>
+    cellNames.map((name) => spreadsheetCellRange(tabName, columns[name], rowNumber)));
+  async function batchRead(valueRenderOption: "UNFORMATTED_VALUE" | "FORMULA"): Promise<unknown[]> {
+    const url = new URL(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values:batchGet`,
+    );
+    for (const range of ranges) url.searchParams.append("ranges", range);
+    url.searchParams.set("valueRenderOption", valueRenderOption);
+    const response = await fetch(url, { method: "GET", headers: { Authorization: `Bearer ${token}` } });
+    if (!response.ok) throw new Error("CASH_AUDIT_SOURCE_READ_UNAVAILABLE");
+    const json = await response.json() as { valueRanges?: Array<{ values?: unknown[][] }> };
+    if (!Array.isArray(json.valueRanges) || json.valueRanges.length !== ranges.length) {
+      throw new Error("CASH_AUDIT_SOURCE_RANGE_MISMATCH");
+    }
+    return json.valueRanges.map((item) => item.values?.[0]?.[0] ?? null);
+  }
+  const [raw, formulas] = await Promise.all([
+    batchRead("UNFORMATTED_VALUE"), batchRead("FORMULA"),
+  ]);
+  const numeric = (value: unknown): number | null =>
+    typeof value === "number" && Number.isFinite(value) ? value : null;
+  return selected.map((rowNumber, i) => {
+    const j = i * 3;
+    return {
+      rowNumber,
+      debitRaw: numeric(raw[j]), creditRaw: numeric(raw[j + 1]), saldoRaw: numeric(raw[j + 2]),
+      debitFormula: typeof formulas[j] === "string" && formulas[j].startsWith("="),
+      creditFormula: typeof formulas[j + 1] === "string" && formulas[j + 1].startsWith("="),
+      saldoFormula: typeof formulas[j + 2] === "string" && formulas[j + 2].startsWith("="),
+    };
+  });
+}
+
 export async function writeSpreadsheetValues(
   spreadsheetId: string,
   updates: SpreadsheetValueUpdate[],
