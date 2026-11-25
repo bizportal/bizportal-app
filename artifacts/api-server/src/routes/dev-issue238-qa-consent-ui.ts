@@ -27,7 +27,7 @@ router.get("/auth/dev/issue238-qa/consent",async(req,res)=>{
   const nonce=randomBytes(18).toString("base64");
   res.setHeader("Content-Security-Policy",
     "default-src 'none'; script-src 'nonce-"+nonce+"'; style-src 'nonce-"+nonce+
-    "'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
+    "'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
   const base="/api/auth/dev/issue238-qa";
   const options=TESTS.map((t,i)=>'<option value="'+i+'">'+t+'</option>').join("");
   const script=`(()=>{
