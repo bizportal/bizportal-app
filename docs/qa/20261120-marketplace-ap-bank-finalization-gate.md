@@ -362,3 +362,31 @@ Deployed static frontend only with rollback snapshot
 HTTPS page 200, revised JS 200, anonymous GET 401, Finance health 200,
 QA PO14 run=0/audits=0. Backend authentication and the business ledger
 were unchanged. Genuine Owner POST click remains unobserved.
+
+## 25 November 2026 — REAL canonical bank posting helper now executed in isolated PostgreSQL
+Previous finalizer tests seeded bank mutation and GL as already posted.
+The new integration tests import and invoke the unchanged
+postBankMutationCanonical function from bank-reconciliation.ts, which is
+now a named export for testing only (no new endpoint or runtime mount).
+In isolated PostgreSQL only, the mutation starts
+approved_pending_posting, journal starts draft, and match starts candidate.
+The canonical bank helper locks records, checks the balanced Rp100000
+debit/credit and exact journal/source/match, executes updates to
+bank_mutations + accounting_entries + bank_reconciliation_matches and
+records bank_reconciliation_audit. The existing
+finalizePostedMarketplacePayment then marks the previously signed
+Marketplace Payment Request paid with accounting handoff posted.
+The subsequent repeated canonical bank post returns idempotent true
+without a new audit; Payment Request finalizer returns REPLAY.
+An intentionally unbalanced journal denies posting, and an injected
+bank audit INSERT failure rolls back bank/match/journal updates atomically.
+
+Focused isolated actual helper/SQL test suite: 18/18 PASS.
+Six-suite broader Finance/AP/bank regression: 91/91 PASS.
+API TypeScript typecheck PASS. The unrelated canonical Invoice and
+AP services are included in their own contract tests only; actual
+invoice/AP creation in a shared isolated PostgreSQL transaction and
+real statement ingestion are NOT yet demonstrated. A fixture marks the
+bank row as imported for finalizer eligibility, not an actual import.
+No real bank transfers, supplier payables, or CST/PROD journals were
+issued. Never classify this as full application/business E2E PASS.

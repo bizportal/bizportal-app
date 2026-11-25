@@ -4016,7 +4016,7 @@ async function approveBankMutation(
   };
 }
 
-async function postBankMutationCanonical(
+export async function postBankMutationCanonical(
   client: ApprovalClient,
   mutationId: number,
   entryId: number,

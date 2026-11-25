@@ -3,6 +3,7 @@ import pg from "pg";
 import {PgDialect} from "drizzle-orm/pg-core";
 import {approveMarketplacePaymentRequest} from "./marketplacePaymentApproval";
 import {finalizePostedMarketplacePayment} from "./marketplacePaymentFinalization";
+import {postBankMutationCanonical} from "../../routes/bank-reconciliation";
 import type {VerifiedActor} from "./marketplacePaymentReleaseGate";
 const url="postgres://postgres@127.0.0.1:55493/postgres";
 const actor:VerifiedActor={source:"signed_server_session",role:"super_admin",email:"owner@example.invalid",companyId:1};
@@ -16,6 +17,7 @@ beforeAll(async()=>{
    drop table if exists public.mkt_po_shipments;
    drop table if exists public.mkt_purchase_orders;
    drop table if exists public.mkt_payment_approval_audit_dev;
+   drop table if exists public.bank_reconciliation_audit;
    drop table if exists public.audit_logs;
    drop table if exists public.company_bank_accounts;
    drop table if exists public.chart_of_accounts;
@@ -66,7 +68,8 @@ beforeAll(async()=>{
      accounting_posted boolean,reconciliation_status text,journal_entry_id integer,
      import_row_id integer,import_batch_id integer,source_table text,source_module text,
      source_id integer,linked_transaction_type text,linked_transaction_id integer,
-     amount numeric,bank_account_id text,approved_at timestamptz
+     amount numeric,bank_account_id text,approved_at timestamptz,
+     posted_at timestamptz,review_code text,review_reason text,updated_at timestamptz
    );
    create table public.payment_matching_groups(
      id integer primary key, company_id integer,status text,
@@ -83,7 +86,7 @@ beforeAll(async()=>{
    );
    create table public.accounting_entries(
      id integer primary key,company_id integer,source text,source_id integer,
-     status text,total_debit numeric,total_credit numeric
+     status text,total_debit numeric,total_credit numeric,posted_at timestamptz
    );
    create table public.accounting_entry_lines(
      id integer primary key,entry_id integer,company_id integer,
@@ -99,6 +102,9 @@ beforeAll(async()=>{
      id serial primary key,company_id integer,payment_request_id integer,
      actor_email text,decision text,created_at timestamptz default now(),
      unique(payment_request_id)
+   );
+   create table public.bank_reconciliation_audit(
+     id serial primary key,mutation_id integer,action text,actor text,meta jsonb
    );
    create table public.audit_logs(
      id serial primary key,user_email text,action text,entity_type text,entity_id text,
@@ -120,7 +126,7 @@ beforeEach(async()=>{
  await admin.query(`truncate public.mkt_purchase_orders,public.mkt_po_shipments,
  public.mkt_po_goods_receipts,public.mkt_payment_approval_audit_dev,
  public.company_bank_accounts,public.chart_of_accounts,
- public.audit_logs,public.accounting_entry_lines,
+ public.bank_reconciliation_audit,public.audit_logs,public.accounting_entry_lines,
  public.accounting_entries,public.payment_allocations,public.payment_matching_groups,
  public.bank_reconciliation_matches,public.bank_mutations,
  public.vendor_invoices,public.mkt_ap_preparations,public.mkt_accounting_handoffs,
@@ -185,6 +191,93 @@ async function snapshot(){
  (select count(*)::int from public.audit_logs) audit_count`);
  return x.rows[0];
 }
+describe("Actual canonical bank posting function, then Marketplace finalization — isolated PostgreSQL",()=>{
+ it("takes draft journal & unposted mutation through real canonical POST then paid finalization, idempotently",async()=>{
+  await admin.query("update public.bank_mutations set status='approved_pending_posting',accounting_posted=false,reconciliation_status=null,approved_at=null,posted_at=null where id=101");
+  await admin.query("update public.accounting_entries set status='draft',posted_at=null where id=201");
+  await admin.query("update public.bank_reconciliation_matches set status='candidate' where id=501");
+  const client=new pg.Client({connectionString:url});await client.connect();
+  try{
+   await client.query("BEGIN");
+   const posted=await postBankMutationCanonical(client as never,101,201,501,
+     {email:actor.email,companyId:1},
+     {reason:"isolated bank import matching QA; no actual statement source",review_code:"QA_CANONICAL_POSTED"});
+   expect(posted).toMatchObject({journal_entry_id:201,status:"posted",idempotent:false});
+   await client.query("COMMIT");
+  }catch(error){await client.query("ROLLBACK");throw error;}
+  finally{await client.end();}
+  const replayClient=new pg.Client({connectionString:url});await replayClient.connect();
+  try{
+   await replayClient.query("BEGIN");
+   const replayPosting=await postBankMutationCanonical(replayClient as never,101,201,501,
+     {email:actor.email,companyId:1},{reason:"isolated canonical replay"});
+   expect(replayPosting).toMatchObject({journal_entry_id:201,status:"posted",idempotent:true});
+   await replayClient.query("COMMIT");
+  }catch(e){await replayClient.query("ROLLBACK");throw e;}
+  finally{await replayClient.end();}
+  const mutation=await admin.query("select status,accounting_posted,reconciliation_status,journal_entry_id from public.bank_mutations where id=101");
+  expect(mutation.rows[0]).toMatchObject({status:"posted",accounting_posted:true,
+    reconciliation_status:"reconciled",journal_entry_id:201});
+  const journal=await admin.query("select status,total_debit::text,total_credit::text from public.accounting_entries where id=201");
+  expect(journal.rows[0]).toMatchObject({status:"posted",total_debit:"100000",total_credit:"100000"});
+  const bankAudit=await admin.query("select count(*)::int as n from public.bank_reconciliation_audit where mutation_id=101");
+  expect(bankAudit.rows[0].n).toBe(1);
+  expect((await run()).status).toBe("CONFIRMED");
+  expect((await run()).status).toBe("REPLAY");
+  expect(await snapshot()).toMatchObject({request_status:"paid",paid:"100000.00",journal_id:201,
+    handoff_status:"posted",audit_count:1});
+ });
+ it("rolls back bank mutation, match and GL if canonical audit write fails",async()=>{
+  await admin.query("update public.bank_mutations set status='approved_pending_posting',accounting_posted=false,reconciliation_status=null,approved_at=null where id=101");
+  await admin.query("update public.accounting_entries set status='draft' where id=201");
+  await admin.query("update public.bank_reconciliation_matches set status='candidate' where id=501");
+  await admin.query(`
+   create or replace function public.qa_reject_bank_audit() returns trigger language plpgsql as $$
+   begin raise exception 'QA_INJECTED_CANONICAL_BANK_AUDIT_FAILURE'; end; $$;
+   create trigger qa_reject_bank_audit before insert on public.bank_reconciliation_audit
+   for each row execute function public.qa_reject_bank_audit();
+  `);
+  try{
+    const c=new pg.Client({connectionString:url});await c.connect();
+    try{
+      await c.query("BEGIN");
+      await expect(postBankMutationCanonical(c as never,101,201,501,
+        {email:actor.email,companyId:1},{reason:"isolated injected bank audit failure"}))
+        .rejects.toThrow("QA_INJECTED_CANONICAL_BANK_AUDIT_FAILURE");
+      await c.query("ROLLBACK");
+    }finally{await c.end();}
+    const r=await admin.query("select status,accounting_posted,reconciliation_status from public.bank_mutations where id=101");
+    expect(r.rows[0]).toMatchObject({status:"approved_pending_posting",accounting_posted:false,reconciliation_status:null});
+    const j=await admin.query("select status from public.accounting_entries where id=201");
+    expect(j.rows[0].status).toBe("draft");
+    const m=await admin.query("select status from public.bank_reconciliation_matches where id=501");
+    expect(m.rows[0].status).toBe("candidate");
+    const audit=await admin.query("select count(*)::int n from public.bank_reconciliation_audit");
+    expect(audit.rows[0].n).toBe(0);
+  }finally{
+    await admin.query("drop trigger if exists qa_reject_bank_audit on public.bank_reconciliation_audit");
+    await admin.query("drop function if exists public.qa_reject_bank_audit()");
+  }
+ });
+ it("rolls back canonical posting on an unbalanced draft journal",async()=>{
+  await admin.query("update public.bank_mutations set status='approved_pending_posting',accounting_posted=false,reconciliation_status=null where id=101");
+  await admin.query("update public.accounting_entries set status='draft' where id=201");
+  await admin.query("update public.accounting_entry_lines set credit=99999 where id=2");
+  const c=new pg.Client({connectionString:url});await c.connect();
+  try{
+   await c.query("BEGIN");
+   await expect(postBankMutationCanonical(c as never,101,201,501,
+      {email:actor.email,companyId:1},{reason:"QA invalid journal"}))
+      .rejects.toThrow("Jurnal tidak balanced");
+   await c.query("ROLLBACK");
+  }finally{await c.end();}
+  const mutation=await admin.query("select status,accounting_posted from public.bank_mutations where id=101");
+  expect(mutation.rows[0]).toMatchObject({status:"approved_pending_posting",accounting_posted:false});
+  const audit=await admin.query("select count(*)::int as n from public.bank_reconciliation_audit");
+  expect(audit.rows[0].n).toBe(0);
+  expect((await snapshot()).request_status).toBe("approved");
+ });
+});
 describe("Marketplace Approval to posted-bank finalization integrated PostgreSQL flow",()=>{
  it("approves actual AP draft, then finalizes matched posted bank evidence with one audit each",async()=>{
    // Existing canonical bank evidence fixture is already posted. These tests
