@@ -687,7 +687,7 @@ export function auditCashSheetRunningBalances(rows: string[][]): {
  * This is a pure DEV diagnostic, not a posting or import decision.
  */
 export function explainCashRawBalanceDifferences(
-  mismatches: ReadonlyArray<{ rowNumber: number; direction: "IN" | "OUT" }>,
+  mismatches: ReadonlyArray<{ rowNumber: number; direction: "IN" | "OUT"; previousBalance: number }>,
   numericEvidence: ReadonlyArray<{
     rowNumber: number;
     debitRaw: number | null;
@@ -697,7 +697,7 @@ export function explainCashRawBalanceDifferences(
 ): Array<{
   rowNumber: number;
   rawDifference: number | null;
-  category: "DISPLAY_PRECISION_ONLY" | "RAW_SOURCE_MISMATCH" | "SOURCE_NUMERIC_UNAVAILABLE";
+  category: "DISPLAY_PRECISION_ONLY" | "RAW_SOURCE_MISMATCH" | "SOURCE_NUMERIC_UNAVAILABLE" | "SOURCE_REFERENCE_UNVERIFIED";
 }> {
   const byRow = new Map(numericEvidence.map((r) => [r.rowNumber, r]));
   return mismatches.map((m) => {
@@ -707,6 +707,16 @@ export function explainCashRawBalanceDifferences(
     if (current?.saldoRaw == null || previous?.saldoRaw == null || movement == null
         || ![current.saldoRaw, previous.saldoRaw, movement].every(Number.isFinite)) {
       return { rowNumber: m.rowNumber, rawDifference: null, category: "SOURCE_NUMERIC_UNAVAILABLE" as const };
+    }
+    // The preceding physical Sheet row must agree with the baseline used in
+    // the formatted cash audit. A huge mismatch suggests a misplaced/typed
+    // source cell or a row reference issue: do not fabricate a cash difference.
+    if (!Number.isFinite(m.previousBalance)
+        || Math.abs(previous.saldoRaw - m.previousBalance) > 1.01) {
+      return {
+        rowNumber: m.rowNumber, rawDifference: null,
+        category: "SOURCE_REFERENCE_UNVERIFIED" as const,
+      };
     }
     const expected = previous.saldoRaw + (m.direction === "IN" ? movement : -movement);
     const delta = Math.round((current.saldoRaw - expected) * 100) / 100;
