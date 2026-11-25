@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { previewCashSheetRows } from "../lib/bank-sheet-sync";
+import { assertBankMutationWriterAccountType, previewCashSheetRows } from "../lib/bank-sheet-sync";
 
 const routeSource = readFileSync(
   resolve(process.cwd(), "src/routes/bank-reconciliation.ts"),
@@ -67,6 +67,28 @@ describe("Google Sheet reconciliation account isolation", () => {
     expect(routeSource).toContain("bm.bank_account_id::text");
     expect(routeSource).toContain("bank_account_id?: unknown");
     expect(routeSource).toContain("bm.bank_account_id =");
+  });
+});
+
+describe("Cash ledger must never use the bank mutation writer", () => {
+  it("rejects a cash account before the bank writer can touch Sheets or DB", () => {
+    expect(() => assertBankMutationWriterAccountType("cash"))
+      .toThrow("CASH_SHEET_REQUIRES_CASH_LEDGER_IMPORT_PATH");
+    expect(() => assertBankMutationWriterAccountType(" CASH "))
+      .toThrow("CASH_SHEET_REQUIRES_CASH_LEDGER_IMPORT_PATH");
+  });
+  it("preserves existing noncash bank behavior", () => {
+    expect(() => assertBankMutationWriterAccountType("bank")).not.toThrow();
+  });
+  it("checks the source before opening DB connections and Sheets API", () => {
+    const syncStart = syncSource.indexOf("async function syncConfig(config: SheetConfig)");
+    const guard = syncSource.indexOf("assertBankMutationWriterAccountType(config.account_type)", syncStart);
+    const connection = syncSource.indexOf("const client = await pool.connect()", syncStart);
+    const sheets = syncSource.indexOf("readSpreadsheetValues(config.sheet_id, config.tab_name)", syncStart);
+    expect(syncStart).toBeGreaterThan(-1);
+    expect(guard).toBeGreaterThan(syncStart);
+    expect(connection).toBeGreaterThan(guard);
+    expect(sheets).toBeGreaterThan(guard);
   });
 });
 

@@ -667,6 +667,24 @@ async function markConfigSync(
   );
 }
 
+// Pure parser-only probe for test and staging validation. It does not call
+// the Google Sheets API or write to bank_mutations; the writer is cash-blocked.
+export function parseCashSheetDirectionDates(rows: string[][]): Array<{
+  transactionDate: string;
+  direction: "IN" | "OUT";
+}> {
+  return parseRows(rows, "cash").mutations.map(({ transactionDate, direction }) => ({
+    transactionDate,
+    direction,
+  }));
+}
+
+export function assertBankMutationWriterAccountType(accountType: string | null): void {
+  if (accountType?.trim().toLowerCase() === "cash") {
+    throw new Error("CASH_SHEET_REQUIRES_CASH_LEDGER_IMPORT_PATH");
+  }
+}
+
 async function syncConfig(config: SheetConfig): Promise<{
   imported: number;
   total: number;
@@ -674,6 +692,10 @@ async function syncConfig(config: SheetConfig): Promise<{
   sheetUpdates: number;
 }> {
   assertProductionSheetSourceAllowed(config);
+  // Bank mutation writer is not an accounting cash-ledger writer.
+  // Fail before a DB connection, Google Sheets API call, or any write if the
+  // source is cash. Cash import needs an independently tested canonical path.
+  assertBankMutationWriterAccountType(config.account_type);
   const client = await pool.connect();
   try {
     const rows = await readSpreadsheetValues(config.sheet_id, config.tab_name);
