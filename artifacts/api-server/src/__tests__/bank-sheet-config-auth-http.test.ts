@@ -199,7 +199,7 @@ describe("bank Sheet company-scoped HTTP authorization gate", () => {
     const put=(body:Record<string,unknown>)=>fetch(url,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
     expect((await put({...valid,is_active:false})).status).toBe(400);
     expect((await put({...valid,bank_account_id:17})).status).toBe(400);
-    expect((await put({...valid,company_id:3})).status).toBe(400);
+    expect((await put({...valid,company_id:3})).status).toBe(403);
     expect(mock.queries).toHaveLength(0);
     const ok=await put(valid);
     expect(ok.status).toBe(200);
@@ -220,7 +220,7 @@ describe("bank Sheet company-scoped HTTP authorization gate", () => {
     expect((await put(3)).status).toBe(423);
     mock.actor=null;
     mock.signedActor={email:"owner@pr95.invalid",companyId:3,role:"super_admin"};
-    expect((await put(3)).status).toBe(400);
+    expect((await put(3)).status).toBe(403);
     mock.signedActor={email:"owner@pr95.invalid",companyId:1,role:"super_admin"};
     expect((await put(2)).status).toBe(423);
     expect(mock.queries).toHaveLength(0);
