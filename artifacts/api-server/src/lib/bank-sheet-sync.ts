@@ -443,6 +443,54 @@ function parseRows(rows: string[][], accountType: string | null = null): {
   };
 }
 
+/**
+ * Read-only admission check for the CST cash-ledger source.
+ * No database access, Sheets updates, or side effects.
+ * Never return actual transaction values to the caller.
+ */
+export function previewCashSheetRows(rows: string[][]): {
+  headerValid: boolean;
+  nonemptyRows: number;
+  importableRows: number;
+  rejectedRows: number;
+  ambiguousBothSides: number;
+  incomingRows: number;
+  outgoingRows: number;
+  safeToImport: boolean;
+} {
+  const headers = (rows[0] ?? []).map((cell) => String(cell ?? "").trim().toLowerCase());
+  const headerValid =
+    headers.some((h) => h === "tanggal")
+    && headers.some((h) => h.startsWith("keterangan"))
+    && headers.some((h) => h === "debit")
+    && headers.some((h) => h === "kredit");
+  const candidateRows = rows.slice(1).filter((row) =>
+    row?.some((cell) => String(cell ?? "").trim()));
+  if (!headerValid) {
+    return {
+      headerValid: false, nonemptyRows: candidateRows.length,
+      importableRows: 0, rejectedRows: candidateRows.length,
+      ambiguousBothSides: 0, incomingRows: 0, outgoingRows: 0,
+      safeToImport: false,
+    };
+  }
+  const parsed = parseRows(rows, "cash");
+  const ambiguousBothSides = candidateRows.filter((row) => {
+    const debit = parseAmount(String(row[headers.indexOf("debit")] ?? ""));
+    const credit = parseAmount(String(row[headers.indexOf("kredit")] ?? ""));
+    return debit > 0 && credit > 0;
+  }).length;
+  const importableRows = parsed.mutations.length;
+  const rejectedRows = Math.max(0, candidateRows.length - importableRows);
+  return {
+    headerValid, nonemptyRows: candidateRows.length, importableRows,
+    rejectedRows, ambiguousBothSides,
+    incomingRows: parsed.mutations.filter((row) => row.direction === "IN").length,
+    outgoingRows: parsed.mutations.filter((row) => row.direction === "OUT").length,
+    safeToImport: importableRows > 0 && rejectedRows === 0 && ambiguousBothSides === 0,
+  };
+}
+
 function addSheetStatusUpdates(
   config: SheetConfig,
   parsed: ReturnType<typeof parseRows>,

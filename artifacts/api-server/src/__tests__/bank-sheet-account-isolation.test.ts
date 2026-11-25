@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { previewCashSheetRows } from "../lib/bank-sheet-sync";
 
 const routeSource = readFileSync(
   resolve(process.cwd(), "src/routes/bank-reconciliation.ts"),
@@ -66,5 +67,40 @@ describe("Google Sheet reconciliation account isolation", () => {
     expect(routeSource).toContain("bm.bank_account_id::text");
     expect(routeSource).toContain("bank_account_id?: unknown");
     expect(routeSource).toContain("bm.bank_account_id =");
+  });
+});
+
+describe("CST-DEV Kas Besar SC read-only preflight", () => {
+  const headers = ["Tanggal", "Keterangan COA", "Debit", "Kredit", "Saldo", "Pemasukan/Pengeluaran"];
+  it("recognizes one cash inflow and one cash outflow without any writes", () => {
+    expect(previewCashSheetRows([
+      headers,
+      ["25/11/2026", "Contoh penerimaan", "100000", "", "100000", "Pemasukan"],
+      ["26/11/2026", "Contoh pengeluaran", "", "25000", "75000", "Pengeluaran"],
+    ])).toMatchObject({
+      headerValid: true, nonemptyRows: 2, importableRows: 2,
+      rejectedRows: 0, ambiguousBothSides: 0,
+      incomingRows: 1, outgoingRows: 1, safeToImport: true,
+    });
+  });
+  it("blocks rows with invalid dates or both debit and credit values", () => {
+    expect(previewCashSheetRows([
+      headers,
+      ["not-a-date", "invalid", "1000", "", "", ""],
+      ["26/11/2026", "ambiguous", "100", "50", "", ""],
+    ])).toMatchObject({
+      importableRows: 1, rejectedRows: 1, ambiguousBothSides: 1, safeToImport: false,
+    });
+  });
+  it("never passes unrecognized headers", () => {
+    expect(previewCashSheetRows([["unknown", "other"], ["anything", "else"]]))
+      .toMatchObject({ headerValid: false, safeToImport: false });
+  });
+  it("keeps the endpoint read-only and locked to CST-DEV cash config #5", () => {
+    expect(routeSource).toContain('router.get("/bank-reconciliation/sheet-configs/5/preview"');
+    expect(routeSource).toContain('const rows = await readSpreadsheetValues(config.sheet_id, config.tab_name)');
+    expect(routeSource).toContain('if (!actor?.signedSuperAdmin || companyId !== 1');
+    expect(routeSource).toContain('config.bank_account_id !== 18');
+    expect(routeSource).toContain('mode: "read_only_no_sync"');
   });
 });

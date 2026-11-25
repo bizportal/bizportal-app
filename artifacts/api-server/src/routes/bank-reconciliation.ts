@@ -7,13 +7,14 @@ import {
   hydrateQrisReviewDiagnostics,
   listQrisReviewDiagnostics,
 } from "../lib/reconciliation/qrisReviewDiagnostics";
-import { inspectSpreadsheet } from "../lib/google-sheets";
+import { inspectSpreadsheet, readSpreadsheetValues } from "../lib/google-sheets";
 import { bankSheetConfigAccountJoin } from "../lib/bankSheetConfigAccountJoin";
 import { getDevBankSheetReaderFromConfiguredSource } from "../lib/bankSheetScopedReader";
 import { classifyBankSheetReaderFailure } from "../lib/bankSheetReaderDiagnostic";
 import {
   syncAllBankSheetConfigs,
   syncOneBankSheetConfig,
+  previewCashSheetRows,
 } from "../lib/bank-sheet-sync";
 import {
   getDevSession,
@@ -8414,6 +8415,37 @@ router.delete("/bank-reconciliation/sheet-configs/:id", async (req, res): Promis
     }
     req.log.error({ error }, "Failed to delete sheet configuration");
     res.status(503).json({ error: "Konfigurasi Google Sheet gagal dihapus" });
+  }
+});
+
+// DEV-only, read-only and aggregate-only preflight for the separate Kas Besar SC
+// source. Does not invoke syncConfig, bank mutation writes, or Sheets writes.
+router.get("/bank-reconciliation/sheet-configs/5/preview", async (req, res): Promise<void> => {
+  if (!isDevelopmentEnvironment()) { res.status(404).json({ error: "Not found" }); return; }
+  const actor = res.locals.sheetActor as ApprovalActor | undefined;
+  const companyId = req.query.company_id === undefined ? null : parsePositiveInt(req.query.company_id);
+  if (!actor?.signedSuperAdmin || companyId !== 1
+      || (actor.companyId !== null && actor.companyId !== 1)) {
+    res.status(403).json({ error: "Akses pratinjau CST-DEV ditolak" }); return;
+  }
+  try {
+    const reader = await getDevBankSheetReaderFromConfiguredSource(1);
+    const result = await reader.query<{
+      sheet_id: string; tab_name: string; bank_account_id: number | null;
+    }>(
+      "select sheet_id, tab_name, bank_account_id from public.bank_sheet_configs where id=5 and company_id=1 and is_active=false",
+    );
+    const config = result.rows[0];
+    if (!config || config.bank_account_id !== 18 || config.tab_name !== "kas besar sc") {
+      res.status(409).json({ error: "Pemetaan Kas Besar SC tidak memenuhi prasyarat DEV" });
+      return;
+    }
+    const rows = await readSpreadsheetValues(config.sheet_id, config.tab_name);
+    const preview = previewCashSheetRows(rows);
+    res.json({ ok: preview.safeToImport, configId: 5, accountId: 18, ...preview, mode: "read_only_no_sync" });
+  } catch {
+    // Do not reveal keys, spreadsheet contents, or provider diagnostics.
+    res.status(502).json({ ok: false, error: "Pratinjau baca-saja Kas Besar SC gagal" });
   }
 });
 
