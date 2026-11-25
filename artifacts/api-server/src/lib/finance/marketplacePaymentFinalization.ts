@@ -8,6 +8,7 @@
 import type { Client } from "pg";
 import type { VerifiedActor } from "./marketplacePaymentReleaseGate";
 import { verifyNativeVendorBankEvidence } from "./nativeVendorBankEvidence";
+import { hasMarketplaceBankImportProvenance } from "./marketplaceBankImportProvenance";
 
 export type FinalizeResult = {status:"CONFIRMED"|"REPLAY";paymentRequestId:number;bankMutationId:number;journalEntryId:number};
 export class PaymentFinalizationDenied extends Error {
@@ -71,7 +72,7 @@ export async function finalizePostedMarketplacePayment(
       [bankId,company],"BANK_MUTATION_NOT_FOUND");
     requireState(bank.direction==="OUT" && bank.status==="posted" && bank.accounting_posted===true &&
       bank.reconciliation_status==="reconciled" && bank.journal_entry_id!==null &&
-      (bank.import_row_id!==null || bank.import_batch_id!==null),"BANK_NOT_POSTED_FROM_IMPORT");
+      await hasMarketplaceBankImportProvenance(client,bank,company),"BANK_NOT_POSTED_FROM_IMPORT");
     // Verify the existing canonical Vendor Invoice allocation chain (one
     // invoice only). A Payment Request link is derived from locked AP/Handoff;
     // do not trust a caller-supplied bank source tag.
@@ -87,9 +88,19 @@ export async function finalizePostedMarketplacePayment(
       [bank.journal_entry_id,company,bankId],"CANONICAL_POSTED_JOURNAL_REQUIRED");
     const journalId=asId(journal.id);
     requireState(journalId,"INVALID_JOURNAL_ID");
-    const lines=await client.query(`select debit::text,credit::text,company_id,account_id from public.accounting_entry_lines
-       where entry_id=$1 for update`,[journal.id]);
-    requireState(lines.rows.length>=2 && lines.rows.every(r=>r.company_id===company),"JOURNAL_COMPANY_MISMATCH");
+    // The canonical line schema does not carry company_id. Its company is
+    // established by the locked journal header and its actual posting COA.
+    const lines=await client.query(`select line.debit::text,line.credit::text,line.account_id,
+       coa.company_id account_company_id,
+       (select count(*)::int from public.accounting_entry_lines all_lines
+        where all_lines.entry_id=$1) journal_line_count,
+       to_jsonb(line)->>'company_id' legacy_line_company_id
+       from public.accounting_entry_lines line
+       join public.chart_of_accounts coa on coa.id=line.account_id
+       where line.entry_id=$1 for update of line,coa`,[journal.id]);
+    requireState(lines.rows.length>=2 && lines.rows.length===lines.rows[0]?.journal_line_count && lines.rows.every(r=>
+      r.account_company_id===company &&
+      (r.legacy_line_company_id==null || Number(r.legacy_line_company_id)===company)),"JOURNAL_COMPANY_MISMATCH");
     let debit=0n,credit=0n;
     for(const line of lines.rows){
       const a=exactMoney(line.debit),b=exactMoney(line.credit);

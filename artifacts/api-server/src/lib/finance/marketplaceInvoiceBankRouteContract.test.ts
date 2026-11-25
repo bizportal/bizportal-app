@@ -9,10 +9,11 @@ describe("DEV Marketplace status bridge in existing Bank Reconciliation",()=>{
   expect(source).toContain('invoiceResult.rows.length !== 1 || vendorInvoiceIds.length !== 1');
  });
  it("requires genuine signed Super Admin and selected company",()=>{
-  expect(source).toContain('const signedSession = getProductionSession(req);');
-  expect(source).toContain('const signedUser = signedSession ? await getProductionUser(signedSession) : null;');
-  expect(source).toContain('signedUser.role.toLowerCase() !== "super_admin"');
-  expect(source).toContain('getFinanceCompanyScope(req, signedSession)');
+  expect(source).toContain('const session = getProductionSession(request);');
+  expect(source).toContain('const user = session ? await getProductionUser(session) : null;');
+  expect(source).toContain('user.role.toLowerCase() !== "super_admin"');
+  expect(source).toContain('getFinanceCompanyScope(request, session)');
+  expect(source).toContain('const marketplaceActor = await getMarketplaceMatchingActor(req, actor);');
   expect(source).toContain('FINANCE_COMPANY_NOT_VERIFIED');
  });
  it("preserves the legacy posted path and never forges Invoice posted",()=>{

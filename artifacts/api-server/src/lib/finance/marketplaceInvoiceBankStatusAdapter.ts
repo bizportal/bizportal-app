@@ -6,13 +6,13 @@
  * Marketplace status=ready_for_ap may be used ONLY after this verifies the
  * exact locked AP/PaymentRequest/Handoff and the actual signed Super Admin.
  */
-import type { Client } from "pg";
 import type { VerifiedActor } from "./marketplacePaymentReleaseGate";
+import { hasMarketplaceBankImportProvenance, type MarketplaceBankQueryClient } from "./marketplaceBankImportProvenance";
 
 export class MarketplaceBankAllocationDenied extends Error {
   constructor(readonly code: string) { super(code); }
 }
-type QueryClient = Pick<Client,"query">;
+type QueryClient = MarketplaceBankQueryClient;
 function deny(code:string):never {throw new MarketplaceBankAllocationDenied(code);}
 function whole(v:unknown):v is number{return typeof v==="number"&&Number.isSafeInteger(v)&&v>0;}
 function cents(v:unknown):bigint|null{
@@ -43,7 +43,7 @@ export async function authorizeMarketplaceReadyForApBankAllocation(
     h.status handoff_status,h.accounting_status,
     vi.status::text invoice_status,vi.three_way_match_status,
     bm.amount::text bank_amount,bm.direction,bm.status bank_status,
-    bm.journal_entry_id bank_journal,bm.import_row_id,bm.import_batch_id
+    bm.journal_entry_id bank_journal,to_jsonb(bm) bank_provenance
    from public.vendor_invoices vi
    join public.mkt_ap_preparations ap on ap.vendor_invoice_id=vi.id
       and ap.company_id=vi.company_id and ap.supplier_id=vi.supplier_id
@@ -75,7 +75,7 @@ export async function authorizeMarketplaceReadyForApBankAllocation(
  const amount=cents(r.request_amount), bank=cents(r.bank_amount);
  if(amount===null||amount<=0n||bank!==amount)deny("BANK_AMOUNT_MISMATCH");
  if(r.direction!=="OUT" || !["unmatched","matched","manual_review","duplicate_need_review"].includes(r.bank_status) ||
-    r.bank_journal!==null || (r.import_row_id==null && r.import_batch_id==null))
+    r.bank_journal!==null || !await hasMarketplaceBankImportProvenance(client,r.bank_provenance,companyId))
    deny("BANK_MUTATION_NOT_ELIGIBLE");
  // The existing writer still performs its own bank-COA, PPh, duplicate
  // allocation, journal balance and COMMIT checks before approving the match.

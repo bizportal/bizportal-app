@@ -838,6 +838,7 @@ interface OutstandingVendorInvoice {
   grandTotal: number;
   amountPaid: number;
   outstanding: number;
+  marketplaceAp?: boolean;
   taxReviewStatus?: string | null;
   withholdingTaxAmount?: number;
   dueDate?: string | null;
@@ -2529,6 +2530,12 @@ function candidateApprovalBlockReason(candidate: Candidate): string | null {
   return null;
 }
 
+function isMarketplaceApCandidate(candidate: Candidate): boolean {
+  return candidate.candidate_type === "vendor_invoice"
+    && candidate.candidate_source === "public.vendor_invoices"
+    && candidate.details?.status === "ready_for_ap";
+}
+
 function MatchingReviewReasonBlock({
   mutation,
   candidate,
@@ -3536,7 +3543,9 @@ function VendorInvoicePaymentDialog({
   const selectionFitsMutation =
     hasInvoiceSelection
     && selectedAmountsValid
-    && selectedTotal <= mutationAmount + 0.01;
+    && selectedTotal <= mutationAmount + 0.01
+    && (!selectedInvoices.some(invoice => invoice.marketplaceAp)
+      || (selectedInvoices.length === 1 && Math.abs(selectedTotal - mutationAmount) <= 0.01));
 
   useEffect(() => {
     if (!open) {
@@ -3551,6 +3560,10 @@ function VendorInvoicePaymentDialog({
     setSelectedIds((current) => {
       if (checked) {
         if (current.includes(invoiceId)) return current;
+        if (invoice?.marketplaceAp) {
+          setAllocationAmounts({ [invoiceId]: String(mutationAmount) });
+          return [invoiceId];
+        }
         const next = [...current, invoiceId];
         if (invoice) {
           setAllocationAmounts((amounts) => ({
@@ -3722,6 +3735,11 @@ function VendorInvoicePaymentDialog({
           <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
             Invoice yang sudah tersettle penuh tidak ditampilkan. Jika total sisa invoice lebih kecil dari nominal mutasi, selisihnya akan dicatat ke COA 2-1011-CST — Salah Transfer.
           </div>
+          {invoices.some(invoice => invoice.marketplaceAp) && (
+            <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-900">
+              Invoice Marketplace AP yang ditampilkan telah disetujui Super Admin. Pilih satu invoice dengan nominal penuh sesuai mutasi; persetujuan dan perusahaan diperiksa kembali saat alokasi disimpan.
+            </div>
+          )}
 
           {invoicesQuery.isLoading && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -3766,7 +3784,7 @@ function VendorInvoicePaymentDialog({
                         <TableCell className="align-top pt-4">
                           <Checkbox
                             checked={checked}
-                            disabled={saving}
+                            disabled={saving || (!checked && selectedInvoices.some(selected => selected.marketplaceAp))}
                             onCheckedChange={(value) => toggleInvoice(invoice.id, value === true)}
                             aria-label={`Pilih invoice ${invoice.billNumber ?? invoice.docNumber}`}
                           />
@@ -3774,6 +3792,11 @@ function VendorInvoicePaymentDialog({
                         <TableCell className="align-top">
                           <div className="font-medium">{invoice.billNumber ?? invoice.docNumber}</div>
                           <div className="text-xs text-muted-foreground">{invoice.supplierName}</div>
+                          {invoice.marketplaceAp && (
+                            <Badge variant="outline" className="mt-1 border-blue-300 text-blue-700">
+                              Marketplace AP disetujui
+                            </Badge>
+                          )}
                           {invoice.dueDate && <div className="text-xs text-muted-foreground">Jatuh tempo {invoice.dueDate}</div>}
                           {hasWithholding && (
                             <Badge variant="outline" className="mt-1 border-blue-300 text-blue-700">
@@ -3853,7 +3876,7 @@ function VendorInvoicePaymentDialog({
                                min="0"
                                step="0.01"
                                value={allocationAmounts[invoice.id] ?? ""}
-                               disabled={!checked || saving}
+                               disabled={!checked || saving || invoice.marketplaceAp}
                                onChange={(event) =>
                                  setAllocationAmounts((amounts) => ({
                                    ...amounts,
@@ -10047,6 +10070,11 @@ export default function BankReconciliationPage() {
     // mutation payload can still contain a historical H+1 candidate from a
     // previous matching run, which must never be approved accidentally.
     const chosen = approveDialogCands.find(c => c.id === selectedCandidateId);
+    if (chosen && isMarketplaceApCandidate(chosen)) {
+      setActionDialog(null);
+      setVendorPaymentTarget(m);
+      return;
+    }
     const blockedReason = chosen ? candidateApprovalBlockReason(chosen) : null;
     if (blockedReason) {
       toast({ title: "Approve diblokir", description: blockedReason, variant: "destructive" });
@@ -10069,6 +10097,10 @@ export default function BankReconciliationPage() {
   };
 
   const handleDirectApproveCandidate = (m: BankMutation, candidate: Candidate) => {
+    if (isMarketplaceApCandidate(candidate)) {
+      setVendorPaymentTarget(m);
+      return;
+    }
     const blockedReason = candidateApprovalBlockReason(candidate);
     if (blockedReason) {
       toast({ title: "Approve diblokir", description: blockedReason, variant: "destructive" });

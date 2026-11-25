@@ -89,7 +89,7 @@ beforeAll(async()=>{
      status text,total_debit numeric,total_credit numeric,posted_at timestamptz
    );
    create table public.accounting_entry_lines(
-     id integer primary key,entry_id integer,company_id integer,
+     id integer primary key,entry_id integer,
      account_id integer,debit numeric,credit numeric
    );
    create table public.company_bank_accounts(
@@ -166,8 +166,8 @@ beforeEach(async()=>{
  insert into public.accounting_entries
  (id,company_id,source,source_id,status,total_debit,total_credit)
  values(201,1,'bank_reconciliation',101,'posted',100000,100000);
- insert into public.accounting_entry_lines(id,entry_id,company_id,account_id,debit,credit)
- values(1,201,1,301,100000,0),(2,201,1,302,0,100000);
+ insert into public.accounting_entry_lines(id,entry_id,account_id,debit,credit)
+ values(1,201,301,100000,0),(2,201,302,0,100000);
  insert into public.chart_of_accounts(id,company_id,is_active,is_postable)
  values(302,1,true,true),(301,1,true,true);
  insert into public.company_bank_accounts(id,company_id,account_number,coa_id,is_active)
@@ -403,11 +403,15 @@ describe("Marketplace AP posted bank atomic finalization, disposable PostgreSQL 
    await expect(run()).rejects.toThrow("ACTIVE_COMPANY_BANK_COA_REQUIRED");
    await admin.query("update public.company_bank_accounts set is_active=true where id=11");
    await admin.query("update public.chart_of_accounts set company_id=3 where id=302");
-   await expect(run()).rejects.toThrow("ACTIVE_COMPANY_BANK_COA_REQUIRED");
+   await expect(run()).rejects.toThrow("JOURNAL_COMPANY_MISMATCH");
  });
  it("rejects journal without an outgoing credit to the mapped bank COA",async()=>{
    await admin.query("update public.company_bank_accounts set coa_id=301 where id=11");
    await expect(run()).rejects.toThrow("BANK_COA_CREDIT_MISSING");
+ });
+ it("does not hide a journal line with a missing posting COA during the company join",async()=>{
+   await admin.query("insert into public.accounting_entry_lines(id,entry_id,account_id,debit,credit) values(3,201,999,0,0)");
+   await expect(run()).rejects.toThrow("JOURNAL_COMPANY_MISMATCH");
  });
  it("never marks unposted journal/previous draft payment as completed",async()=>{
   await admin.query("update public.accounting_entries set status='draft' where id=201");
