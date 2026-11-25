@@ -557,6 +557,64 @@ export function previewCashSheetRows(rows: string[][]): {
   };
 }
 
+/**
+ * Pure, no-write proposal for an eventual dedicated cash source importer.
+ * Identity is scoped to company/config/account + physical source row.
+ * Fingerprint detects edits to an existing row; never overwrite silently.
+ * Identical transaction payload on two different rows is flagged for review,
+ * not silently deduplicated (legitimate repeated cash payments may exist).
+ * Returned records are SHA-256 identifiers only. No amounts or descriptions.
+ */
+export function planCashSheetImportDryRun(
+  rows: string[][],
+  scope: { companyId: number; configId: number; accountId: number },
+  existing: ReadonlyMap<string, string> = new Map(),
+): {
+  proposed: Array<{ sourceKey: string; fingerprint: string }>;
+  newRows: number;
+  replayedRows: number;
+  changedRows: number;
+  repeatedPayloadRows: number;
+  totalParsedRows: number;
+  openingBalanceRows: number;
+  rejectedRows: number;
+  readyForCommit: false;
+} {
+  const preflight = previewCashSheetRows(rows);
+  const mutations = preflight.headerValid ? parseRows(rows, "cash").mutations : [];
+  const proposed: Array<{ sourceKey: string; fingerprint: string }> = [];
+  const seenPayloads = new Set<string>();
+  let repeatedPayloadRows = 0;
+  let newRows = 0;
+  let replayedRows = 0;
+  let changedRows = 0;
+  for (const row of mutations) {
+    const sourceKey = crypto.createHash("sha256").update(JSON.stringify([
+      "cst-cash-sheet-row-v1", scope.companyId, scope.configId,
+      scope.accountId, row.rowNumber,
+    ])).digest("hex");
+    const fingerprint = crypto.createHash("sha256").update(JSON.stringify([
+      "cst-cash-sheet-content-v1", row.transactionDate, row.direction,
+      row.description, row.debit, row.credit,
+    ])).digest("hex");
+    if (seenPayloads.has(fingerprint)) repeatedPayloadRows++;
+    seenPayloads.add(fingerprint);
+    proposed.push({ sourceKey, fingerprint });
+    const old = existing.get(sourceKey);
+    if (old === undefined) newRows++;
+    else if (old === fingerprint) replayedRows++;
+    else changedRows++;
+  }
+  return {
+    proposed, newRows, replayedRows, changedRows,
+    repeatedPayloadRows, totalParsedRows: mutations.length,
+    openingBalanceRows: preflight.openingBalanceRows,
+    rejectedRows: preflight.rejectedRows,
+    // A pure plan is never permission to commit any accounting rows.
+    readyForCommit: false,
+  };
+}
+
 function addSheetStatusUpdates(
   config: SheetConfig,
   parsed: ReturnType<typeof parseRows>,
