@@ -92,6 +92,27 @@ describe("CST-DEV Kas Besar SC read-only preflight", () => {
       importableRows: 1, rejectedRows: 1, rejectedRowNumbers: [2], ambiguousBothSides: 1, safeToImport: false,
     });
   });
+  it("identifies a cash opening balance without inventing a transaction or passing the gate", () => {
+    expect(previewCashSheetRows([
+      ["Tanggal", "Keterangan COA", "Debit", "Kredit", "Saldo"],
+      ["06/22/2026", "opening balance example", "SALDO AWAL", "", "13793"],
+      ["26/11/2026", "cash payment", "", "25000", "0"],
+    ])).toMatchObject({
+      headerValid: true, nonemptyRows: 2, importableRows: 1,
+      rejectedRows: 0, rejectedRowNumbers: [],
+      openingBalanceRows: 1, openingBalanceRowNumbers: [2],
+      incomingRows: 0, outgoingRows: 1, safeToImport: false,
+    });
+  });
+  it("does not misclassify a malformed SALDO AWAL without a usable balance", () => {
+    expect(previewCashSheetRows([
+      ["Tanggal", "Keterangan COA", "Debit", "Kredit", "Saldo"],
+      ["06/22/2026", "unusable opening balance", "SALDO AWAL", "", ""],
+    ])).toMatchObject({
+      importableRows: 0, rejectedRows: 1, rejectedRowNumbers: [2],
+      openingBalanceRows: 0, safeToImport: false,
+    });
+  });
   it("never passes unrecognized headers", () => {
     expect(previewCashSheetRows([["unknown", "other"], ["anything", "else"]]))
       .toMatchObject({ headerValid: false, safeToImport: false });
