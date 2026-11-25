@@ -186,12 +186,12 @@ export async function inspectCashBalanceSourceShapes(
       typeof value === "number" && Number.isFinite(value)).length;
     const normalizeShown = (value: unknown) => {
       const rawValue = String(value ?? "").trim().replace(/[^0-9.,-]/g, "");
-      const dots = (rawValue.match(/\\./g) ?? []).length;
+      const dots = (rawValue.match(/\./g) ?? []).length;
       const commas = (rawValue.match(/,/g) ?? []).length;
-      if (dots > 0 && commas === 0 && /^-?\\d{1,3}(\\.\\d{3})+$/.test(rawValue)) {
-        return Number(rawValue.replace(/\\./g, ""));
+      if (dots > 0 && commas === 0 && /^-?\d{1,3}(\.\d{3})+$/.test(rawValue)) {
+        return Number(rawValue.replace(/\./g, ""));
       }
-      if (commas > 0 && dots === 0 && /^-?\\d{1,3}(,\\d{3})+$/.test(rawValue)) {
+      if (commas > 0 && dots === 0 && /^-?\d{1,3}(,\d{3})+$/.test(rawValue)) {
         return Number(rawValue.replace(/,/g, ""));
       }
       return Number(rawValue.replace(",", "."));
