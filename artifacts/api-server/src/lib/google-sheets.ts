@@ -199,14 +199,16 @@ export async function readCashMismatchCellEvidence(
   ]);
   const numeric = (value: unknown): number | null =>
     typeof value === "number" && Number.isFinite(value) ? value : null;
+  const hasFormula = (value: unknown): boolean =>
+    typeof value === "string" && value.startsWith("=");
   return selected.map((rowNumber, i) => {
     const j = i * 3;
     return {
       rowNumber,
       debitRaw: numeric(raw[j]), creditRaw: numeric(raw[j + 1]), saldoRaw: numeric(raw[j + 2]),
-      debitFormula: typeof formulas[j] === "string" && formulas[j].startsWith("="),
-      creditFormula: typeof formulas[j + 1] === "string" && formulas[j + 1].startsWith("="),
-      saldoFormula: typeof formulas[j + 2] === "string" && formulas[j + 2].startsWith("="),
+      debitFormula: hasFormula(formulas[j]),
+      creditFormula: hasFormula(formulas[j + 1]),
+      saldoFormula: hasFormula(formulas[j + 2]),
     };
   });
 }
