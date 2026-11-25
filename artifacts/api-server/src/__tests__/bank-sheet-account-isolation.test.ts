@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { assertBankMutationWriterAccountType, planCashSheetImportDryRun, previewCashSheetRows } from "../lib/bank-sheet-sync";
+import { assertBankMutationWriterAccountType, auditCashSheetRunningBalances, planCashSheetImportDryRun, previewCashSheetRows } from "../lib/bank-sheet-sync";
 
 const routeSource = readFileSync(
   resolve(process.cwd(), "src/routes/bank-reconciliation.ts"),
@@ -152,6 +152,27 @@ describe("Cash source-only dry-run replay and rollback", () => {
     expect(planCashSheetImportDryRun(repeated, scope)).toMatchObject({
       totalParsedRows: 2, newRows: 2, repeatedPayloadRows: 1,
       readyForCommit: false,
+    });
+  });
+
+  it("reconciles opening balance and cash inflow/outflow without making ledger entries", () => {
+    expect(auditCashSheetRunningBalances(rows)).toMatchObject({
+      openingBalancePresent: true, checkedTransactions: 2,
+      balanceMismatchRows: 0, balanceMismatchRowNumbers: [],
+      missingBalanceRows: 0,
+    });
+  });
+
+  it("locates running-balance mismatches and missing balances by source row", () => {
+    const mismatch = rows.map((row) => [...row]);
+    mismatch[2]![4] = "15700";
+    const result = auditCashSheetRunningBalances(mismatch);
+    expect(result.balanceMismatchRows).toBeGreaterThan(0);
+    expect(result.balanceMismatchRowNumbers).toContain(3);
+    const missing = rows.map((row) => [...row]);
+    missing[3]![4] = "";
+    expect(auditCashSheetRunningBalances(missing)).toMatchObject({
+      checkedTransactions: 1, missingBalanceRows: 1,
     });
   });
 
