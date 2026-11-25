@@ -127,6 +127,27 @@ describe("CST-DEV Kas Besar SC read-only preflight", () => {
       safeToImport: false,
     });
   });
+  it("classifies first-row opening marker in description without a valid date, but keeps import locked", () => {
+    expect(previewCashSheetRows([
+      ["Tanggal", "Keterangan COA", "Debit", "Kredit", "Saldo"],
+      ["opening", "SALDO AWAL kas", "", "", "15000"],
+      ["26/11/2026", "cash receipt", "2000", "", "17000"],
+    ])).toMatchObject({
+      headerValid: true, nonemptyRows: 2, importableRows: 1,
+      rejectedRows: 0, rejectedRowNumbers: [], openingBalanceRows: 1,
+      openingBalanceRowNumbers: [2], safeToImport: false,
+    });
+  });
+  it("does not classify a mid-ledger SALDO AWAL marker as a safe opening baseline", () => {
+    expect(previewCashSheetRows([
+      ["Tanggal", "Keterangan COA", "Debit", "Kredit", "Saldo"],
+      ["26/11/2026", "cash receipt", "2000", "", "2000"],
+      ["opening", "SALDO AWAL in wrong row", "", "", "15000"],
+    ])).toMatchObject({
+      importableRows: 1, rejectedRows: 1,
+      rejectedRowNumbers: [3], openingBalanceRows: 0, safeToImport: false,
+    });
+  });
   it("never passes unrecognized headers", () => {
     expect(previewCashSheetRows([["unknown", "other"], ["anything", "else"]]))
       .toMatchObject({ headerValid: false, safeToImport: false });
