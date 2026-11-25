@@ -622,9 +622,11 @@ export function planCashSheetImportDryRun(
  */
 export function auditCashSheetRunningBalances(rows: string[][]): {
   openingBalancePresent: boolean;
+  openingBalanceAmount: number | null;
   checkedTransactions: number;
   balanceMismatchRows: number;
   balanceMismatchRowNumbers: number[];
+  mismatchDetails: Array<{ rowNumber: number; expectedBalance: number; statedBalance: number; difference: number }>;
   missingBalanceRows: number;
 } {
   const preflight = previewCashSheetRows(rows);
@@ -633,16 +635,18 @@ export function auditCashSheetRunningBalances(rows: string[][]): {
   const openingRow = preflight.openingBalanceRowNumbers[0];
   if (saldoIndex < 0 || openingRow === undefined) {
     return {
-      openingBalancePresent: false, checkedTransactions: 0,
-      balanceMismatchRows: 0, balanceMismatchRowNumbers: [],
+      openingBalancePresent: false, openingBalanceAmount: null, checkedTransactions: 0,
+      balanceMismatchRows: 0, balanceMismatchRowNumbers: [], mismatchDetails: [],
       missingBalanceRows: 0,
     };
   }
   let previous = parseAmount(String(rows[openingRow - 1]?.[saldoIndex] ?? ""));
+  const openingBalanceAmount = previous;
   const mutations = parseRows(rows, "cash").mutations;
   let checkedTransactions = 0;
   let missingBalanceRows = 0;
   const mismatch: number[] = [];
+  const mismatchDetails: Array<{ rowNumber: number; expectedBalance: number; statedBalance: number; difference: number }> = [];
   for (const mutation of mutations) {
     const value = String(rows[mutation.rowNumber - 1]?.[saldoIndex] ?? "").trim();
     if (!value) {
@@ -655,13 +659,20 @@ export function auditCashSheetRunningBalances(rows: string[][]): {
     checkedTransactions++;
     if (!Number.isFinite(actual) || Math.abs(actual - expected) > 0.01) {
       mismatch.push(mutation.rowNumber);
+      // Owner-only DEV diagnostics: no description, counterparty, or raw row payload.
+      if (mismatchDetails.length < 20) mismatchDetails.push({
+        rowNumber: mutation.rowNumber,
+        expectedBalance: Math.round(expected * 100) / 100,
+        statedBalance: Math.round(actual * 100) / 100,
+        difference: Math.round((actual - expected) * 100) / 100,
+      });
     }
     previous = actual;
   }
   return {
-    openingBalancePresent: true,
+    openingBalancePresent: true, openingBalanceAmount,
     checkedTransactions, balanceMismatchRows: mismatch.length,
-    balanceMismatchRowNumbers: mismatch.slice(0, 20),
+    balanceMismatchRowNumbers: mismatch.slice(0, 20), mismatchDetails,
     missingBalanceRows,
   };
 }

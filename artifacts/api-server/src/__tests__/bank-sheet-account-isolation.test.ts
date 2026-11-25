@@ -163,6 +163,25 @@ describe("Cash source-only dry-run replay and rollback", () => {
     });
   });
 
+  it("reports bounded cash differences without modifying the source", () => {
+    const rows = [
+      ["Tanggal", "Keterangan COA", "Debit", "Kredit", "Saldo"],
+      ["metadata", "SALDO AWAL", "", "", "13793"],
+      ["25/11/2026", "receipt", "2000", "", "15700"],
+      ["26/11/2026", "payment", "", "1000", "14700"],
+    ];
+    const result = auditCashSheetRunningBalances(rows);
+    expect(result).toMatchObject({
+      openingBalancePresent: true, openingBalanceAmount: 13793,
+      checkedTransactions: 2, balanceMismatchRows: 1,
+      balanceMismatchRowNumbers: [3],
+      mismatchDetails: [{
+        rowNumber: 3, expectedBalance: 15793,
+        statedBalance: 15700, difference: -93,
+      }],
+    });
+    expect(rows[2]?.[4]).toBe("15700");
+  });
   it("locates running-balance mismatches and missing balances by source row", () => {
     const mismatch = rows.map((row) => [...row]);
     mismatch[2]![4] = "15700";
@@ -280,5 +299,9 @@ describe("CST-DEV Kas Besar SC read-only preflight", () => {
     expect(routeSource).toContain('if (!actor?.signedSuperAdmin || companyId !== 1');
     expect(routeSource).toContain('config.bank_account_id !== 18');
     expect(routeSource).toContain('mode: "read_only_no_sync"');
+    expect(routeSource).toContain("from public.company_bank_accounts where id=$1 and company_id=$2");
+    expect(routeSource).toContain("openingBalanceMatchesAccount");
+    expect(routeSource).toContain('databaseDuplicateCheck: "NOT_RUN_NO_MUTATIONS_READER_PRIVILEGE"');
+    expect(routeSource).toContain("safeToImport: false");
   });
 });

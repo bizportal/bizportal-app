@@ -8454,10 +8454,30 @@ router.get("/bank-reconciliation/sheet-configs/5/preview", async (req, res): Pro
     const replay = planCashSheetImportDryRun(rows, scope, transient);
     const afterRollback = planCashSheetImportDryRun(rows, scope);
     const balanceAudit = auditCashSheetRunningBalances(rows);
+    // Dedicated company-scoped DEV reader: no bank_mutations SELECT/write grants.
+    const baseline = await reader.query<{ opening_balance: string | number | null }>(
+      "select opening_balance from public.company_bank_accounts where id=$1 and company_id=$2 and account_type='cash' and is_active=true",
+      [18, 1],
+    );
+    if (baseline.rows.length !== 1) {
+      res.status(409).json({ ok: false, error: "Akun Kas Besar SC tidak dapat diverifikasi" });
+      return;
+    }
+    const rawBaseline = baseline.rows[0].opening_balance;
+    const accountOpeningBalance = rawBaseline === null ? null : Number(rawBaseline);
+    const validAccountOpeningBalance = accountOpeningBalance !== null
+      && Number.isFinite(accountOpeningBalance) ? accountOpeningBalance : null;
+    const openingBalanceMatchesAccount = balanceAudit.openingBalanceAmount === null
+      || validAccountOpeningBalance === null ? null
+      : Math.round(balanceAudit.openingBalanceAmount * 100)
+        === Math.round(validAccountOpeningBalance * 100);
     res.json({
-      ok: preview.safeToImport, configId: 5, accountId: 18, ...preview,
+      ok: false, configId: 5, accountId: 18, ...preview, safeToImport: false,
       cashDryRun: {
         balanceAudit,
+        accountOpeningBalance: validAccountOpeningBalance,
+        openingBalanceMatchesAccount,
+        databaseDuplicateCheck: "NOT_RUN_NO_MUTATIONS_READER_PRIVILEGE",
         proposedRows: initial.totalParsedRows,
         freshCandidates: initial.newRows,
         repeatedPayloadRows: initial.repeatedPayloadRows,
