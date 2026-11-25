@@ -207,6 +207,13 @@ describe("Cash source-only dry-run replay and rollback", () => {
     expect(first.proposed[0]?.sourceKey).not.toBe(configChanged.proposed[0]?.sourceKey);
   });
 
+  it("limits Google Sheets source-shape diagnostics to mismatch row numbers and the pre-existing signed read-only GET", () => {
+    expect(routeSource).toContain("inspectCashBalanceSourceShapes(");
+    expect(routeSource).toContain("balanceAudit.balanceMismatchRowNumbers");
+    expect(routeSource).toContain("balanceSourceShapeStatus:");
+    expect(routeSource).toContain('mode: "read_only_no_sync"');
+  });
+
   it("allows only aggregate diagnostics in the GET response, never raw fingerprints", () => {
     expect(routeSource).toContain("cashDryRun:");
     expect(routeSource).toContain('mode: "simulated_only_no_database_changes"');
