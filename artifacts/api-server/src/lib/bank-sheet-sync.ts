@@ -456,6 +456,9 @@ export function previewCashSheetRows(rows: string[][]): {
   rejectedRowNumbers: number[];
   openingBalanceRows: number;
   openingBalanceRowNumbers: number[];
+  openingBalanceAmount: number | null;
+  potentialDuplicateTransactions: number;
+  potentialDuplicateRowNumbers: number[];
   firstRejectedRowShape: {
     rowNumber: number;
     dateValid: boolean;
@@ -486,6 +489,8 @@ export function previewCashSheetRows(rows: string[][]): {
       rejectedRowNumbers: rows.slice(1).flatMap((row, index) =>
         row?.some((cell) => String(cell ?? "").trim()) ? [index + 2] : []).slice(0, 20),
       openingBalanceRows: 0, openingBalanceRowNumbers: [],
+      openingBalanceAmount: null,
+      potentialDuplicateTransactions: 0, potentialDuplicateRowNumbers: [],
       firstRejectedRowShape: null,
       ambiguousBothSides: 0, incomingRows: 0, outgoingRows: 0,
       safeToImport: false,
@@ -519,6 +524,18 @@ export function previewCashSheetRows(rows: string[][]): {
     return index === 0 && hasOpeningMarker && debit <= 0 && credit <= 0 && saldo > 0
       ? [index + 2] : [];
   });
+  const openingBalanceAmount = openingBalanceRowNumbers.length === 1 && saldoIndex >= 0
+    ? parseAmount(String(rows[openingBalanceRowNumbers[0] - 1]?.[saldoIndex] ?? ""))
+    : null;
+  // Preflight only: repeated canonical transaction fingerprints are potential
+  // duplicates, not proof of duplicate posting. Never import or write here.
+  const seenCanonicalKeys = new Set<string>();
+  const potentialDuplicateRowNumbers: number[] = [];
+  for (const mutation of parsed.mutations) {
+    const key = canonicalKey(mutation, 1, 18);
+    if (seenCanonicalKeys.has(key)) potentialDuplicateRowNumbers.push(mutation.rowNumber);
+    else seenCanonicalKeys.add(key);
+  }
   const openingBalanceRowSet = new Set(openingBalanceRowNumbers);
   const rejectedRows = Math.max(0, candidateRows.length - importableRows - openingBalanceRowNumbers.length);
   const rejectedRowNumbers = rows.slice(1).flatMap((row, index) =>
@@ -548,12 +565,16 @@ export function previewCashSheetRows(rows: string[][]): {
     rejectedRows, rejectedRowNumbers, firstRejectedRowShape,
     openingBalanceRows: openingBalanceRowNumbers.length,
     openingBalanceRowNumbers: openingBalanceRowNumbers.slice(0, 20),
+    openingBalanceAmount,
+    potentialDuplicateTransactions: potentialDuplicateRowNumbers.length,
+    potentialDuplicateRowNumbers: potentialDuplicateRowNumbers.slice(0, 20),
     ambiguousBothSides,
     incomingRows: parsed.mutations.filter((row) => row.direction === "IN").length,
     outgoingRows: parsed.mutations.filter((row) => row.direction === "OUT").length,
     // Even an identified opening balance needs separate approved reconciliation.
     safeToImport: importableRows > 0 && rejectedRows === 0
-      && ambiguousBothSides === 0 && openingBalanceRowNumbers.length === 0,
+      && ambiguousBothSides === 0 && openingBalanceRowNumbers.length === 0
+      && potentialDuplicateRowNumbers.length === 0,
   };
 }
 
