@@ -626,7 +626,7 @@ export function auditCashSheetRunningBalances(rows: string[][]): {
   checkedTransactions: number;
   balanceMismatchRows: number;
   balanceMismatchRowNumbers: number[];
-  mismatchDetails: Array<{ rowNumber: number; expectedBalance: number; statedBalance: number; difference: number }>;
+  mismatchDetails: Array<{ rowNumber: number; previousBalance: number; direction: "IN" | "OUT"; movementAmount: number; expectedBalance: number; statedBalance: number; difference: number }>;
   missingBalanceRows: number;
 } {
   const preflight = previewCashSheetRows(rows);
@@ -646,7 +646,7 @@ export function auditCashSheetRunningBalances(rows: string[][]): {
   let checkedTransactions = 0;
   let missingBalanceRows = 0;
   const mismatch: number[] = [];
-  const mismatchDetails: Array<{ rowNumber: number; expectedBalance: number; statedBalance: number; difference: number }> = [];
+  const mismatchDetails: Array<{ rowNumber: number; previousBalance: number; direction: "IN" | "OUT"; movementAmount: number; expectedBalance: number; statedBalance: number; difference: number }> = [];
   for (const mutation of mutations) {
     const value = String(rows[mutation.rowNumber - 1]?.[saldoIndex] ?? "").trim();
     if (!value) {
@@ -662,6 +662,9 @@ export function auditCashSheetRunningBalances(rows: string[][]): {
       // Owner-only DEV diagnostics: no description, counterparty, or raw row payload.
       if (mismatchDetails.length < 20) mismatchDetails.push({
         rowNumber: mutation.rowNumber,
+        previousBalance: Math.round(previous * 100) / 100,
+        direction: mutation.direction,
+        movementAmount: Math.round(mutation.amount * 100) / 100,
         expectedBalance: Math.round(expected * 100) / 100,
         statedBalance: Math.round(actual * 100) / 100,
         difference: Math.round((actual - expected) * 100) / 100,
