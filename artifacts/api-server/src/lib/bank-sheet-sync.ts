@@ -667,6 +667,18 @@ async function markConfigSync(
   );
 }
 
+// Pure parser-only probe for test and staging validation. It does not call
+// the Google Sheets API or write to bank_mutations; the writer is cash-blocked.
+export function parseCashSheetDirectionDates(rows: string[][]): Array<{
+  transactionDate: string;
+  direction: "IN" | "OUT";
+}> {
+  return parseRows(rows, "cash").mutations.map(({ transactionDate, direction }) => ({
+    transactionDate,
+    direction,
+  }));
+}
+
 export function assertBankMutationWriterAccountType(accountType: string | null): void {
   if (accountType?.trim().toLowerCase() === "cash") {
     throw new Error("CASH_SHEET_REQUIRES_CASH_LEDGER_IMPORT_PATH");
