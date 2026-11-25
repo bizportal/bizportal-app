@@ -176,11 +176,29 @@ describe("Cash source-only dry-run replay and rollback", () => {
       checkedTransactions: 2, balanceMismatchRows: 1,
       balanceMismatchRowNumbers: [3],
       mismatchDetails: [{
-        rowNumber: 3, expectedBalance: 15793,
-        statedBalance: 15700, difference: -93,
+        rowNumber: 3, previousBalance: 13793,
+        movementDirection: "IN", movementAmount: 2000,
+        expectedBalance: 15793, statedBalance: 15700, difference: -93,
+        differenceCategory: "MATERIAL_VARIANCE_REVIEW",
       }],
     });
     expect(rows[2]?.[4]).toBe("15700");
+  });
+  it("flags sub-rupiah variances for review instead of silently rounding them away", () => {
+    const rows = [
+      ["Tanggal", "Keterangan COA", "Debit", "Kredit", "Saldo"],
+      ["metadata", "SALDO AWAL", "", "", "100"],
+      ["25/11/2026", "Cash receipt", "2", "", "101.5"],
+    ];
+    expect(auditCashSheetRunningBalances(rows)).toMatchObject({
+      balanceMismatchRows: 1,
+      mismatchDetails: [{
+        rowNumber: 3, previousBalance: 100,
+        movementDirection: "IN", movementAmount: 2,
+        expectedBalance: 102, statedBalance: 101.5,
+        difference: -0.5, differenceCategory: "SMALL_VARIANCE_REVIEW",
+      }],
+    });
   });
   it("locates running-balance mismatches and missing balances by source row", () => {
     const mismatch = rows.map((row) => [...row]);
