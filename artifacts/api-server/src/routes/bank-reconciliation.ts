@@ -15,6 +15,7 @@ import {
   syncAllBankSheetConfigs,
   syncOneBankSheetConfig,
   previewCashSheetRows,
+  planCashSheetImportDryRun,
 } from "../lib/bank-sheet-sync";
 import {
   getDevSession,
@@ -8442,7 +8443,29 @@ router.get("/bank-reconciliation/sheet-configs/5/preview", async (req, res): Pro
     }
     const rows = await readSpreadsheetValues(config.sheet_id, config.tab_name);
     const preview = previewCashSheetRows(rows);
-    res.json({ ok: preview.safeToImport, configId: 5, accountId: 18, ...preview, mode: "read_only_no_sync" });
+    const scope = { companyId: 1, configId: 5, accountId: 18 };
+    const initial = planCashSheetImportDryRun(rows, scope);
+    // In-memory only: simulate replay and a rollback to an empty proposal.
+    // Neither run writes to PostgreSQL or Google Sheets.
+    const transient = new Map(initial.proposed.map(
+      ({ sourceKey, fingerprint }) => [sourceKey, fingerprint] as const,
+    ));
+    const replay = planCashSheetImportDryRun(rows, scope, transient);
+    const afterRollback = planCashSheetImportDryRun(rows, scope);
+    res.json({
+      ok: preview.safeToImport, configId: 5, accountId: 18, ...preview,
+      cashDryRun: {
+        proposedRows: initial.totalParsedRows,
+        freshCandidates: initial.newRows,
+        repeatedPayloadRows: initial.repeatedPayloadRows,
+        replayAlreadySeen: replay.replayedRows,
+        replayWouldReinsert: replay.newRows,
+        rollbackRestoresCandidates: afterRollback.newRows,
+        mode: "simulated_only_no_database_changes",
+        readyForCommit: false,
+      },
+      mode: "read_only_no_sync",
+    });
   } catch {
     // Do not reveal keys, spreadsheet contents, or provider diagnostics.
     res.status(502).json({ ok: false, error: "Pratinjau baca-saja Kas Besar SC gagal" });
