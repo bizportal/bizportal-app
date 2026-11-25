@@ -104,6 +104,43 @@ describe("CST-DEV Kas Besar SC read-only preflight", () => {
       incomingRows: 0, outgoingRows: 1, safeToImport: false,
     });
   });
+  it("reports opening amount and repeated canonical transactions without changing import policy", () => {
+    expect(previewCashSheetRows([
+      headers,
+      ["opening", "SALDO AWAL kas", "", "", "15000", ""],
+      ["26/11/2026", "same payment", "", "2000", "13000", "Pengeluaran"],
+      ["26/11/2026", "same payment", "", "2000", "11000", "Pengeluaran"],
+      ["26/11/2026", "other payment", "", "2000", "9000", "Pengeluaran"],
+    ])).toMatchObject({
+      headerValid: true, nonemptyRows: 4, importableRows: 3,
+      rejectedRows: 0, openingBalanceRows: 1, openingBalanceRowNumbers: [2],
+      openingBalanceAmount: 15000,
+      potentialDuplicateTransactions: 1, potentialDuplicateRowNumbers: [4],
+      incomingRows: 0, outgoingRows: 3, safeToImport: false,
+    });
+  });
+  it("keeps exact repeated transactions blocked, even without an opening row", () => {
+    expect(previewCashSheetRows([
+      headers,
+      ["26/11/2026", "same receipt", "1000", "", "1000", "Pemasukan"],
+      ["26/11/2026", "same receipt", "1000", "", "2000", "Pemasukan"],
+    ])).toMatchObject({
+      openingBalanceRows: 0, openingBalanceAmount: null,
+      importableRows: 2, potentialDuplicateTransactions: 1,
+      potentialDuplicateRowNumbers: [3], safeToImport: false,
+    });
+  });
+  it("does not flag transactions with distinct canonical date or narrative", () => {
+    expect(previewCashSheetRows([
+      headers,
+      ["25/11/2026", "receipt", "1000", "", "1000", "Pemasukan"],
+      ["26/11/2026", "receipt", "1000", "", "2000", "Pemasukan"],
+      ["26/11/2026", "other receipt", "1000", "", "3000", "Pemasukan"],
+    ])).toMatchObject({
+      potentialDuplicateTransactions: 0, potentialDuplicateRowNumbers: [],
+      openingBalanceAmount: null, safeToImport: true,
+    });
+  });
   it("does not misclassify a malformed SALDO AWAL without a usable balance", () => {
     expect(previewCashSheetRows([
       ["Tanggal", "Keterangan COA", "Debit", "Kredit", "Saldo"],
