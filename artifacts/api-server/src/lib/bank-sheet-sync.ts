@@ -454,6 +454,8 @@ export function previewCashSheetRows(rows: string[][]): {
   importableRows: number;
   rejectedRows: number;
   rejectedRowNumbers: number[];
+  openingBalanceRows: number;
+  openingBalanceRowNumbers: number[];
   ambiguousBothSides: number;
   incomingRows: number;
   outgoingRows: number;
@@ -473,6 +475,7 @@ export function previewCashSheetRows(rows: string[][]): {
       importableRows: 0, rejectedRows: candidateRows.length,
       rejectedRowNumbers: rows.slice(1).flatMap((row, index) =>
         row?.some((cell) => String(cell ?? "").trim()) ? [index + 2] : []).slice(0, 20),
+      openingBalanceRows: 0, openingBalanceRowNumbers: [],
       ambiguousBothSides: 0, incomingRows: 0, outgoingRows: 0,
       safeToImport: false,
     };
@@ -484,17 +487,41 @@ export function previewCashSheetRows(rows: string[][]): {
     return debit > 0 && credit > 0;
   }).length;
   const importableRows = parsed.mutations.length;
-  const rejectedRows = Math.max(0, candidateRows.length - importableRows);
   const acceptedRowNumbers = new Set(parsed.mutations.map((mutation) => mutation.rowNumber));
+  // Opening balance is an accounting baseline, not a cash movement. Recognize it
+  // without adding to parsed mutations, opening balances, or any database ledger.
+  const saldoIndex = headers.indexOf("saldo");
+  const debitIndex = headers.indexOf("debit");
+  const creditIndex = headers.indexOf("kredit");
+  const dateIndex = headers.indexOf("tanggal");
+  const openingBalanceRowNumbers = rows.slice(1).flatMap((row, index) => {
+    if (!row?.some((cell) => String(cell ?? "").trim())) return [];
+    if (acceptedRowNumbers.has(index + 2)) return [];
+    const label = String(row[debitIndex] ?? "").trim().toUpperCase().replace(/\\s+/g, " ");
+    const credit = String(row[creditIndex] ?? "").trim();
+    const saldo = saldoIndex < 0 ? 0 : parseAmount(String(row[saldoIndex] ?? ""));
+    const date = parseDate(String(row[dateIndex] ?? ""), "DMY");
+    return label === "SALDO AWAL" && !credit && saldo > 0 && date !== null
+      ? [index + 2] : [];
+  });
+  const openingBalanceRowSet = new Set(openingBalanceRowNumbers);
+  const rejectedRows = Math.max(0, candidateRows.length - importableRows - openingBalanceRowNumbers.length);
   const rejectedRowNumbers = rows.slice(1).flatMap((row, index) =>
-    row?.some((cell) => String(cell ?? "").trim()) && !acceptedRowNumbers.has(index + 2)
+    row?.some((cell) => String(cell ?? "").trim())
+      && !acceptedRowNumbers.has(index + 2)
+      && !openingBalanceRowSet.has(index + 2)
       ? [index + 2] : []).slice(0, 20);
   return {
     headerValid, nonemptyRows: candidateRows.length, importableRows,
-    rejectedRows, rejectedRowNumbers, ambiguousBothSides,
+    rejectedRows, rejectedRowNumbers,
+    openingBalanceRows: openingBalanceRowNumbers.length,
+    openingBalanceRowNumbers: openingBalanceRowNumbers.slice(0, 20),
+    ambiguousBothSides,
     incomingRows: parsed.mutations.filter((row) => row.direction === "IN").length,
     outgoingRows: parsed.mutations.filter((row) => row.direction === "OUT").length,
-    safeToImport: importableRows > 0 && rejectedRows === 0 && ambiguousBothSides === 0,
+    // Even an identified opening balance needs separate approved reconciliation.
+    safeToImport: importableRows > 0 && rejectedRows === 0
+      && ambiguousBothSides === 0 && openingBalanceRowNumbers.length === 0,
   };
 }
 
