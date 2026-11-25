@@ -1,4 +1,4 @@
-import {useCallback,useEffect,useState} from "react";
+import {useCallback,useEffect,useRef,useState} from "react";
 import {Link} from "wouter";
 import {AppShell} from "@/components/layout/AppShell";
 import {Card,CardContent,CardHeader,CardTitle} from "@/components/ui/card";
@@ -27,7 +27,9 @@ export default function Po14E2eQa(){
  const [error,setError]=useState("");
  const [loading,setLoading]=useState(true);
  const [running,setRunning]=useState(false);
+ const loadSeq=useRef(0);
  const load=useCallback(async()=>{
+  const current=++loadSeq.current;
   setLoading(true);setError("");setData(null);
   try{
    let result=await fetch(endpoint,{credentials:"include",cache:"no-store"});
@@ -38,13 +40,19 @@ export default function Po14E2eQa(){
    const payload=await result.json().catch(()=>({}));
    if(!result.ok)throw Error(payload.error??"Bukti QA belum tersedia");
    if(!safeResponse(payload))throw Error("Kontrak QA tidak sesuai");
-   setData(payload);
-  }catch(e){setError(e instanceof Error?e.message:"Gagal memuat QA");}
-  finally{setLoading(false);}
+   if(current===loadSeq.current){setError("");setData(payload);}
+  }catch(e){
+   if(current===loadSeq.current){
+    setError(e instanceof Error?e.message:"Gagal memuat QA");
+   }
+  }
+  finally{if(current===loadSeq.current)setLoading(false);}
  },[activeCompanyId]);
  useEffect(()=>{void load();},[load]);
  async function run(){
   if(activeCompanyId!==1||running)return;
+  // Ignore any stale GET that may still be resolving during this POST.
+  ++loadSeq.current;
   setRunning(true);setError("");
   try{
    const r=await fetch(endpoint,{method:"POST",credentials:"include",cache:"no-store",
@@ -53,7 +61,7 @@ export default function Po14E2eQa(){
    const body=await r.json().catch(()=>({}));
    if(!r.ok)throw Error(body.error??"Uji PO14 gagal");
    if(!safeResponse(body)||!body.result)throw Error("Kontrak hasil QA tidak sesuai");
-   setData(body);
+   setError("");setData(body);setLoading(false);
   }catch(e){setError(e instanceof Error?e.message:"Uji QA gagal");}
   finally{setRunning(false);}
  }

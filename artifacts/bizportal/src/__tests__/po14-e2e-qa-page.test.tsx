@@ -67,6 +67,24 @@ describe("PO14 page is explicitly simulation-only and uses signed QA endpoint",(
    expect(screen.queryByRole("button",{name:"Jalankan Simulasi E2E PO #14"})).toBeNull();
    expect(fixture.posts).toBe(0);
  });
+ it("ignores a stale failed GET after a newer Finance scope GET succeeds",async()=>{
+   let settleFirst:((response:any)=>void)|null=null;
+   let calls=0;
+   vi.stubGlobal("fetch",vi.fn(async(url:string)=>{
+     if(url!=="/api/mkt/admin/po14-e2e-qa")throw Error("Unexpected URL");
+     calls++;
+     if(calls===1)return new Promise(resolve=>{settleFirst=resolve;});
+     return mockResponse(payload());
+   }));
+   render(<React.StrictMode><Page/></React.StrictMode>);
+   await screen.findByText("Belum ada bukti simulasi untuk PO #14.");
+   expect(calls).toBeGreaterThanOrEqual(2);
+   expect(settleFirst).not.toBeNull();
+   (settleFirst as unknown as (v:any)=>void)(mockResponse({error:"Old scope request failed"},503));
+   await screen.findByText("Perusahaan Finance CST telah diverifikasi oleh server untuk sesi ini.");
+   expect(screen.queryByRole("alert")).toBeNull();
+   expect(screen.getByRole("button",{name:"Jalankan Simulasi E2E PO #14"})).toBeTruthy();
+ });
  it("prevents CST test execution under another company selection",async()=>{
    fixture.companyId=3;
    render(<Page/>);

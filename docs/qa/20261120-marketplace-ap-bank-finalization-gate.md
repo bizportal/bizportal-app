@@ -340,3 +340,25 @@ This is a signed-browser-ready QA simulation that a genuine owner can run,
 NOT the requested full real Invoice -> AP -> bank reconcile -> GL E2E, which
 continues to require real browser access and production-equivalent but
 fully isolated bank import/posting infrastructure. Keep business release NO-GO.
+
+## 25 November 2026 — live signed CST page race fix
+Actual Owner screenshot proved Super Admin login and company CST scope
+were visible; the PO14 QA page simultaneously displayed a stale 403
+("Pilih dan verifikasi Finance CST"). Runtime logs showed two GET 403
+responses followed by successful signed GET 200 and a successful
+finance-company-selection POST 200. Cause: overlapping frontend GET
+requests allowed a stale failed response to set error after a newer
+successful Finance scope selection.
+
+Added a monotonic request sequence guard in the PO14 React page. Only
+the latest GET may update loading/error/data; a successful GET explicitly
+clears prior errors. Starting a POST also invalidates prior GETs.
+The React regression covers out-of-order stale failing GETs under
+StrictMode, in addition to the four existing success/auth/tenant tests:
+5/5 PASS. Production frontend Vite build PASS.
+
+Deployed static frontend only with rollback snapshot
+/var/lib/bizportal-finance-preview-rollbacks/20261125-po14-scope-race-fix.
+HTTPS page 200, revised JS 200, anonymous GET 401, Finance health 200,
+QA PO14 run=0/audits=0. Backend authentication and the business ledger
+were unchanged. Genuine Owner POST click remains unobserved.
