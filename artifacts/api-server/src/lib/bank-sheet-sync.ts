@@ -674,6 +674,12 @@ async function syncConfig(config: SheetConfig): Promise<{
   sheetUpdates: number;
 }> {
   assertProductionSheetSourceAllowed(config);
+  // Bank mutation writer is not an accounting cash-ledger writer.
+  // Fail before a DB connection, Google Sheets API call, or any write if the
+  // source is cash. Cash import needs an independently tested canonical path.
+  if (config.account_type?.trim().toLowerCase() === "cash") {
+    throw new Error("CASH_SHEET_REQUIRES_CASH_LEDGER_IMPORT_PATH");
+  }
   const client = await pool.connect();
   try {
     const rows = await readSpreadsheetValues(config.sheet_id, config.tab_name);
