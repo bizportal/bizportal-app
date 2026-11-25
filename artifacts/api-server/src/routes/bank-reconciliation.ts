@@ -7,7 +7,7 @@ import {
   hydrateQrisReviewDiagnostics,
   listQrisReviewDiagnostics,
 } from "../lib/reconciliation/qrisReviewDiagnostics";
-import { inspectSpreadsheet, readSpreadsheetValues } from "../lib/google-sheets";
+import { inspectSpreadsheet, readSpreadsheetValues, inspectCashBalanceSourceShapes } from "../lib/google-sheets";
 import { bankSheetConfigAccountJoin } from "../lib/bankSheetConfigAccountJoin";
 import { getDevBankSheetReaderFromConfiguredSource } from "../lib/bankSheetScopedReader";
 import { classifyBankSheetReaderFailure } from "../lib/bankSheetReaderDiagnostic";
@@ -8454,6 +8454,9 @@ router.get("/bank-reconciliation/sheet-configs/5/preview", async (req, res): Pro
     const replay = planCashSheetImportDryRun(rows, scope, transient);
     const afterRollback = planCashSheetImportDryRun(rows, scope);
     const balanceAudit = auditCashSheetRunningBalances(rows);
+    const sourceShape = await inspectCashBalanceSourceShapes(
+      config.sheet_id, config.tab_name, balanceAudit.balanceMismatchRowNumbers,
+    ).catch(() => null);
     // Dedicated company-scoped DEV reader: no bank_mutations SELECT/write grants.
     const baseline = await reader.query<{ opening_balance: string | number | null }>(
       "select opening_balance from public.company_bank_accounts where id=$1 and company_id=$2 and account_type='cash' and is_active=true",
@@ -8475,6 +8478,8 @@ router.get("/bank-reconciliation/sheet-configs/5/preview", async (req, res): Pro
       ok: false, configId: 5, accountId: 18, ...preview, safeToImport: false,
       cashDryRun: {
         balanceAudit,
+        balanceSourceShape: sourceShape,
+        balanceSourceShapeStatus: sourceShape === null ? "NOT_AVAILABLE" : "READ_ONLY_VERIFIED",
         accountOpeningBalance: validAccountOpeningBalance,
         openingBalanceMatchesAccount,
         databaseDuplicateCheck: "NOT_RUN_NO_MUTATIONS_READER_PRIVILEGE",
