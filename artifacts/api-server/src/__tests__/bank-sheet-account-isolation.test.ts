@@ -113,6 +113,20 @@ describe("CST-DEV Kas Besar SC read-only preflight", () => {
       openingBalanceRows: 0, safeToImport: false,
     });
   });
+  it("diagnoses malformed cash opening row with booleans only", () => {
+    expect(previewCashSheetRows([
+      ["Tanggal", "Keterangan", "Debit", "Kredit", "Saldo"],
+      ["06/22/2026", "sample", "NOT A NUMBER", "", ""],
+    ])).toMatchObject({
+      firstRejectedRowShape: {
+        rowNumber: 2, dateValid: true, debitNumeric: false,
+        creditNumeric: false, debitHasSaldoAwal: false,
+        anyCellHasSaldoAwal: false,
+        saldoHeaderPresent: true, saldoNumeric: false,
+      },
+      safeToImport: false,
+    });
+  });
   it("never passes unrecognized headers", () => {
     expect(previewCashSheetRows([["unknown", "other"], ["anything", "else"]]))
       .toMatchObject({ headerValid: false, safeToImport: false });
