@@ -7,7 +7,7 @@ import {
   hydrateQrisReviewDiagnostics,
   listQrisReviewDiagnostics,
 } from "../lib/reconciliation/qrisReviewDiagnostics";
-import { inspectSpreadsheet, readSpreadsheetValues } from "../lib/google-sheets";
+import { inspectSpreadsheet, readSpreadsheetValues, readCashMismatchCellEvidence } from "../lib/google-sheets";
 import { bankSheetConfigAccountJoin } from "../lib/bankSheetConfigAccountJoin";
 import { getDevBankSheetReaderFromConfiguredSource } from "../lib/bankSheetScopedReader";
 import { classifyBankSheetReaderFailure } from "../lib/bankSheetReaderDiagnostic";
@@ -8454,6 +8454,26 @@ router.get("/bank-reconciliation/sheet-configs/5/preview", async (req, res): Pro
     const replay = planCashSheetImportDryRun(rows, scope, transient);
     const afterRollback = planCashSheetImportDryRun(rows, scope);
     const balanceAudit = auditCashSheetRunningBalances(rows);
+    // Query only the 8 mismatched debit, credit and saldo cells, never names,
+    // narratives, counterparties, or formula source text. If unavailable, the
+    // existing verified preview remains usable and the gate stays closed.
+    let mismatchCellEvidence: { status: "UNAVAILABLE" | "READY"; rows: Awaited<ReturnType<typeof readCashMismatchCellEvidence>> } = {
+      status: "UNAVAILABLE", rows: [],
+    };
+    if (balanceAudit.balanceMismatchRowNumbers.length > 0) {
+      const h = (rows[0] ?? []).map((x) => String(x ?? "").trim().toLowerCase());
+      const columns = { debit: h.indexOf("debit"), credit: h.indexOf("kredit"), saldo: h.indexOf("saldo") };
+      if (Object.values(columns).every((n) => n >= 0)) {
+        try {
+          const evidenceRows = await readCashMismatchCellEvidence(
+            config.sheet_id, config.tab_name, columns, balanceAudit.balanceMismatchRowNumbers,
+          );
+          mismatchCellEvidence = { status: "READY", rows: evidenceRows };
+        } catch {
+          // Never expose provider credentials, formulas, or response bodies.
+        }
+      }
+    }
     // Dedicated company-scoped DEV reader: no bank_mutations SELECT/write grants.
     const baseline = await reader.query<{ opening_balance: string | number | null }>(
       "select opening_balance from public.company_bank_accounts where id=$1 and company_id=$2 and account_type='cash' and is_active=true",
@@ -8475,6 +8495,7 @@ router.get("/bank-reconciliation/sheet-configs/5/preview", async (req, res): Pro
       ok: false, configId: 5, accountId: 18, ...preview, safeToImport: false,
       cashDryRun: {
         balanceAudit,
+        mismatchCellEvidence,
         accountOpeningBalance: validAccountOpeningBalance,
         openingBalanceMatchesAccount,
         databaseDuplicateCheck: "NOT_RUN_NO_MUTATIONS_READER_PRIVILEGE",
