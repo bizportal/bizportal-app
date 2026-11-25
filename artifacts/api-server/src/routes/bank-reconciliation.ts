@@ -17,6 +17,7 @@ import {
   previewCashSheetRows,
   planCashSheetImportDryRun,
   auditCashSheetRunningBalances,
+  explainCashRawBalanceDifferences,
 } from "../lib/bank-sheet-sync";
 import {
   getDevSession,
@@ -8460,15 +8461,26 @@ router.get("/bank-reconciliation/sheet-configs/5/preview", async (req, res): Pro
     let mismatchCellEvidence: { status: "UNAVAILABLE" | "READY"; rows: Awaited<ReturnType<typeof readCashMismatchCellEvidence>> } = {
       status: "UNAVAILABLE", rows: [],
     };
+    let rawBalanceReconciliation: ReturnType<typeof explainCashRawBalanceDifferences> = [];
     if (balanceAudit.balanceMismatchRowNumbers.length > 0) {
       const h = (rows[0] ?? []).map((x) => String(x ?? "").trim().toLowerCase());
       const columns = { debit: h.indexOf("debit"), credit: h.indexOf("kredit"), saldo: h.indexOf("saldo") };
       if (Object.values(columns).every((n) => n >= 0)) {
         try {
+          const mismatchRows = balanceAudit.balanceMismatchRowNumbers;
           const evidenceRows = await readCashMismatchCellEvidence(
-            config.sheet_id, config.tab_name, columns, balanceAudit.balanceMismatchRowNumbers,
+            config.sheet_id, config.tab_name, columns,
+            [...mismatchRows, ...mismatchRows.map((n) => n - 1)],
           );
-          mismatchCellEvidence = { status: "READY", rows: evidenceRows };
+          // Keep existing API disclosure limited to the 8 flagged rows;
+          // adjacent raw numeric cells are used only inside the server audit.
+          mismatchCellEvidence = {
+            status: "READY",
+            rows: evidenceRows.filter((e) => mismatchRows.includes(e.rowNumber)),
+          };
+          rawBalanceReconciliation = explainCashRawBalanceDifferences(
+            balanceAudit.mismatchDetails, evidenceRows,
+          );
         } catch {
           // Never expose provider credentials, formulas, or response bodies.
         }
@@ -8496,6 +8508,7 @@ router.get("/bank-reconciliation/sheet-configs/5/preview", async (req, res): Pro
       cashDryRun: {
         balanceAudit,
         mismatchCellEvidence,
+        rawBalanceReconciliation,
         accountOpeningBalance: validAccountOpeningBalance,
         openingBalanceMatchesAccount,
         databaseDuplicateCheck: "NOT_RUN_NO_MUTATIONS_READER_PRIVILEGE",
