@@ -263,7 +263,11 @@ function SheetConfigManager() {
   };
 
   const saveConfig = async () => {
-    if (!form.company_id || !form.bank_account_id || !form.label || !form.sheet_id) {
+    if (editTarget?.id === 3 && !form.tab_name.trim()) {
+      toast({ title: "Nama Tab wajib diisi", variant: "destructive" });
+      return;
+    }
+    if (editTarget?.id !== 3 && (!form.company_id || !form.bank_account_id || !form.label || !form.sheet_id)) {
       toast({
         title: "Perusahaan, Akun Rekonsiliasi, Label, dan Sheet ID wajib diisi",
         variant: "destructive",
@@ -272,7 +276,7 @@ function SheetConfigManager() {
     }
     // The signed DEV route permits only tab-name metadata edits.
     // Do not silently discard edits to the other form fields.
-    if (editTarget && (
+    if (editTarget && editTarget.id !== 3 && (
       form.company_id !== String(editTarget.company_id ?? "") ||
       form.bank_account_id !== String(editTarget.bank_account_id ?? "") ||
       form.label !== editTarget.label || form.sheet_id !== editTarget.sheet_id
@@ -548,6 +552,7 @@ function SheetConfigManager() {
               </label>
               <Select
                 value={form.company_id || undefined}
+                disabled={editTarget?.id === 3}
                 onValueChange={v => setForm(f => ({
                   ...f,
                   company_id: v,
@@ -572,6 +577,7 @@ function SheetConfigManager() {
               <Input
                 placeholder="Contoh: CST Group - BCA Operasional"
                 value={form.label}
+                disabled={editTarget?.id === 3}
                 onChange={e => setForm(f => ({ ...f, label: e.target.value }))}
               />
             </div>
@@ -580,6 +586,7 @@ function SheetConfigManager() {
               <Input
                 placeholder="1VcbUujz6WHRgj5Fa1QkWja..."
                 value={form.sheet_id}
+                disabled={editTarget?.id === 3}
                 onChange={e => setForm(f => ({ ...f, sheet_id: e.target.value }))}
               />
               <p className="text-xs text-muted-foreground">
@@ -596,7 +603,7 @@ function SheetConfigManager() {
                   ...f,
                   bank_account_id: value === "none" ? "" : value,
                 }))}
-                disabled={!form.company_id || sheetAccountsLoading}
+                disabled={!form.company_id || sheetAccountsLoading || editTarget?.id === 3}
               >
                 <SelectTrigger>
                   <SelectValue placeholder={
@@ -8018,13 +8025,17 @@ function SheetConfigCollapsed() {
     setShowForm(true);
   };
   const saveConfig = async () => {
-    if (!form.company_id || !form.bank_account_id || !form.label || !form.sheet_id) {
+    if (editTarget?.id === 3 && !form.tab_name.trim()) {
+      toast({ title: "Nama Tab wajib diisi", variant: "destructive" });
+      return;
+    }
+    if (editTarget?.id !== 3 && (!form.company_id || !form.bank_account_id || !form.label || !form.sheet_id)) {
       toast({ title: "Perusahaan, Akun Rekonsiliasi, Label, dan Sheet ID wajib diisi", variant: "destructive" });
       return;
     }
     // The signed DEV route permits only tab-name metadata edits.
     // Do not silently discard edits to the other form fields.
-    if (editTarget && (
+    if (editTarget && editTarget.id !== 3 && (
       form.company_id !== String(editTarget.company_id ?? "") ||
       form.bank_account_id !== String(editTarget.bank_account_id ?? "") ||
       form.label !== editTarget.label || form.sheet_id !== editTarget.sheet_id
@@ -8163,6 +8174,7 @@ function SheetConfigCollapsed() {
               <label className="text-sm font-medium">Perusahaan</label>
               <Select
                 value={form.company_id || undefined}
+                disabled={editTarget?.id === 3}
                 onValueChange={v => setForm(f => ({ ...f, company_id: v, bank_account_id: "" }))}
               >
                 <SelectTrigger><SelectValue placeholder="Pilih perusahaan" /></SelectTrigger>
@@ -8190,7 +8202,7 @@ function SheetConfigCollapsed() {
                   ...f,
                   bank_account_id: value === "none" ? "" : value,
                 }))}
-                disabled={!form.company_id || sheetAccountsLoading}
+                disabled={!form.company_id || sheetAccountsLoading || editTarget?.id === 3}
               >
                 <SelectTrigger>
                   <SelectValue placeholder={
