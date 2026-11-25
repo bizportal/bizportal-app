@@ -195,5 +195,9 @@ describe("CST-DEV Kas Besar SC read-only preflight", () => {
     expect(routeSource).toContain('if (!actor?.signedSuperAdmin || companyId !== 1');
     expect(routeSource).toContain('config.bank_account_id !== 18');
     expect(routeSource).toContain('mode: "read_only_no_sync"');
+    expect(routeSource).toContain("from public.company_bank_accounts where id=$1 and company_id=$2");
+    expect(routeSource).toContain("[18, 1]");
+    expect(routeSource).toContain('databaseDuplicateCheck: "NOT_RUN_READER_HAS_NO_MUTATIONS_SELECT"');
+    expect(routeSource).toContain("safeToImport: false, mode:");
   });
 });
