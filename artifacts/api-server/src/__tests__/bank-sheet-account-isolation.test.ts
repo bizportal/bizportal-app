@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { assertBankMutationWriterAccountType, previewCashSheetRows } from "../lib/bank-sheet-sync";
+import { assertBankMutationWriterAccountType, auditCashSheetRunningBalances, planCashSheetImportDryRun, previewCashSheetRows } from "../lib/bank-sheet-sync";
 
 const routeSource = readFileSync(
   resolve(process.cwd(), "src/routes/bank-reconciliation.ts"),
@@ -89,6 +89,106 @@ describe("Cash ledger must never use the bank mutation writer", () => {
     expect(guard).toBeGreaterThan(syncStart);
     expect(connection).toBeGreaterThan(guard);
     expect(sheets).toBeGreaterThan(guard);
+  });
+});
+
+describe("Cash source-only dry-run replay and rollback", () => {
+  const scope = { companyId: 1, configId: 5, accountId: 18 };
+  const rows = [
+    ["Tanggal", "Keterangan COA", "Debit", "Kredit", "Saldo"],
+    ["metadata", "SALDO AWAL", "", "", "13793"],
+    ["25/11/2026", "Cash receipt A", "2000", "", "15793"],
+    ["26/11/2026", "Cash payment B", "", "1000", "14793"],
+  ];
+
+  it("proposes two cash rows, excluding opening balance, with no side effects", () => {
+    const plan = planCashSheetImportDryRun(rows, scope);
+    expect(plan).toMatchObject({
+      totalParsedRows: 2, openingBalanceRows: 1, rejectedRows: 0,
+      newRows: 2, replayedRows: 0, changedRows: 0,
+      repeatedPayloadRows: 0, readyForCommit: false,
+    });
+    expect(plan.proposed).toHaveLength(2);
+    for (const record of plan.proposed) {
+      expect(record.sourceKey).toMatch(/^[a-f0-9]{64}$/);
+      expect(record.fingerprint).toMatch(/^[a-f0-9]{64}$/);
+      expect(JSON.stringify(record)).not.toContain("Cash");
+    }
+  });
+
+  it("idempotent replay yields zero new candidates; rollback resets the ephemeral proposal", () => {
+    const first = planCashSheetImportDryRun(rows, scope);
+    const ephemeral = new Map(first.proposed.map((item) =>
+      [item.sourceKey, item.fingerprint] as const));
+    const replay = planCashSheetImportDryRun(rows, scope, ephemeral);
+    expect(replay).toMatchObject({
+      newRows: 0, replayedRows: 2, changedRows: 0,
+      readyForCommit: false,
+    });
+    const rollback = planCashSheetImportDryRun(rows, scope);
+    expect(rollback.newRows).toBe(2);
+  });
+
+  it("detects an edited source row without silently replacing previous content", () => {
+    const first = planCashSheetImportDryRun(rows, scope);
+    const ephemeral = new Map(first.proposed.map((item) =>
+      [item.sourceKey, item.fingerprint] as const));
+    const modified = rows.map((row) => [...row]);
+    modified[2]![2] = "2500";
+    const plan = planCashSheetImportDryRun(modified, scope, ephemeral);
+    expect(plan).toMatchObject({
+      newRows: 0, replayedRows: 1, changedRows: 1, readyForCommit: false,
+    });
+    expect(plan.proposed[0]?.sourceKey).toBe(first.proposed[0]?.sourceKey);
+    expect(plan.proposed[0]?.fingerprint).not.toBe(first.proposed[0]?.fingerprint);
+  });
+
+  it("flags repeated payloads on distinct physical rows but keeps both candidates", () => {
+    const repeated = [
+      ["Tanggal", "Keterangan", "Debit", "Kredit"],
+      ["25/11/2026", "same cash receipt", "1000", ""],
+      ["25/11/2026", "same cash receipt", "1000", ""],
+    ];
+    expect(planCashSheetImportDryRun(repeated, scope)).toMatchObject({
+      totalParsedRows: 2, newRows: 2, repeatedPayloadRows: 1,
+      readyForCommit: false,
+    });
+  });
+
+  it("reconciles opening balance and cash inflow/outflow without making ledger entries", () => {
+    expect(auditCashSheetRunningBalances(rows)).toMatchObject({
+      openingBalancePresent: true, checkedTransactions: 2,
+      balanceMismatchRows: 0, balanceMismatchRowNumbers: [],
+      missingBalanceRows: 0,
+    });
+  });
+
+  it("locates running-balance mismatches and missing balances by source row", () => {
+    const mismatch = rows.map((row) => [...row]);
+    mismatch[2]![4] = "15700";
+    const result = auditCashSheetRunningBalances(mismatch);
+    expect(result.balanceMismatchRows).toBeGreaterThan(0);
+    expect(result.balanceMismatchRowNumbers).toContain(3);
+    const missing = rows.map((row) => [...row]);
+    missing[3]![4] = "";
+    expect(auditCashSheetRunningBalances(missing)).toMatchObject({
+      checkedTransactions: 1, missingBalanceRows: 1,
+    });
+  });
+
+  it("scopes row identity by account and configuration, preventing cross-account replay", () => {
+    const first = planCashSheetImportDryRun(rows, scope);
+    const accountChanged = planCashSheetImportDryRun(rows, { ...scope, accountId: 17 });
+    const configChanged = planCashSheetImportDryRun(rows, { ...scope, configId: 3 });
+    expect(first.proposed[0]?.sourceKey).not.toBe(accountChanged.proposed[0]?.sourceKey);
+    expect(first.proposed[0]?.sourceKey).not.toBe(configChanged.proposed[0]?.sourceKey);
+  });
+
+  it("allows only aggregate diagnostics in the GET response, never raw fingerprints", () => {
+    expect(routeSource).toContain("cashDryRun:");
+    expect(routeSource).toContain('mode: "simulated_only_no_database_changes"');
+    expect(routeSource).toContain("readyForCommit: false");
+    expect(routeSource).not.toContain("res.json(initial.proposed)");
   });
 });
 
