@@ -615,6 +615,57 @@ export function planCashSheetImportDryRun(
   };
 }
 
+/**
+ * Aggregate only: verify a cash ledger's stated running balance against the
+ * preceding balance and each parsed IN/OUT movement. This is a read-only
+ * diagnostic, not an opening balance booking or bank reconciliation.
+ */
+export function auditCashSheetRunningBalances(rows: string[][]): {
+  openingBalancePresent: boolean;
+  checkedTransactions: number;
+  balanceMismatchRows: number;
+  balanceMismatchRowNumbers: number[];
+  missingBalanceRows: number;
+} {
+  const preflight = previewCashSheetRows(rows);
+  const headers = (rows[0] ?? []).map((cell) => String(cell ?? "").trim().toLowerCase());
+  const saldoIndex = headers.indexOf("saldo");
+  const openingRow = preflight.openingBalanceRowNumbers[0];
+  if (saldoIndex < 0 || openingRow === undefined) {
+    return {
+      openingBalancePresent: false, checkedTransactions: 0,
+      balanceMismatchRows: 0, balanceMismatchRowNumbers: [],
+      missingBalanceRows: 0,
+    };
+  }
+  let previous = parseAmount(String(rows[openingRow - 1]?.[saldoIndex] ?? ""));
+  const mutations = parseRows(rows, "cash").mutations;
+  let checkedTransactions = 0;
+  let missingBalanceRows = 0;
+  const mismatch: number[] = [];
+  for (const mutation of mutations) {
+    const value = String(rows[mutation.rowNumber - 1]?.[saldoIndex] ?? "").trim();
+    if (!value) {
+      missingBalanceRows++;
+      // Do not fabricate a balance in the source or chain an unverified sum.
+      continue;
+    }
+    const actual = parseAmount(value);
+    const expected = previous + (mutation.direction === "IN" ? mutation.amount : -mutation.amount);
+    checkedTransactions++;
+    if (!Number.isFinite(actual) || Math.abs(actual - expected) > 0.01) {
+      mismatch.push(mutation.rowNumber);
+    }
+    previous = actual;
+  }
+  return {
+    openingBalancePresent: true,
+    checkedTransactions, balanceMismatchRows: mismatch.length,
+    balanceMismatchRowNumbers: mismatch.slice(0, 20),
+    missingBalanceRows,
+  };
+}
+
 function addSheetStatusUpdates(
   config: SheetConfig,
   parsed: ReturnType<typeof parseRows>,
