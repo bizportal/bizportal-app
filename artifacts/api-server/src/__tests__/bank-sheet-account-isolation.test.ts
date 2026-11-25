@@ -217,9 +217,9 @@ describe("Cash source-only dry-run replay and rollback", () => {
 
 describe("Read-only exact raw cash running balance audit", () => {
   const mismatches = [
-    { rowNumber: 262, direction: "OUT" as const },
-    { rowNumber: 305, direction: "IN" as const },
-    { rowNumber: 325, direction: "OUT" as const },
+    { rowNumber: 262, direction: "OUT" as const, previousBalance: 166795 },
+    { rowNumber: 305, direction: "IN" as const, previousBalance: 872225 },
+    { rowNumber: 325, direction: "OUT" as const, previousBalance: 1113379 },
   ];
   it("separates real Rp4,006 difference from display-only precision", () => {
     const rows = [
@@ -236,6 +236,22 @@ describe("Read-only exact raw cash running balance audit", () => {
       { rowNumber: 325, rawDifference: null, category: "SOURCE_NUMERIC_UNAVAILABLE" },
     ]);
   });
+  it("fails closed when the raw prior-row balance cannot corroborate the audit reference", () => {
+    const inconsistent = [
+      { rowNumber: 331, debitRaw: null, creditRaw: null, saldoRaw: 2449803 },
+      { rowNumber: 332, debitRaw: 1000000, creditRaw: null, saldoRaw: 1008607.5 },
+      { rowNumber: 375, debitRaw: null, creditRaw: null, saldoRaw: 800735 },
+      { rowNumber: 376, debitRaw: 112.78, creditRaw: null, saldoRaw: 4205.28 },
+    ];
+    expect(explainCashRawBalanceDifferences([
+      { rowNumber: 332, direction: "IN", previousBalance: 8607.5 },
+      { rowNumber: 376, direction: "IN", previousBalance: 4092.5 },
+    ], inconsistent)).toEqual([
+      { rowNumber: 332, rawDifference: null, category: "SOURCE_REFERENCE_UNVERIFIED" },
+      { rowNumber: 376, rawDifference: null, category: "SOURCE_REFERENCE_UNVERIFIED" },
+    ]);
+  });
+
   it("never changes source rows or exposes descriptions in raw classifications", () => {
     const rows = [
       { rowNumber: 304, debitRaw: null, creditRaw: null, saldoRaw: 872225.16 },
