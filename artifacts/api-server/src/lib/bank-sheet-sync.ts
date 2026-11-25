@@ -453,6 +453,7 @@ export function previewCashSheetRows(rows: string[][]): {
   nonemptyRows: number;
   importableRows: number;
   rejectedRows: number;
+  rejectedRowNumbers: number[];
   ambiguousBothSides: number;
   incomingRows: number;
   outgoingRows: number;
@@ -470,6 +471,8 @@ export function previewCashSheetRows(rows: string[][]): {
     return {
       headerValid: false, nonemptyRows: candidateRows.length,
       importableRows: 0, rejectedRows: candidateRows.length,
+      rejectedRowNumbers: rows.slice(1).flatMap((row, index) =>
+        row?.some((cell) => String(cell ?? "").trim()) ? [index + 2] : []).slice(0, 20),
       ambiguousBothSides: 0, incomingRows: 0, outgoingRows: 0,
       safeToImport: false,
     };
@@ -482,9 +485,13 @@ export function previewCashSheetRows(rows: string[][]): {
   }).length;
   const importableRows = parsed.mutations.length;
   const rejectedRows = Math.max(0, candidateRows.length - importableRows);
+  const acceptedRowNumbers = new Set(parsed.mutations.map((mutation) => mutation.rowNumber));
+  const rejectedRowNumbers = rows.slice(1).flatMap((row, index) =>
+    row?.some((cell) => String(cell ?? "").trim()) && !acceptedRowNumbers.has(index + 2)
+      ? [index + 2] : []).slice(0, 20);
   return {
     headerValid, nonemptyRows: candidateRows.length, importableRows,
-    rejectedRows, ambiguousBothSides,
+    rejectedRows, rejectedRowNumbers, ambiguousBothSides,
     incomingRows: parsed.mutations.filter((row) => row.direction === "IN").length,
     outgoingRows: parsed.mutations.filter((row) => row.direction === "OUT").length,
     safeToImport: importableRows > 0 && rejectedRows === 0 && ambiguousBothSides === 0,

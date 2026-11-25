@@ -89,7 +89,7 @@ describe("CST-DEV Kas Besar SC read-only preflight", () => {
       ["not-a-date", "invalid", "1000", "", "", ""],
       ["26/11/2026", "ambiguous", "100", "50", "", ""],
     ])).toMatchObject({
-      importableRows: 1, rejectedRows: 1, ambiguousBothSides: 1, safeToImport: false,
+      importableRows: 1, rejectedRows: 1, rejectedRowNumbers: [2], ambiguousBothSides: 1, safeToImport: false,
     });
   });
   it("never passes unrecognized headers", () => {
