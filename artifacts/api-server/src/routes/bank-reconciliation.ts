@@ -8216,20 +8216,19 @@ router.put("/bank-reconciliation/sheet-configs/:id", async (req, res): Promise<v
     }
     const body = req.body as Record<string, unknown> | null;
     const keys = body && typeof body === "object" && !Array.isArray(body) ? Object.keys(body) : [];
-    const allowed = ["company_id", "bank_account_id", "label", "sheet_id", "tab_name"];
-    if (keys.length !== allowed.length || !keys.every((key) => allowed.includes(key))
-        || Number(body?.company_id) !== 1 || Number(body?.bank_account_id) !== 2
+    // The browser sends only the changed metadata, never banking identifiers.
+    if (keys.length !== 1 || keys[0] !== "tab_name"
         || (actor.companyId !== null && actor.companyId !== 1)
         || typeof body?.tab_name !== "string" || body.tab_name.trim().length < 1
         || body.tab_name.trim().length > 100) {
-      res.status(400).json({ error: "Hanya perubahan nama tab CST #3 yang diizinkan" }); return;
+      res.status(400).json({ error: "Hanya nama tab CST #3 yang dapat disimpan" }); return;
     }
     try {
       const result = await pool.query<SheetConfigRow>(
         `update public.bank_sheet_configs cfg
             set tab_name=$1, updated_at=now()
           where cfg.id=3 and cfg.company_id=1
-            and cfg.label=$2 and cfg.sheet_id=$3
+            and cfg.label='kas besar'
             and exists (
               select 1 from public.company_bank_accounts a
                where a.id=2 and a.company_id=cfg.company_id
@@ -8237,7 +8236,7 @@ router.put("/bank-reconciliation/sheet-configs/:id", async (req, res): Promise<v
                      regexp_replace(coalesce(cfg.bank_account_number,''), '[^0-9]', '', 'g')
             )
           returning *`,
-        [body.tab_name.trim(), body.label, body.sheet_id],
+        [body.tab_name.trim()],
       );
       if (result.rowCount !== 1) {
         res.status(409).json({ error: "Konfigurasi berubah atau tidak cocok; muat ulang sebelum menyimpan" }); return;

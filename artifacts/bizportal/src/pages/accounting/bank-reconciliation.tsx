@@ -270,13 +270,25 @@ function SheetConfigManager() {
       });
       return;
     }
-    const body = {
-      company_id: Number(form.company_id),
-      bank_account_id: Number(form.bank_account_id),
-      label: form.label,
-      sheet_id: form.sheet_id,
-      tab_name: form.tab_name || "Mutasi_Bank",
-    };
+    // The signed DEV route permits only tab-name metadata edits.
+    // Do not silently discard edits to the other form fields.
+    if (editTarget && (
+      form.company_id !== String(editTarget.company_id ?? "") ||
+      form.bank_account_id !== String(editTarget.bank_account_id ?? "") ||
+      form.label !== editTarget.label || form.sheet_id !== editTarget.sheet_id
+    )) {
+      toast({ title: "Pada DEV hanya Nama Tab yang dapat diubah", variant: "destructive" });
+      return;
+    }
+    const body = editTarget
+      ? { tab_name: form.tab_name.trim() }
+      : {
+          company_id: Number(form.company_id),
+          bank_account_id: Number(form.bank_account_id),
+          label: form.label,
+          sheet_id: form.sheet_id,
+          tab_name: form.tab_name || "Mutasi_Bank",
+        };
     const url  = editTarget
       ? `/api/bank-reconciliation/sheet-configs/${editTarget.id}`
       : "/api/bank-reconciliation/sheet-configs";
@@ -8010,13 +8022,25 @@ function SheetConfigCollapsed() {
       toast({ title: "Perusahaan, Akun Rekonsiliasi, Label, dan Sheet ID wajib diisi", variant: "destructive" });
       return;
     }
-    const body = {
-      company_id: Number(form.company_id),
-      bank_account_id: Number(form.bank_account_id),
-      label: form.label,
-      sheet_id: form.sheet_id,
-      tab_name: form.tab_name || "Mutasi_Bank",
-    };
+    // The signed DEV route permits only tab-name metadata edits.
+    // Do not silently discard edits to the other form fields.
+    if (editTarget && (
+      form.company_id !== String(editTarget.company_id ?? "") ||
+      form.bank_account_id !== String(editTarget.bank_account_id ?? "") ||
+      form.label !== editTarget.label || form.sheet_id !== editTarget.sheet_id
+    )) {
+      toast({ title: "Pada DEV hanya Nama Tab yang dapat diubah", variant: "destructive" });
+      return;
+    }
+    const body = editTarget
+      ? { tab_name: form.tab_name.trim() }
+      : {
+          company_id: Number(form.company_id),
+          bank_account_id: Number(form.bank_account_id),
+          label: form.label,
+          sheet_id: form.sheet_id,
+          tab_name: form.tab_name || "Mutasi_Bank",
+        };
     const url  = editTarget ? `/api/bank-reconciliation/sheet-configs/${editTarget.id}` : "/api/bank-reconciliation/sheet-configs";
     const r    = await fetch(url, { method: editTarget ? "PUT" : "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const d    = await r.json();
