@@ -4,6 +4,7 @@ import { CommandPalette, useCommandPalette, usePageTracker } from "@/components/
 import { Link, useLocation } from "wouter";
 import { useGetCurrentUser, getGetCurrentUserQueryKey, useListAiDraftQuotations, getListAiDraftQuotationsQueryKey } from "@shared/api-client-react";
 import { useSupabaseAuth } from "@/contexts/SupabaseAuthContext";
+import { shouldShowDevLogout } from "@/lib/devOtpLogoutVisibility";
 import {
   LayoutDashboard,
   Package,
@@ -165,7 +166,9 @@ export function AppShell({ children, noPadding }: AppShellProps) {
   const [location, navigate] = useLocation();
   const { t } = useLanguage();
   const { activeCompany, isConsolidated } = useCompany();
-  const { user: authUser } = useSupabaseAuth();
+  const { user: authUser, requiresSignedOtp, signOut } = useSupabaseAuth();
+  // Hostinger DEV uses a production frontend build; trust the server's DEV OTP policy.
+  const showDevLogout = shouldShowDevLogout(IS_DEV, requiresSignedOtp);
   const secondaryReady = useAfterFirstPaint(500);
   const { data: fetchedDbUser } = useGetCurrentUser({
     query: {
@@ -1156,6 +1159,17 @@ export function AppShell({ children, noPadding }: AppShellProps) {
               </button>
               <LanguageSelector />
               <NotificationBell />
+              {showDevLogout && (
+                <button
+                  type="button"
+                  onClick={signOut}
+                  aria-label="Logout dari BizPortal DEV"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-destructive/40 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <LogOut className="h-4 w-4" />
+                  <span>Logout</span>
+                </button>
+              )}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <button className="flex items-center gap-2 rounded-md px-2 py-1 hover:bg-accent transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring">
@@ -1185,9 +1199,9 @@ export function AppShell({ children, noPadding }: AppShellProps) {
                       {dbUser?.role} {t.common.division}
                     </Badge>
                   </div>
-                  {IS_DEV && (
+                  {showDevLogout && (
                     <DropdownMenuItem
-                      onClick={() => { window.location.href = "/api/logout?redirect=/"; }}
+                      onClick={signOut}
                       className="cursor-pointer text-destructive focus:text-destructive focus:bg-destructive/10"
                     >
                       <LogOut className="mr-2 h-4 w-4" />
