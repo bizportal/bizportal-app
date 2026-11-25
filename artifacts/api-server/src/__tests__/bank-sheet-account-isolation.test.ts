@@ -297,6 +297,20 @@ describe("CST-DEV Kas Besar SC read-only preflight", () => {
     expect(previewCashSheetRows([["unknown", "other"], ["anything", "else"]]))
       .toMatchObject({ headerValid: false, safeToImport: false });
   });
+  it("limits mismatch source evidence to exact numeric debit/credit/saldo cells", () => {
+    const googleSheetSource = readFileSync(
+      resolve(process.cwd(), "src/lib/google-sheets.ts"), "utf8",
+    );
+    expect(routeSource).toContain("readCashMismatchCellEvidence(");
+    expect(routeSource).toContain("balanceAudit.balanceMismatchRowNumbers");
+    expect(routeSource).toContain('status: "UNAVAILABLE", rows: []');
+    expect(routeSource).toContain("mismatchCellEvidence,");
+    expect(googleSheetSource).toContain('batchRead("UNFORMATTED_VALUE")');
+    expect(googleSheetSource).toContain('batchRead("FORMULA")');
+    expect(googleSheetSource).toContain('const cellNames = ["debit", "credit", "saldo"] as const');
+    expect(googleSheetSource).toContain("slice(0, 20)");
+    expect(googleSheetSource).not.toContain("formulaText:");
+  });
   it("keeps the endpoint read-only and locked to CST-DEV cash config #5", () => {
     expect(routeSource).toContain('router.get("/bank-reconciliation/sheet-configs/5/preview"');
     expect(routeSource).toContain('const rows = await readSpreadsheetValues(config.sheet_id, config.tab_name)');
