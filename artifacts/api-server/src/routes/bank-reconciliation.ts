@@ -8442,7 +8442,32 @@ router.get("/bank-reconciliation/sheet-configs/5/preview", async (req, res): Pro
     }
     const rows = await readSpreadsheetValues(config.sheet_id, config.tab_name);
     const preview = previewCashSheetRows(rows);
-    res.json({ ok: preview.safeToImport, configId: 5, accountId: 18, ...preview, mode: "read_only_no_sync" });
+    // Compare the source baseline with this exact company's cash account.
+    // The dedicated DEV reader has SELECT here, but not on bank_mutations.
+    // Neither an equal balance nor an empty mutation history authorizes import.
+    const accountResult = await reader.query<{ opening_balance: string | number | null }>(
+      "select opening_balance from public.company_bank_accounts where id=$1 and company_id=$2 and account_type='cash' and is_active=true",
+      [18, 1],
+    );
+    if (accountResult.rows.length !== 1) {
+      res.status(409).json({ ok: false, error: "Akun kas CST-DEV tidak dapat diverifikasi" });
+      return;
+    }
+    const rawOpening = accountResult.rows[0].opening_balance;
+    const accountOpeningBalanceAmount = rawOpening === null ? null : Number(rawOpening);
+    const openingBalanceMatchesAccount = preview.openingBalanceAmount === null
+      || accountOpeningBalanceAmount === null || !Number.isFinite(accountOpeningBalanceAmount)
+      ? null
+      : Math.round(preview.openingBalanceAmount * 100)
+        === Math.round(accountOpeningBalanceAmount * 100);
+    res.json({
+      ok: false, configId: 5, accountId: 18, ...preview,
+      accountOpeningBalanceAmount: Number.isFinite(accountOpeningBalanceAmount)
+        ? accountOpeningBalanceAmount : null,
+      openingBalanceMatchesAccount,
+      databaseDuplicateCheck: "NOT_RUN_READER_HAS_NO_MUTATIONS_SELECT",
+      safeToImport: false, mode: "read_only_no_sync",
+    });
   } catch {
     // Do not reveal keys, spreadsheet contents, or provider diagnostics.
     res.status(502).json({ ok: false, error: "Pratinjau baca-saja Kas Besar SC gagal" });
