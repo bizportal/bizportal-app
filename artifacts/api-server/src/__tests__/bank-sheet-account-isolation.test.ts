@@ -104,6 +104,34 @@ describe("CST-DEV Kas Besar SC read-only preflight", () => {
       incomingRows: 0, outgoingRows: 1, safeToImport: false,
     });
   });
+  it("recognizes the actual Config #5 row shape: label outside Debit and invalid date", () => {
+    expect(previewCashSheetRows([
+      headers,
+      ["not-a-transaction-date", "SALDO AWAL", "", "", "13793", ""],
+      ["25/11/2026", "cash receipt", "1000", "", "14793", "Pemasukan"],
+      ["26/11/2026", "cash payment", "", "250", "14543", "Pengeluaran"],
+    ])).toMatchObject({
+      headerValid: true, nonemptyRows: 3, importableRows: 2,
+      rejectedRows: 0, rejectedRowNumbers: [],
+      openingBalanceRows: 1, openingBalanceRowNumbers: [2],
+      incomingRows: 1, outgoingRows: 1, safeToImport: false,
+    });
+  });
+  it("keeps opening-balance labels from bypassing the transaction safety gate", () => {
+    expect(previewCashSheetRows([
+      headers,
+      ["not-a-date", "SALDO AWAL", "900", "200", "13793", ""],
+    ])).toMatchObject({
+      openingBalanceRows: 0, rejectedRows: 1,
+      ambiguousBothSides: 1, safeToImport: false,
+    });
+    expect(previewCashSheetRows([
+      headers,
+      ["not-a-date", "SALDO AWAL", "unrecognized debit", "", "13793", ""],
+    ])).toMatchObject({
+      openingBalanceRows: 0, rejectedRows: 1, safeToImport: false,
+    });
+  });
   it("does not misclassify a malformed SALDO AWAL without a usable balance", () => {
     expect(previewCashSheetRows([
       ["Tanggal", "Keterangan COA", "Debit", "Kredit", "Saldo"],
