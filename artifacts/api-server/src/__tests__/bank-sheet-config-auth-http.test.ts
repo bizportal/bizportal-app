@@ -7,17 +7,21 @@ const mock = vi.hoisted(() => ({
   actor: null as null | { email: string; companyId: number | null; role: string },
   queries: [] as Array<{sql: string; params: unknown[]}>,
   readerFailure: null as null | string,
+  signedActor: null as null | { email: string; companyId: number | null; role: string },
 }));
 vi.mock("../routes/dev-auth", () => ({
   isDevelopmentEnvironment: () => process.env.APP_ENV === "development",
-  getProductionSession: () => null,
-  getProductionUser: async () => null,
+  getProductionSession: () => mock.signedActor ? { signed: true } : null,
+  getProductionUser: async () => mock.signedActor,
   getDevSession: () => mock.actor,
 }));
 vi.mock("@workspace/db", () => ({
   pool: {
     query: async (sql: string, params: unknown[] = []) => {
       mock.queries.push({sql, params});
+      if (sql.includes("update public.bank_sheet_configs cfg") && sql.includes("set tab_name=$1")) {
+        return {rowCount:1, rows:[{id:3,company_id:1,label:"kas besar",tab_name:params[0],is_active:true}]};
+      }
       if (sql.includes("select company_id from public.bank_sheet_configs where id=$1")) {
         return {rowCount:1, rows:[{company_id:Number(params[0]) === 3 ? 3 : 1}]};
       }
@@ -76,6 +80,7 @@ describe("bank Sheet company-scoped HTTP authorization gate", () => {
     mock.actor=null;
     mock.queries.length=0;
     mock.readerFailure=null;
+    mock.signedActor=null;
   });
   afterEach(()=>vi.unstubAllEnvs());
   const get=(path:string)=>fetch(base+"/api"+path);
@@ -175,6 +180,49 @@ describe("bank Sheet company-scoped HTTP authorization gate", () => {
       expect(response.status).toBe(423);
       expect(await response.json()).toMatchObject({code:"BANK_SHEET_DEV_SOURCE_ONLY_READ_ONLY"});
     }
+    expect(mock.queries).toHaveLength(0);
+  });
+  it("keeps config #3 edit locked unless the independent tab edit flag is enabled", async()=>{
+    mock.signedActor={email:"owner@pr95.invalid",companyId:1,role:"super_admin"};
+    const r=await fetch(base+"/api/bank-reconciliation/sheet-configs/3",{
+      method:"PUT",headers:{"content-type":"application/json"},
+      body:JSON.stringify({company_id:1,bank_account_id:2,label:"kas besar",sheet_id:"SHEET_TEST",tab_name:"kas besar sc"}),
+    });
+    expect(r.status).toBe(423);
+    expect(mock.queries).toHaveLength(0);
+  });
+  it("allows signed CST Super Admin to correct only config #3 tab metadata, preserving other writes lock",async()=>{
+    vi.stubEnv("BANK_SHEET_DEV_TAB_EDIT_ENABLED","true");
+    mock.signedActor={email:"owner@pr95.invalid",companyId:1,role:"super_admin"};
+    const url=base+"/api/bank-reconciliation/sheet-configs/3";
+    const valid={company_id:1,bank_account_id:2,label:"kas besar",sheet_id:"SHEET_TEST",tab_name:"kas besar sc"};
+    const put=(body:Record<string,unknown>)=>fetch(url,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+    expect((await put({...valid,is_active:false})).status).toBe(400);
+    expect((await put({...valid,bank_account_id:17})).status).toBe(400);
+    expect((await put({...valid,company_id:3})).status).toBe(400);
+    expect(mock.queries).toHaveLength(0);
+    const ok=await put(valid);
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toMatchObject({id:3,company_id:1,tab_name:"kas besar sc",is_active:true});
+    expect(mock.queries).toHaveLength(1);
+    expect(mock.queries[0].sql).toContain("set tab_name=$1");
+    expect(mock.queries[0].sql).not.toContain("set is_active");
+    expect((await post("/bank-reconciliation/sheet-configs/3/sync")).status).toBe(423);
+    expect(mock.queries).toHaveLength(1);
+  });
+  it("requires a signed session and refuses edits for other config IDs",async()=>{
+    vi.stubEnv("BANK_SHEET_DEV_TAB_EDIT_ENABLED","true");
+    mock.actor={email:"legacy@pr95.invalid",companyId:1,role:"super_admin"};
+    const body={company_id:1,bank_account_id:2,label:"kas besar",sheet_id:"SHEET_TEST",tab_name:"kas besar sc"};
+    const put=(id:number)=>fetch(base+`/api/bank-reconciliation/sheet-configs/${id}`,{
+      method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(body),
+    });
+    expect((await put(3)).status).toBe(423);
+    mock.actor=null;
+    mock.signedActor={email:"owner@pr95.invalid",companyId:3,role:"super_admin"};
+    expect((await put(3)).status).toBe(400);
+    mock.signedActor={email:"owner@pr95.invalid",companyId:1,role:"super_admin"};
+    expect((await put(2)).status).toBe(423);
     expect(mock.queries).toHaveLength(0);
   });
   it("prevents bulk and create requests from crossing company scope",async()=>{
