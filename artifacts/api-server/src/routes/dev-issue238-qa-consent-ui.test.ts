@@ -60,6 +60,7 @@ describe("Owner QA #238 consent UI fail-closed",()=>{
   expect(html).toContain("Setujui QA #238 DEV");
   expect(html).toContain("belum mengirim ke pelaksana");
   expect(html).toContain("credentials:\"same-origin\"");
+  expect(r.headers.get("content-security-policy")).toContain("connect-src 'self'");
   expect(r.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
   expect(r.headers.get("cache-control")).toBe("no-store");
  });
