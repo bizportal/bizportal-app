@@ -390,3 +390,51 @@ real statement ingestion are NOT yet demonstrated. A fixture marks the
 bank row as imported for finalizer eligibility, not an actual import.
 No real bank transfers, supplier payables, or CST/PROD journals were
 issued. Never classify this as full application/business E2E PASS.
+
+## 25 Nov 2026 — actual canonical Invoice/AP plus bank posting integration (test-only)
+User requested service execution instead of a seven-step UI simulation.
+Created a repeatable disposable PostgreSQL test using OFFLINE-generated
+Drizzle Marketplace DDL (15 canonical tables). Only foreign keys to
+unrelated ERP tables are omitted from this local test schema. Additional
+bank/reconciliation/GL test tables live in the other local-only fixture.
+
+The unified integration test executes ACTUAL existing services/SQL:
+1. createMarketplaceVendorInvoice for the approved synthetic internal
+   PO #14, GR #6, supplier 24, Frozen Tuna Saku, IDR 100000, local-only
+   placeholder attachment path; no supplier invoice or physical PDF created.
+2. submitMarketplaceVendorInvoice; 3-way-match persisted as passed,
+   Invoice status ready_for_ap; rejects changed line price before insert.
+3. createApPreparation -> reviewApPreparation -> waiting_payment,
+   createMarketplaceAccountingHandoff -> one draft Payment Request.
+4. approveMarketplacePaymentRequest for test actor signed_server_session,
+   with an atomic approval audit in local PostgreSQL.
+5. authorizeMarketplaceReadyForApBankAllocation checks the real joined
+   Invoice/AP/PaymentRequest/Handoff/BankMutation amount, actor, status,
+   fingerprint, company and immutable chain.
+6. The bank statement import and native matching writer remain outside
+   this test: a synthetic imported row, match and allocation are seeded
+   in isolated PostgreSQL. The test then invokes the REAL unmodified
+   postBankMutationCanonical function to transition draft GL + candidate
+   matching mutation to posted/reconciled and records a canonical bank audit.
+7. finalizePostedMarketplacePayment confirms paid once, then REPLAY
+   idempotently, and both debit/credit lines equal IDR 100000.
+
+The separate canonical bank helper suite proves audit-insertion failure
+rolls back mutation/match/journal and rejects unbalanced journal lines.
+No emails or vendor notifications are sent; side effects are stubbed,
+while the service database writes themselves are REAL local Postgres SQL.
+No authenticated human browser session was used in this new harness.
+
+The reproducible isolated test runner at
+scripts/qa/run-po14-isolated-marketplace-e2e.sh creates two restricted
+localhost Docker postgres:16-alpine instances on ports 55497 and 55493,
+loads the offline schema, runs the seven test suites, and destroys the
+containers on EXIT. Fresh run from EMPTY databases: 94/94 PASS
+(7 files), exit 0. API typecheck PASS.
+
+Honest release boundary: this validates the actual service code and
+local SQL across Invoice/AP/approval/bank posting/finalization, but DOES
+NOT prove true bank statement ingestion, the production bank matching
+writer's own match insertion, actual vendor invoice attachments,
+a real owner click to execute this service chain, or finance business DB
+deployment. DO NOT call full operational bank/GL E2E PASS.
