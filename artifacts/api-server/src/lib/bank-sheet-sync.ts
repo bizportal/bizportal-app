@@ -680,6 +680,45 @@ export function auditCashSheetRunningBalances(rows: string[][]): {
   };
 }
 
+/**
+ * Compare only exact Google Sheets UNFORMATTED_VALUE numbers for a mismatched
+ * cash row and its immediately preceding source row. Nulls are indeterminate:
+ * never coerce text/formulas to an accounting number or auto-adjust entries.
+ * This is a pure DEV diagnostic, not a posting or import decision.
+ */
+export function explainCashRawBalanceDifferences(
+  mismatches: ReadonlyArray<{ rowNumber: number; direction: "IN" | "OUT" }>,
+  numericEvidence: ReadonlyArray<{
+    rowNumber: number;
+    debitRaw: number | null;
+    creditRaw: number | null;
+    saldoRaw: number | null;
+  }>,
+): Array<{
+  rowNumber: number;
+  rawDifference: number | null;
+  category: "DISPLAY_PRECISION_ONLY" | "RAW_SOURCE_MISMATCH" | "SOURCE_NUMERIC_UNAVAILABLE";
+}> {
+  const byRow = new Map(numericEvidence.map((r) => [r.rowNumber, r]));
+  return mismatches.map((m) => {
+    const current = byRow.get(m.rowNumber);
+    const previous = byRow.get(m.rowNumber - 1);
+    const movement = m.direction === "IN" ? current?.debitRaw : current?.creditRaw;
+    if (current?.saldoRaw == null || previous?.saldoRaw == null || movement == null
+        || ![current.saldoRaw, previous.saldoRaw, movement].every(Number.isFinite)) {
+      return { rowNumber: m.rowNumber, rawDifference: null, category: "SOURCE_NUMERIC_UNAVAILABLE" as const };
+    }
+    const expected = previous.saldoRaw + (m.direction === "IN" ? movement : -movement);
+    const delta = Math.round((current.saldoRaw - expected) * 100) / 100;
+    return {
+      rowNumber: m.rowNumber,
+      rawDifference: delta,
+      category: Math.abs(delta) <= 0.01
+        ? "DISPLAY_PRECISION_ONLY" as const : "RAW_SOURCE_MISMATCH" as const,
+    };
+  });
+}
+
 function addSheetStatusUpdates(
   config: SheetConfig,
   parsed: ReturnType<typeof parseRows>,
