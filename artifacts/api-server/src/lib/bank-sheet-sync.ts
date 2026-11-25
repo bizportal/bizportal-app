@@ -508,11 +508,15 @@ export function previewCashSheetRows(rows: string[][]): {
   const openingBalanceRowNumbers = rows.slice(1).flatMap((row, index) => {
     if (!row?.some((cell) => String(cell ?? "").trim())) return [];
     if (acceptedRowNumbers.has(index + 2)) return [];
-    const label = String(row[debitIndex] ?? "").trim().toUpperCase().replace(/\\s+/g, " ");
-    const credit = String(row[creditIndex] ?? "").trim();
+    const hasOpeningMarker = row.some((cell) =>
+      /\bSALDO\s+AWAL\b/i.test(String(cell ?? "")));
+    const debit = parseAmount(String(row[debitIndex] ?? ""));
+    const credit = parseAmount(String(row[creditIndex] ?? ""));
     const saldo = saldoIndex < 0 ? 0 : parseAmount(String(row[saldoIndex] ?? ""));
-    const date = parseDate(String(row[dateIndex] ?? ""), "DMY");
-    return label === "SALDO AWAL" && !credit && saldo > 0 && date !== null
+    // Opening balance is a baseline, not a cash movement; it may have no valid
+    // transaction date and its marker can appear in a note/description field.
+    // Only the first data row is recognized, and the import gate stays closed.
+    return index === 0 && hasOpeningMarker && debit <= 0 && credit <= 0 && saldo > 0
       ? [index + 2] : [];
   });
   const openingBalanceRowSet = new Set(openingBalanceRowNumbers);
