@@ -176,10 +176,14 @@ describe("Cash source-only dry-run replay and rollback", () => {
       checkedTransactions: 2, balanceMismatchRows: 1,
       balanceMismatchRowNumbers: [3],
       mismatchDetails: [{
-        rowNumber: 3, expectedBalance: 15793,
-        statedBalance: 15700, difference: -93,
+        rowNumber: 3, previousBalance: 13793,
+        direction: "IN", movementAmount: 2000,
+        expectedBalance: 15793, statedBalance: 15700, difference: -93,
       }],
     });
+    expect(result.mismatchDetails[0]).not.toHaveProperty("description");
+    expect(result.mismatchDetails[0]).not.toHaveProperty("counterparty");
+    expect(result.mismatchDetails[0]).not.toHaveProperty("date");
     expect(rows[2]?.[4]).toBe("15700");
   });
   it("locates running-balance mismatches and missing balances by source row", () => {
