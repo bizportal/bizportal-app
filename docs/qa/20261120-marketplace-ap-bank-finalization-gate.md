@@ -261,3 +261,20 @@ This is a code-only change on a draft PR. Neither the unrestricted Finance
 writer nor the new approval-only flag was enabled on the currently deployed
 Finance DEV backend. Real Payment Requests count was zero as of last
 read-only DB inspection; no bank or journal was posted.
+
+## 25 Nov 2026 actual CST-DEV Marketplace E2E preflight
+A new read-only SQL readiness query is kept in
+scripts/sql/20261125_cst_dev_marketplace_payment_e2e_readiness_READ_ONLY.sql.
+It checks delivered Shipment -> passed GR -> ready_for_ap three-way-matched
+Vendor Invoice before checking AP, Payment Request, approval audit and
+canonically imported, reconciled, posted outgoing bank evidence.
+This is a blocker diagnosis, NOT a payment or automatic approval job.
+
+Current evidence from CST-DEV: PO #14, shipment #8 delivered, GR #6
+inspection passed, but 0 of 10 CST Vendor Invoices reference a Marketplace
+PO/GR, 0 invoices ready_for_ap, 0 AP Preparations, 0 Payment Requests,
+0 Handoffs and 0 payment approval audits. No invoice, Payment Request,
+bank mutation or journal was created to fake an E2E result.
+An actual canonical Vendor Invoice with authentic supplier references,
+lines, totals and attachment must first exist; the canonical workflow
+validates these fields. Do not rewrite historical invoices to force PASS.
