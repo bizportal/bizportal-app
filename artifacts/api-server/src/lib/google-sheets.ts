@@ -135,6 +135,79 @@ export async function readSpreadsheetValues(
   );
 }
 
+/**
+ * Narrow read-only inspection of formula/number precision for specific cash
+ * balance exception rows. No cell value or formula text is returned.
+ * The caller is responsible for enforcing DEV + signed Super Admin scope.
+ */
+export async function inspectCashBalanceSourceShapes(
+  spreadsheetId: string,
+  tabName: string,
+  exceptionRows: readonly number[],
+): Promise<Array<{
+  rowNumber: number;
+  hasFormulaInDebitCreditOrBalance: boolean;
+  rawNumericPrecisionDiffersFromDisplay: boolean;
+  numericCellCount: number;
+}>> {
+  const safeRows = [...new Set(exceptionRows)]
+    .filter((n) => Number.isSafeInteger(n) && n >= 2 && n <= 10000)
+    .slice(0, 20);
+  if (safeRows.length === 0) return [];
+  const credentials = getCredentials();
+  const accessToken = await getAccessToken(credentials);
+  const fetchCells = async (option: "FORMATTED_VALUE" | "UNFORMATTED_VALUE" | "FORMULA") => {
+    const url = new URL(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values:batchGet`,
+    );
+    const quoted = "'" + tabName.replace(/'/g, "''") + "'";
+    for (const n of safeRows) {
+      url.searchParams.append("ranges", `${quoted}!C${n}:E${n}`);
+    }
+    url.searchParams.set("valueRenderOption", option);
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!response.ok) throw new Error(`Google Sheets diagnostics unavailable (${response.status})`);
+    return (await response.json()) as { valueRanges?: Array<{ values?: unknown[][] }> };
+  };
+  const [display, raw, formulas] = await Promise.all([
+    fetchCells("FORMATTED_VALUE"),
+    fetchCells("UNFORMATTED_VALUE"),
+    fetchCells("FORMULA"),
+  ]);
+  const normalized = (source: { valueRanges?: Array<{ values?: unknown[][] }> }, index: number) =>
+    (source.valueRanges?.[index]?.values?.[0] ?? []) as unknown[];
+  return safeRows.map((n, index) => {
+    const shown = normalized(display, index);
+    const actual = normalized(raw, index);
+    const formula = normalized(formulas, index);
+    const numericCellCount = actual.filter((value) =>
+      typeof value === "number" && Number.isFinite(value)).length;
+    const normalizeShown = (value: unknown) => {
+      const rawValue = String(value ?? "").trim().replace(/[^0-9.,-]/g, "");
+      const dots = (rawValue.match(/\\./g) ?? []).length;
+      const commas = (rawValue.match(/,/g) ?? []).length;
+      if (dots > 0 && commas === 0 && /^-?\\d{1,3}(\\.\\d{3})+$/.test(rawValue)) {
+        return Number(rawValue.replace(/\\./g, ""));
+      }
+      if (commas > 0 && dots === 0 && /^-?\\d{1,3}(,\\d{3})+$/.test(rawValue)) {
+        return Number(rawValue.replace(/,/g, ""));
+      }
+      return Number(rawValue.replace(",", "."));
+    };
+    return {
+      rowNumber: n,
+      hasFormulaInDebitCreditOrBalance: formula.some((v) => typeof v === "string" && v.startsWith("=")),
+      rawNumericPrecisionDiffersFromDisplay: actual.some((v, i) =>
+        typeof v === "number" && Number.isFinite(v)
+          && Number.isFinite(normalizeShown(shown[i]))
+          && Math.abs(v - normalizeShown(shown[i])) > 0.000001),
+      numericCellCount,
+    };
+  });
+}
+
 function quoteSheetName(tabName: string): string {
   return `'${tabName.replace(/'/g, "''")}'`;
 }
