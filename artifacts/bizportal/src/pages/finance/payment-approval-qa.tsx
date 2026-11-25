@@ -65,7 +65,10 @@ export default function FinancePaymentApprovalQa(){
    <div className="flex flex-wrap items-center justify-between gap-3">
     <div><h1 className="text-2xl font-semibold">Persetujuan Pembayaran — Pengujian DEV</h1>
     <p className="text-sm text-muted-foreground">Sesi Super Admin asli · skenario sintetis · tanpa transfer bank atau posting GL</p></div>
-    <Link href="/purchase/vendor-invoices" className="text-sm underline">Kembali ke Vendor Invoice</Link>
+    <div className="flex flex-col gap-2 text-sm">
+     <Link href="/finance/po14-e2e-qa" className="underline font-semibold">Uji E2E internal PO #14 (simulasi)</Link>
+     <Link href="/purchase/vendor-invoices" className="underline">Kembali ke Vendor Invoice</Link>
+    </div>
    </div>
    {data
     ? <p role="status" className="text-sm text-green-600">

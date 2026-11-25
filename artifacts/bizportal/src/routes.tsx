@@ -11,6 +11,7 @@ const MasterDataHubPage = React.lazy(() => import("@/pages/master-data/index"));
 const MasterDataWorkspacePage = React.lazy(() => import("@/pages/master-data/workspace"));
 const FinanceHubPage = React.lazy(() => import("@/pages/finance/index"));
 const FinancePaymentApprovalQaPage = React.lazy(() => import("@/pages/finance/payment-approval-qa"));
+const Po14E2eQaPage = React.lazy(() => import("@/pages/finance/po14-e2e-qa"));
 const FinanceModuleWorkspacePage = React.lazy(() => import("@/pages/finance/workspace"));
 const ReconClassificationConfigPage = React.lazy(() => import("@/pages/finance/recon-config/index"));
 const SettlementPatternPage = React.lazy(() => import("@/pages/finance/settlement-pattern/index"));
@@ -607,6 +608,7 @@ export function AppRoutes({ rootGuard }: { rootGuard?: React.ComponentType }) {
       <Route path="/purchase/returns/:id" component={PR(PurchaseReturnEditorPage)} />
       <Route path="/purchase/returns" component={PR(PurchaseReturnsListPage)} />
       <Route path="/purchase/vendor-invoices/import" component={PR(InvoiceOcrImportPage)} />
+      <Route path="/finance/po14-e2e-qa" component={PR(Po14E2eQaPage)} />
       <Route path="/purchase/vendor-invoices/new" component={PR(VendorInvoiceEditorPage)} />
       <Route path="/purchase/vendor-invoices/:id" component={PR(VendorInvoiceEditorPage)} />
       <Route path="/purchase/vendor-invoices" component={PR(VendorInvoicesListPage)} />

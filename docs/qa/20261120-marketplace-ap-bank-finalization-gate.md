@@ -308,3 +308,35 @@ CST-DEV read-only postflight: 0 Payment Requests, 0 AP Preparations,
 0 Handoffs, 0 approval audit records; 287 existing journal entries and 54
 bank mutations; CST Invoice fingerprint remains
 531f175c6618c26f3ad0983d3d90f5f6. PROD unchanged.
+
+## 25 Nov 2026 — signed PO14 sandbox web workflow DEPLOYED
+User requested direct work on authentic signed Super Admin browser E2E. The
+connected Owner browser is not exposed to the Browser tool, so a real Owner
+click CANNOT be claimed. We installed a narrow, usable, signed-identity
+simulator in the existing Finance DEV preview instead of forging a session.
+
+- New page: /finance/po14-e2e-qa, linked from the existing
+  /finance/payment-approval-qa page
+- Exact HTTPS QA API: /api/mkt/admin/po14-e2e-qa, routed by Nginx ONLY to
+  localhost 127.0.0.1:19882 and PostgreSQL 127.0.0.1:55495/finance_approval_qa
+- Signed Super Admin, CST company scope, HTTPS Origin, JSON body and
+  explicit PO-20261117-00014 reference are validated.
+- Result is ALWAYS explicitly SIMULATED for every stage. No real invoice,
+  bank transfer, bank reconciliation, journal posting or business payable
+  exists as a side effect of this page. An exactly-once sandbox audit
+  is stored with the synthetic receipt. Conflicting actor rejected.
+- Backend isolated PostgreSQL HTTP tests: 5/5 PASS including replay,
+  concurrent requests, unauthorized actors, cross-origin and PROD flags.
+  UI React/jsdom tests: 4/4 PASS including hidden action on unauthorized
+  or wrong-company states. API typecheck PASS; Vite frontend build PASS.
+- Live HTTPS page 200, revised JS chunk 200, API anonymous GET/POST 401,
+  main Finance health 200, real bank posting POST 404. Both DEV services
+  active. No sandbox runs/audits were created from a fake user session.
+- Rollback snapshot saved under
+  /var/lib/bizportal-finance-preview-rollbacks/20261125-po14-web-qa/
+  (old API dist, frontend public, and prior Nginx config). No PROD changes.
+
+This is a signed-browser-ready QA simulation that a genuine owner can run,
+NOT the requested full real Invoice -> AP -> bank reconcile -> GL E2E, which
+continues to require real browser access and production-equivalent but
+fully isolated bank import/posting infrastructure. Keep business release NO-GO.

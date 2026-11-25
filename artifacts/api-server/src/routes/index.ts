@@ -96,6 +96,17 @@ router.use((req, res, next) => {
   });
 });
 
+// PO14 E2E evidence simulator: separate signed Super Admin and isolated QA DB.
+router.use((req,res,next)=>{
+  if(req.path==="/mkt/admin/po14-e2e-qa"){
+    void import("./dev-finance-po14-e2e-qa").then(({default:handler})=>
+      handler(req,res,next)).catch(error=>{
+      req.log?.error({error},"PO14 QA simulator unavailable");
+      if(!res.headersSent)res.status(503).json({error:"PO14 QA unavailable"});
+    });
+  }else next();
+});
+
 // Signed Super Admin approval QA: isolated localhost PostgreSQL only; no bank/GL writes.
 router.use((req,res,next)=>{
   if(req.path==='/mkt/admin/payment-approval-qa'){
