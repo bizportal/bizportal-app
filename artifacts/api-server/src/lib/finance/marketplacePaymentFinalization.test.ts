@@ -12,6 +12,9 @@ beforeAll(async()=>{
  await admin.connect();
  await admin.query(`
    -- Disposable container only: reset the prior test's fixture schema.
+   drop table if exists public.mkt_po_goods_receipts;
+   drop table if exists public.mkt_po_shipments;
+   drop table if exists public.mkt_purchase_orders;
    drop table if exists public.mkt_payment_approval_audit_dev;
    drop table if exists public.audit_logs;
    drop table if exists public.company_bank_accounts;
@@ -26,6 +29,18 @@ beforeAll(async()=>{
    drop table if exists public.mkt_ap_preparations;
    drop table if exists public.vendor_invoices;
    drop table if exists public.payment_requests;
+   -- CST-DEV PO #14 / shipment #8 / GR #6 are used only as references
+   -- in this disposable fixture, never written back to Supabase.
+   create table public.mkt_purchase_orders(
+     id integer primary key,company_id integer,vendor_id integer,
+     po_number text,grand_total numeric
+   );
+   create table public.mkt_po_shipments(
+     id integer primary key,po_id integer,shipment_status text
+   );
+   create table public.mkt_po_goods_receipts(
+     id integer primary key,shipment_id integer,inspection_status text
+   );
    create table public.payment_requests(
       id integer primary key,company_id integer,source_type text,source_id integer,
       mkt_ap_preparation_id integer,idempotency_key text,status text,
@@ -102,7 +117,8 @@ beforeAll(async()=>{
 },30000);
 afterAll(async()=>{await admin.end()});
 beforeEach(async()=>{
- await admin.query(`truncate public.mkt_payment_approval_audit_dev,
+ await admin.query(`truncate public.mkt_purchase_orders,public.mkt_po_shipments,
+ public.mkt_po_goods_receipts,public.mkt_payment_approval_audit_dev,
  public.company_bank_accounts,public.chart_of_accounts,
  public.audit_logs,public.accounting_entry_lines,
  public.accounting_entries,public.payment_allocations,public.payment_matching_groups,
@@ -110,38 +126,42 @@ beforeEach(async()=>{
  public.vendor_invoices,public.mkt_ap_preparations,public.mkt_accounting_handoffs,
  public.payment_requests restart identity`);
  await admin.query(`
+ insert into public.mkt_purchase_orders
+ values(14,1,24,'PO-20261117-00014',100000);
+ insert into public.mkt_po_shipments values(8,14,'delivered');
+ insert into public.mkt_po_goods_receipts values(6,8,'passed');
  insert into public.payment_requests
   (id,company_id,source_type,source_id,mkt_ap_preparation_id,idempotency_key,
    status,approved_by,approved_at,mkt_approved_at,mkt_treasury_ready_at,supplier_id,
    total_amount,paid_amount,journal_entry_id,payload_fingerprint)
  values (41,1,'marketplace_ap',88,88,'mkt-ap:88','approved',
-   'owner@example.invalid',now(),now(),now(),5,100.00,0,null,repeat('a',64));
+   'owner@example.invalid',now(),now(),now(),24,100000.00,0,null,repeat('a',64));
  insert into public.mkt_accounting_handoffs
   (id,payment_request_id,company_id,vendor_invoice_id,ap_preparation_id,status,
    accounting_status,handoff_key,amount,payload_fingerprint)
- values (9,41,1,77,88,'accepted','draft_not_posted','mkt-ap:88',100,repeat('a',64));
+ values (9,41,1,77,88,'accepted','draft_not_posted','mkt-ap:88',100000,repeat('a',64));
  insert into public.mkt_ap_preparations(id,company_id,vendor_invoice_id,supplier_id,status,grand_total_snapshot)
- values (88,1,77,5,'waiting_payment',100);
+ values (88,1,77,24,'waiting_payment',100000);
  insert into public.vendor_invoices(id,company_id,supplier_id,status,three_way_match_status,grand_total)
- values (77,1,5,'ready_for_ap','passed',100);
+ values (77,1,24,'ready_for_ap','passed',100000);
  insert into public.bank_mutations
  (id,company_id,direction,status,accounting_posted,reconciliation_status,
  journal_entry_id,import_row_id,source_table,source_module,source_id,amount,
  bank_account_id,approved_at,linked_transaction_type,linked_transaction_id)
  values(101,1,'OUT','posted',true,'reconciled',201,11,'public.vendor_invoices',
- 'bank_reconciliation',77,100.00,'BANK-1',now(),'vendor_invoice_batch',77);
+ 'bank_reconciliation',77,100000.00,'BANK-1',now(),'vendor_invoice_batch',77);
  insert into public.bank_reconciliation_matches
  (id,mutation_id,candidate_type,candidate_source,candidate_id,status)
  values(501,101,'vendor_invoice','public.vendor_invoices','77','approved');
  insert into public.payment_matching_groups(id,company_id,status,total_allocated,remaining_amount)
- values(301,1,'active',100,0);
+ values(301,1,'active',100000,0);
  insert into public.payment_allocations(id,group_id,company_id,invoice_id,mutation_id,allocated_amount,is_active)
- values(601,301,1,77,101,100,true);
+ values(601,301,1,77,101,100000,true);
  insert into public.accounting_entries
  (id,company_id,source,source_id,status,total_debit,total_credit)
- values(201,1,'bank_reconciliation',101,'posted',100,100);
+ values(201,1,'bank_reconciliation',101,'posted',100000,100000);
  insert into public.accounting_entry_lines(id,entry_id,company_id,account_id,debit,credit)
- values(1,201,1,301,100,0),(2,201,1,302,0,100);
+ values(1,201,1,301,100000,0),(2,201,1,302,0,100000);
  insert into public.chart_of_accounts(id,company_id,is_active,is_postable)
  values(302,1,true,true),(301,1,true,true);
  insert into public.company_bank_accounts(id,company_id,account_number,coa_id,is_active)
@@ -172,6 +192,17 @@ describe("Marketplace Approval to posted-bank finalization integrated PostgreSQL
    await admin.query(`update public.payment_requests set
      status='draft',approved_by=null,approved_at=null,mkt_approved_at=null,
      mkt_treasury_ready_at=null where id=41`);
+   const provenance=await admin.query(`
+     select po.po_number,po.company_id,po.vendor_id,po.grand_total::text,
+       sh.shipment_status,gr.inspection_status
+     from public.mkt_purchase_orders po
+     join public.mkt_po_shipments sh on sh.po_id=po.id
+     join public.mkt_po_goods_receipts gr on gr.shipment_id=sh.id
+     where po.id=14 and sh.id=8 and gr.id=6`);
+   expect(provenance.rows[0]).toMatchObject({
+     po_number:"PO-20261117-00014",company_id:1,vendor_id:24,
+     grand_total:"100000",shipment_status:"delivered",inspection_status:"passed",
+   });
    const c=new pg.Client({connectionString:url});await c.connect();
    const dialect=new PgDialect();
    try{
@@ -191,7 +222,7 @@ describe("Marketplace Approval to posted-bank finalization integrated PostgreSQL
    expect(first.status).toBe("CONFIRMED");
    expect((await run()).status).toBe("REPLAY");
    expect(await snapshot()).toMatchObject({
-     request_status:"paid",paid:"100.00",journal_id:201,
+     request_status:"paid",paid:"100000.00",journal_id:201,
      handoff_status:"posted",audit_count:1,
    });
    const approvalAudits=await admin.query(
@@ -210,13 +241,13 @@ describe("Marketplace AP posted bank atomic finalization, disposable PostgreSQL 
  it("confirms a verified payment exactly once and replays without duplicate audit",async()=>{
   expect((await run()).status).toBe("CONFIRMED");
   expect((await run()).status).toBe("REPLAY");
-  expect(await snapshot()).toMatchObject({request_status:"paid",paid:"100.00",
+  expect(await snapshot()).toMatchObject({request_status:"paid",paid:"100000.00",
     journal_id:201,handoff_status:"posted",audit_count:1});
  });
  it("serializes concurrent confirmations into one audit and idempotent replay",async()=>{
   const results=await Promise.all([run(),run()]);
   expect(results.map(r=>r.status).sort()).toEqual(["CONFIRMED","REPLAY"]);
-  expect(await snapshot()).toMatchObject({request_status:"paid",paid:"100.00",
+  expect(await snapshot()).toMatchObject({request_status:"paid",paid:"100000.00",
     journal_id:201,handoff_status:"posted",audit_count:1});
  });
  it("rolls back both updates after injected audit failure",async()=>{

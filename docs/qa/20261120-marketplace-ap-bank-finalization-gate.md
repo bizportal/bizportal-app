@@ -278,3 +278,33 @@ bank mutation or journal was created to fake an E2E result.
 An actual canonical Vendor Invoice with authentic supplier references,
 lines, totals and attachment must first exist; the canonical workflow
 validates these fields. Do not rewrite historical invoices to force PASS.
+
+## 25 November 2026 — Owner confirms PO #14 is internal TEST ONLY
+
+The Owner explicitly confirmed that CST-DEV PO #14 can be used as a
+reference for isolated test-only Finance E2E without a real bank payment.
+Live CST-DEV records were independently examined: PO-20261117-00014,
+company 1, supplier ID 24 (the same PT Cahaya Sejati Teknologi), one
+Frozen Tuna Saku unit, grand total IDR 100000.00; shipment #8 delivered,
+GR #6 inspection passed. This self-supplier record must not be treated as
+a legitimate external Accounts Payable invoice.
+
+Updated the existing disposable PostgreSQL integration fixture to carry
+the verified PO #14 / shipment #8 / GR #6 and IDR 100000.00 nominal.
+The integration calls the real approveMarketplacePaymentRequest and
+finalizePostedMarketplacePayment services against isolated synthetic
+Invoice/AP/Payment Request, pre-seeded bank mutation, matching allocation,
+and balanced posted journal. It verifies replay, rollback and rejection
+of mismatched evidence. The fixture schema initialization is repeatable.
+
+Focused integrated tests 15/15 PASS. Wider Marketplace/AP/bank regression
+84/84 PASS (5 files). The disposable PostgreSQL used localhost port 55493
+only. No business records, supplier invoice attachment, bank import,
+authentic Super Admin browser session, live reconciler, or actual journal
+posting was created by this test. This is an integrated SERVICE/DB fixture,
+not an end-to-end application/business completion.
+
+CST-DEV read-only postflight: 0 Payment Requests, 0 AP Preparations,
+0 Handoffs, 0 approval audit records; 287 existing journal entries and 54
+bank mutations; CST Invoice fingerprint remains
+531f175c6618c26f3ad0983d3d90f5f6. PROD unchanged.
