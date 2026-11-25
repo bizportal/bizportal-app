@@ -456,6 +456,16 @@ export function previewCashSheetRows(rows: string[][]): {
   rejectedRowNumbers: number[];
   openingBalanceRows: number;
   openingBalanceRowNumbers: number[];
+  firstRejectedRowShape: {
+    rowNumber: number;
+    dateValid: boolean;
+    debitNumeric: boolean;
+    creditNumeric: boolean;
+    debitHasSaldoAwal: boolean;
+    anyCellHasSaldoAwal: boolean;
+    saldoHeaderPresent: boolean;
+    saldoNumeric: boolean;
+  } | null;
   ambiguousBothSides: number;
   incomingRows: number;
   outgoingRows: number;
@@ -476,6 +486,7 @@ export function previewCashSheetRows(rows: string[][]): {
       rejectedRowNumbers: rows.slice(1).flatMap((row, index) =>
         row?.some((cell) => String(cell ?? "").trim()) ? [index + 2] : []).slice(0, 20),
       openingBalanceRows: 0, openingBalanceRowNumbers: [],
+      firstRejectedRowShape: null,
       ambiguousBothSides: 0, incomingRows: 0, outgoingRows: 0,
       safeToImport: false,
     };
@@ -511,9 +522,26 @@ export function previewCashSheetRows(rows: string[][]): {
       && !acceptedRowNumbers.has(index + 2)
       && !openingBalanceRowSet.has(index + 2)
       ? [index + 2] : []).slice(0, 20);
+  const firstRejectedRowNumber = rejectedRowNumbers[0];
+  const firstRejectedRow = firstRejectedRowNumber === undefined
+    ? null : rows[firstRejectedRowNumber - 1] ?? null;
+  const firstRejectedRowShape = firstRejectedRow === null || firstRejectedRowNumber === undefined
+    ? null
+    : {
+        rowNumber: firstRejectedRowNumber,
+        dateValid: parseDate(String(firstRejectedRow[dateIndex] ?? ""), "DMY") !== null,
+        debitNumeric: parseAmount(String(firstRejectedRow[debitIndex] ?? "")) > 0,
+        creditNumeric: parseAmount(String(firstRejectedRow[creditIndex] ?? "")) > 0,
+        debitHasSaldoAwal: String(firstRejectedRow[debitIndex] ?? "").toUpperCase().includes("SALDO AWAL"),
+        anyCellHasSaldoAwal: firstRejectedRow.some((cell) =>
+          String(cell ?? "").toUpperCase().includes("SALDO AWAL")),
+        saldoHeaderPresent: saldoIndex >= 0,
+        saldoNumeric: saldoIndex >= 0
+          && parseAmount(String(firstRejectedRow[saldoIndex] ?? "")) > 0,
+      };
   return {
     headerValid, nonemptyRows: candidateRows.length, importableRows,
-    rejectedRows, rejectedRowNumbers,
+    rejectedRows, rejectedRowNumbers, firstRejectedRowShape,
     openingBalanceRows: openingBalanceRowNumbers.length,
     openingBalanceRowNumbers: openingBalanceRowNumbers.slice(0, 20),
     ambiguousBothSides,
