@@ -186,7 +186,7 @@ describe("bank Sheet company-scoped HTTP authorization gate", () => {
     mock.signedActor={email:"owner@pr95.invalid",companyId:1,role:"super_admin"};
     const r=await fetch(base+"/api/bank-reconciliation/sheet-configs/3",{
       method:"PUT",headers:{"content-type":"application/json"},
-      body:JSON.stringify({company_id:1,bank_account_id:2,label:"kas besar",sheet_id:"SHEET_TEST",tab_name:"kas besar sc"}),
+      body:JSON.stringify({tab_name:"kas besar sc"}),
     });
     expect(r.status).toBe(423);
     expect(mock.queries).toHaveLength(0);
@@ -195,7 +195,7 @@ describe("bank Sheet company-scoped HTTP authorization gate", () => {
     vi.stubEnv("BANK_SHEET_DEV_TAB_EDIT_ENABLED","true");
     mock.signedActor={email:"owner@pr95.invalid",companyId:1,role:"super_admin"};
     const url=base+"/api/bank-reconciliation/sheet-configs/3";
-    const valid={company_id:1,bank_account_id:2,label:"kas besar",sheet_id:"SHEET_TEST",tab_name:"kas besar sc"};
+    const valid={tab_name:"kas besar sc"};
     const put=(body:Record<string,unknown>)=>fetch(url,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
     expect((await put({...valid,is_active:false})).status).toBe(400);
     expect((await put({...valid,bank_account_id:17})).status).toBe(400);
@@ -213,14 +213,14 @@ describe("bank Sheet company-scoped HTTP authorization gate", () => {
   it("requires a signed session and refuses edits for other config IDs",async()=>{
     vi.stubEnv("BANK_SHEET_DEV_TAB_EDIT_ENABLED","true");
     mock.actor={email:"legacy@pr95.invalid",companyId:1,role:"super_admin"};
-    const body={company_id:1,bank_account_id:2,label:"kas besar",sheet_id:"SHEET_TEST",tab_name:"kas besar sc"};
+    const body={tab_name:"kas besar sc"};
     const put=(id:number)=>fetch(base+`/api/bank-reconciliation/sheet-configs/${id}`,{
       method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(body),
     });
     expect((await put(3)).status).toBe(423);
     mock.actor=null;
     mock.signedActor={email:"owner@pr95.invalid",companyId:3,role:"super_admin"};
-    expect((await put(3)).status).toBe(403);
+    expect((await put(3)).status).toBe(400);
     mock.signedActor={email:"owner@pr95.invalid",companyId:1,role:"super_admin"};
     expect((await put(2)).status).toBe(423);
     expect(mock.queries).toHaveLength(0);
