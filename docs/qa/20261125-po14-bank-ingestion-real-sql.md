@@ -2,6 +2,12 @@
 
 **Status: isolated service/worker verification PASS; real Owner browser acceptance pending.**
 
+**26 November update:** the real Super Admin session and CST scope were verified,
+but the signed execution returned HTTP 503 during worker cleanup. See the
+[cleanup race investigation and repair](20261126-po14-worker-cleanup-race.md)
+for the current evidence. The deployment observations below are dated
+25 November; the login-pending observation is historical.
+
 Continuation of [PR #166](https://github.com/bizportal/bizportal-app/pull/166), based on
 `012cbc4f63d69eb4967beb5a7e5ea8d8b0178658`. This extends the existing Finance
 services, runner, endpoint, and page; it does not replace the application.

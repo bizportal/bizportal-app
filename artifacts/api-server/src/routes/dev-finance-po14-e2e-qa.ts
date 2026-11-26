@@ -24,6 +24,56 @@ const entityKeys = ["invoiceId", "apId", "requestId", "handoffId", "mutationId",
 const checkKeys = ["invoiceCreated", "threeWayMatched", "apPrepared", "paymentApproved",
   "bankImported", "automaticMatched", "allocationCreated", "journalPosted",
   "paymentFinalized", "replayIdempotent", "auditRollback"] as const;
+type QaPhase = "identify_worker" | "connect_qa_database" | "acquire_run_lock" |
+  "read_receipt" | "execute_worker" | "verify_worker_hash" | "receipt_begin" |
+  "insert_receipt" | "insert_receipt_audit" | "commit_receipt" | "read_saved_receipt";
+const failureCodes = new Set(["QA_WORKER_TIMEOUT", "QA_WORKER_FAILED", "QA_WORKER_UNAVAILABLE",
+  "QA_WORKER_CHANGED", "QA_WORKER_NOT_READY", "QA_WORKER_INPUT_FAILED", "QA_WORKER_OUTPUT_LIMIT",
+  "QA_EVIDENCE_INVALID", "QA_RECEIPT_INVALID", "QA_DIFFERENT_ACTOR", "QA_UNAVAILABLE"]);
+const workerFailureStages = new Set(["validate_input", "create_disposable_database",
+  "invoice_and_three_way_matching", "ap_and_payment_request", "bank_sheet_import",
+  "automatic_matching", "allocation_rollback", "allocation_and_canonical_posting",
+  "replay_and_sql_evidence", "cleanup"]);
+const workerFailureCodes = new Set(["QA_INPUT_TOO_LARGE", "QA_INPUT_INVALID",
+  "QA_VERIFIED_CST_SUPERADMIN_REQUIRED", "QA_DATABASE_ALREADY_EXISTS", "QA_CLIENT_NOT_READY",
+  "QA_INVOICE_CREATE_FAILED", "QA_THREE_WAY_MATCH_FAILED", "QA_AP_CREATE_FAILED",
+  "QA_FINANCE_REVIEW_FAILED", "QA_AP_WAITING_PAYMENT_FAILED", "QA_HANDOFF_FAILED",
+  "QA_APPROVAL_FAILED", "QA_APPROVAL_REPLAY_FAILED", "QA_IMPORT_FAILED", "QA_IMPORT_COUNT_INVALID",
+  "QA_IMPORTED_MUTATION_INVALID", "QA_IMPORT_REPLAY_FAILED", "QA_AUTOMATIC_MATCH_FAILED",
+  "QA_CANDIDATE_EVIDENCE_INVALID", "QA_AUDIT_FAULT_NOT_OBSERVED", "QA_AUDIT_ROLLBACK_FAILED",
+  "QA_AUDIT_ROLLBACK_MUTATION_CHANGED", "QA_ALLOCATION_FAILED", "QA_APPROVED_MATCH_INVALID",
+  "QA_NATIVE_ALLOCATION_INVALID", "QA_POSTING_FAILED", "QA_FINALIZATION_FAILED", "QA_REPLAY_FAILED",
+  "QA_REPLAY_CHANGED_EVIDENCE", "QA_FINAL_EVIDENCE_MISSING", "QA_FINAL_EVIDENCE_INVALID",
+  "QA_ENTITY_IDS_INVALID", "QA_DATABASE_NOT_REMOVED", "QA_CLEANUP_NAME_INVALID",
+  "QA_CLEANUP_INCOMPLETE", "QA_CLEANUP_TIMEOUT", "QA_CLEANUP_BOOTSTRAP_MISSING",
+  "QA_CANCELLED", "QA_SQL_EXECUTION_FAILED", "QA_WORKER_FAILED"]);
+const diagnosticSqlStates = new Set(["23502", "23503", "23505", "23514", "22P02",
+  "42501", "42P01", "42703", "57014", "57P01", "53300", "P0001"]);
+type WorkerDiagnostic = { workerStage: string; workerCode: string; cleanupFailed: boolean };
+class WorkerFailure extends Error {
+  constructor(readonly diagnostic?: WorkerDiagnostic) { super("QA_WORKER_FAILED"); }
+}
+
+function safeWorkerDiagnostic(output: string): WorkerDiagnostic | undefined {
+  try {
+    const value = JSON.parse(output);
+    const keys = ["ok", "contract", "code", "stage", "isolatedDatabase", "cleanupFailed"];
+    if (!value || typeof value !== "object" || Array.isArray(value) ||
+        Object.keys(value).length !== keys.length || !keys.every(key => Object.hasOwn(value, key)) ||
+        value.ok !== false || value.contract !== workerContract ||
+        typeof value.code !== "string" || !workerFailureStages.has(value.stage) ||
+        typeof value.cleanupFailed !== "boolean" ||
+        !value.isolatedDatabase || typeof value.isolatedDatabase !== "object" ||
+        Array.isArray(value.isolatedDatabase) || Object.keys(value.isolatedDatabase).length !== 2 ||
+        typeof value.isolatedDatabase.name !== "string" ||
+        !/^po14_bank_ingestion_qa_[a-f0-9]{12}$/.test(value.isolatedDatabase.name) ||
+        typeof value.isolatedDatabase.removed !== "boolean") return undefined;
+    // Unknown codes never enter logs or responses, even if they look like uppercase identifiers.
+    return { workerStage: value.stage,
+      workerCode: workerFailureCodes.has(value.code) ? value.code : "QA_WORKER_FAILED",
+      cleanupFailed: value.cleanupFailed };
+  } catch { return undefined; }
+}
 
 type SignedActor = {
   source: "signed_server_session"; role: "super_admin"; email: string; companyId: 1;
@@ -149,7 +199,9 @@ function executeWorker(filename: string, verified: SignedActor, runId: string): 
     child.on("error", () => finish(new Error("QA_WORKER_UNAVAILABLE")));
     child.stdin.on("error", () => stop("QA_WORKER_INPUT_FAILED"));
     child.on("close", code => {
-      if (failure || code !== 0) { finish(new Error(failure ?? "QA_WORKER_FAILED")); return; }
+      if (failure) { finish(new Error(failure)); return; }
+      // Failure JSON is diagnostic only. Nonzero exits can never become a successful receipt.
+      if (code !== 0) { finish(new WorkerFailure(safeWorkerDiagnostic(output))); return; }
       try { finish(undefined, validateProof(JSON.parse(output), verified, runId)); }
       catch { finish(new Error("QA_EVIDENCE_INVALID")); }
     });
@@ -180,24 +232,33 @@ function response(result: Awaited<ReturnType<typeof readReceipt>>, replay = fals
     sheetTransport: "synthetic_fixture", result, replay };
 }
 
-function reportFailure(res: any, error: unknown) {
-  const code = error instanceof Error ? error.message : "QA_UNAVAILABLE";
+function reportFailure(req: any, res: any, error: unknown, phase: QaPhase) {
+  const message = error instanceof Error ? error.message : "QA_UNAVAILABLE";
+  const code = failureCodes.has(message) ? message : "QA_UNAVAILABLE";
+  const diagnostic = error instanceof WorkerFailure ? error.diagnostic : undefined;
+  const sqlState = error && typeof error === "object" && "code" in error &&
+    typeof error.code === "string" && diagnosticSqlStates.has(error.code) ? error.code : undefined;
+  // Only bounded enum values: never Error objects, stdout/stderr, SQL, actor, cookie, or request body.
+  req.log?.error?.({ code, phase, ...diagnostic, ...(sqlState ? { sqlState } : {}) }, "PO14 QA request failed");
   if (code === "QA_DIFFERENT_ACTOR") {
-    res.status(409).json({ error: "Bukti QA ini dimiliki sesi Super Admin lain", code }); return;
+    res.status(409).json({ error: "Bukti QA ini dimiliki sesi Super Admin lain", code, phase }); return;
   }
-  const known = new Set(["QA_WORKER_TIMEOUT", "QA_WORKER_FAILED", "QA_WORKER_UNAVAILABLE", "QA_WORKER_CHANGED", "QA_WORKER_NOT_READY",
-    "QA_WORKER_INPUT_FAILED", "QA_WORKER_OUTPUT_LIMIT", "QA_EVIDENCE_INVALID", "QA_RECEIPT_INVALID"]);
   res.status(503).json({ error: "Pengujian SQL belum berhasil diverifikasi. Tidak ada hasil PASS baru.",
-    code: known.has(code) ? code : "QA_UNAVAILABLE" });
+    code, phase });
 }
 
 router.get(endpoint, async (req, res) => {
   const verified = await actor(req, res); if (!verified) return;
+  let phase: QaPhase = "identify_worker";
   try {
     const worker = await workerIdentity();
-    const result = await withDb(client => readReceipt(client, worker.sha256, verified));
+    phase = "connect_qa_database";
+    const result = await withDb(client => {
+      phase = "read_receipt";
+      return readReceipt(client, worker.sha256, verified);
+    });
     res.setHeader("Cache-Control", "no-store"); res.json(response(result));
-  } catch (error) { reportFailure(res, error); }
+  } catch (error) { reportFailure(req, res, error, phase); }
 });
 
 router.post(endpoint, async (req, res) => {
@@ -213,28 +274,39 @@ router.post(endpoint, async (req, res) => {
       Object.keys(req.body).length !== 1 || req.body.reference !== reference) {
     res.status(422).json({ error: "Referensi pengujian harus PO #14" }); return;
   }
+  let phase: QaPhase = "identify_worker";
   try {
     const worker = await workerIdentity();
+    phase = "connect_qa_database";
     const result = await withDb(async client => {
+      phase = "acquire_run_lock";
       const lock = await client.query("select pg_try_advisory_lock(166,14) as acquired");
       if (lock.rows[0]?.acquired !== true) return { busy: true as const };
       try {
+        phase = "read_receipt";
         const existing = await readReceipt(client, worker.sha256, verified);
         if (existing) return { busy: false as const, receipt: existing, replay: true };
         const runId = randomUUID();
+        phase = "execute_worker";
         const evidence = await executeWorker(worker.filename, verified, runId);
+        phase = "verify_worker_hash";
         if ((await workerIdentity()).sha256 !== worker.sha256) throw new Error("QA_WORKER_CHANGED");
+        phase = "receipt_begin";
         await client.query("BEGIN");
         try {
           await client.query("SET LOCAL statement_timeout='8000ms'");
+          phase = "insert_receipt";
           await client.query(`insert into public.qa_po14_real_e2e_runs
             (id,reference,company_id,actor,contract_version,amount,worker_sha256,evidence)
             values($1,$2,1,$3,2,100000.00,$4,$5::jsonb)`,
           [runId, reference, verified.email, worker.sha256, JSON.stringify(evidence)]);
+          phase = "insert_receipt_audit";
           await client.query(`insert into public.qa_po14_real_e2e_audit(run_id,actor,action)
             values($1,$2,'real_service_sql_verified')`, [runId, verified.email]);
+          phase = "commit_receipt";
           await client.query("COMMIT");
         } catch (error) { await client.query("ROLLBACK").catch(() => undefined); throw error; }
+        phase = "read_saved_receipt";
         return { busy: false as const, receipt: await readReceipt(client, worker.sha256, verified), replay: false };
       } finally { await client.query("select pg_advisory_unlock(166,14)").catch(() => undefined); }
     });
@@ -242,7 +314,7 @@ router.post(endpoint, async (req, res) => {
       res.status(409).json({ error: "Pengujian PO #14 sedang berjalan. Periksa ulang status setelah selesai.", code: "QA_RUNNING" }); return;
     }
     res.setHeader("Cache-Control", "no-store"); res.json(response(result.receipt, result.replay));
-  } catch (error) { reportFailure(res, error); }
+  } catch (error) { reportFailure(req, res, error, phase); }
 });
 
 export default router;

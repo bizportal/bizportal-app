@@ -33,6 +33,14 @@ type Data = {
   sheetTransport: "synthetic_fixture"; result: Receipt | null; replay: boolean;
 };
 const endpoint = "/api/mkt/admin/po14-e2e-qa";
+const failureCodes = new Set(["QA_WORKER_TIMEOUT", "QA_WORKER_FAILED", "QA_WORKER_UNAVAILABLE",
+  "QA_WORKER_CHANGED", "QA_WORKER_NOT_READY", "QA_WORKER_INPUT_FAILED", "QA_WORKER_OUTPUT_LIMIT",
+  "QA_EVIDENCE_INVALID", "QA_RECEIPT_INVALID", "QA_DIFFERENT_ACTOR", "QA_UNAVAILABLE", "QA_RUNNING"]);
+function responseError(payload: any, fallback: string): string {
+  const message = typeof payload?.error === "string" && payload.error.length <= 300 ? payload.error : fallback;
+  const code = typeof payload?.code === "string" && failureCodes.has(payload.code) ? payload.code : null;
+  return code ? `${message} (Kode: ${code})` : message;
+}
 function safeResponse(data: any): data is Data {
   if (data?.contractVersion !== 2 || data.sandbox !== true || data.bankTransfer !== false ||
       data.businessLedgerPosted !== false || data.sheetTransport !== "synthetic_fixture" ||
@@ -84,7 +92,7 @@ export default function Po14E2eQa() {
         result = await fetch(endpoint, { credentials: "include", cache: "no-store" });
       }
       const payload = await result.json().catch(() => ({}));
-      if (!result.ok) throw Error(payload.error ?? "Bukti SQL QA belum tersedia");
+      if (!result.ok) throw Error(responseError(payload, "Bukti SQL QA belum tersedia"));
       if (!safeResponse(payload)) throw Error("Bukti layanan SQL tidak lengkap atau masih memakai kontrak simulasi lama");
       if (current === loadSeq.current) { setError(""); setData(payload); }
     } catch (e) {
@@ -101,7 +109,11 @@ export default function Po14E2eQa() {
       const result = await fetch(endpoint, { method: "POST", credentials: "include", cache: "no-store",
         headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reference: "PO-20261117-00014" }) });
       const payload = await result.json().catch(() => ({}));
-      if (!result.ok) throw Error(payload.error ?? "Uji transaksi PO #14 belum berhasil");
+      if (!result.ok) {
+        // A failed worker may be retried manually; a rejected session/scope must be verified again.
+        if ([401, 403, 404].includes(result.status) && current === loadSeq.current) setData(null);
+        throw Error(responseError(payload, "Uji transaksi PO #14 belum berhasil"));
+      }
       if (!safeResponse(payload) || !payload.result) throw Error("Bukti layanan SQL tidak lengkap; hasil belum PASS");
       if (current === loadSeq.current) { setError(""); setData(payload); setLoading(false); }
     } catch (e) {
@@ -153,7 +165,7 @@ export default function Po14E2eQa() {
             </div> : <p className="text-sm">Belum ada bukti transaksi SQL untuk versi layanan ini.</p>}
           {running && <p role="status" className="text-sm">Menjalankan layanan dan memeriksa replay serta rollback. Tunggu sampai hasil tampil.</p>}
           {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-          {!error && !loading && activeCompanyId === 1 &&
+          {!loading && activeCompanyId === 1 && data &&
             <Button onClick={() => void run()} disabled={running || !data}>
               {running ? "Pengujian berlangsung..." : data?.result ? "Periksa Bukti Tersimpan" : "Jalankan Uji Transaksi PO #14"}
             </Button>}

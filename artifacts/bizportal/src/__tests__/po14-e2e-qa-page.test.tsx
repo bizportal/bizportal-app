@@ -2,7 +2,8 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 const fixture = vi.hoisted(() => ({ companyId: 1, anonymous: false, scopeRequired: false,
-  verified: false, posts: 0, result: null as any, invalid: false, failed: false }));
+  verified: false, posts: 0, result: null as any, invalid: false, failed: false,
+  failureCode: "QA_WORKER_FAILED", failureStatus: 503 }));
 vi.mock("@/components/layout/AppShell", () => ({ AppShell: ({ children }: { children: React.ReactNode }) => <div>{children}</div> }));
 vi.mock("@/contexts/CompanyContext", () => ({ useCompany: () => ({ activeCompanyId: fixture.companyId }) }));
 vi.mock("@/pages/purchase/FinanceCompanyScopeCard", () => ({
@@ -42,6 +43,7 @@ describe("PO14 page renders actual isolated service evidence only", () => {
   beforeEach(() => {
     fixture.companyId = 1; fixture.anonymous = false; fixture.scopeRequired = false;
     fixture.verified = false; fixture.posts = 0; fixture.result = null; fixture.invalid = false; fixture.failed = false;
+    fixture.failureCode = "QA_WORKER_FAILED"; fixture.failureStatus = 503;
     vi.stubGlobal("fetch", vi.fn(async (url: string, options?: RequestInit) => {
       if (url === "/api/mkt/admin/finance-company-selection") {
         fixture.verified = true; return mockResponse({ ok: true, companyId: 1 });
@@ -53,7 +55,8 @@ describe("PO14 page renders actual isolated service evidence only", () => {
       if (options?.method === "POST") {
         fixture.posts++;
         expect(JSON.parse(String(options.body))).toEqual({ reference: "PO-20261117-00014" });
-        if (fixture.failed) return mockResponse({ error: "Pengujian SQL belum berhasil diverifikasi. Tidak ada hasil PASS baru." }, 503);
+        if (fixture.failed) return mockResponse({ error: "Pengujian SQL belum berhasil diverifikasi. Tidak ada hasil PASS baru.",
+          code: fixture.failureCode }, fixture.failureStatus);
         replay = fixture.result !== null;
         fixture.result = receipt();
         if (fixture.invalid) fixture.result.evidence.checks.automaticMatched = false;
@@ -123,10 +126,33 @@ describe("PO14 page renders actual isolated service evidence only", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("Bukti layanan SQL tidak lengkap");
     expect(screen.queryByText("PASS — transaksi SQL terisolasi terverifikasi")).toBeNull();
   });
-  it("shows a failed worker result without presenting a success stage", async () => {
+  it("keeps the verified run button after failure and retries only on a new click", async () => {
     fixture.failed = true; render(<Page />);
     fireEvent.click(await screen.findByRole("button", { name: "Jalankan Uji Transaksi PO #14" }));
-    expect((await screen.findByRole("alert")).textContent).toContain("belum berhasil diverifikasi");
+    expect((await screen.findByRole("alert")).textContent).toContain("Kode: QA_WORKER_FAILED");
     expect(screen.queryByText("PASS — transaksi SQL terisolasi terverifikasi")).toBeNull();
+    expect(fixture.posts).toBe(1);
+    const retry = screen.getByRole("button", { name: "Jalankan Uji Transaksi PO #14" }) as HTMLButtonElement;
+    expect(retry.disabled).toBe(false);
+    fixture.failed = false;
+    fireEvent.click(retry);
+    await screen.findByText("PASS — transaksi SQL terisolasi terverifikasi");
+    expect(fixture.posts).toBe(2);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+  it("does not retain the action if a previously verified session is rejected on POST", async () => {
+    fixture.failed = true; fixture.failureStatus = 401; render(<Page />);
+    fireEvent.click(await screen.findByRole("button", { name: "Jalankan Uji Transaksi PO #14" }));
+    await screen.findByRole("alert");
+    expect(screen.queryByRole("button", { name: "Jalankan Uji Transaksi PO #14" })).toBeNull();
+    expect(fixture.posts).toBe(1);
+  });
+  it("does not display an unrecognized response code", async () => {
+    fixture.failed = true; fixture.failureCode = "SECRET_TOKEN owner@qa.invalid"; render(<Page />);
+    fireEvent.click(await screen.findByRole("button", { name: "Jalankan Uji Transaksi PO #14" }));
+    const error = await screen.findByRole("alert");
+    expect(error.textContent).not.toContain("SECRET_TOKEN");
+    expect(error.textContent).not.toContain("owner@qa.invalid");
+    expect(error.textContent).toContain("belum berhasil diverifikasi");
   });
 });

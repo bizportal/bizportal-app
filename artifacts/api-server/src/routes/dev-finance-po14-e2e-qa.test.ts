@@ -13,6 +13,7 @@ const fake = vi.hoisted(() => ({
   spawn: vi.fn(), workerBytes: "fixed QA worker fixture", symbolicLink: false,
   child: null as any, stdin: null as any, proof: null as any, hold: false,
   exitCode: 0, stderr: "", wrongRunId: false, ignoreTerm: false, onStarted: null as null | (() => void),
+  logError: vi.fn(),
 }));
 vi.mock("./dev-auth", () => ({
   getProductionSession: fake.session, getProductionUser: fake.user,
@@ -97,7 +98,9 @@ beforeAll(async () => {
   await db.query(readFileSync(path.resolve(import.meta.dirname,
     "../../../../scripts/sql/20261125_po14_real_browser_receipt_localhost_ONLY.sql"), "utf8"));
   await db.query("create table public.qa_po14_e2e_runs(id serial primary key,status text)");
-  const app = express(); app.use(express.json()); app.use("/api", route);
+  const app = express(); app.use(express.json());
+  app.use((req, _res, next) => { req.log = { error: fake.logError } as any; next(); });
+  app.use("/api", route);
   server = app.listen(0, "127.0.0.1");
   await new Promise<void>(resolve => server.once("listening", resolve));
   base = "http://127.0.0.1:" + (server.address() as AddressInfo).port;
@@ -119,6 +122,7 @@ beforeEach(async () => {
   fake.hold = false; fake.exitCode = 0; fake.stderr = ""; fake.onStarted = null;
   fake.wrongRunId = false; fake.ignoreTerm = false;
   fake.symbolicLink = false; fake.workerBytes = "fixed QA worker fixture"; fake.proof = proof();
+  fake.logError.mockReset();
   fake.spawn.mockReset();
   fake.spawn.mockImplementation(() => {
     const child = new EventEmitter() as any;
@@ -129,7 +133,9 @@ beforeEach(async () => {
     });
     child.stdin.end = vi.fn((value: string) => {
       fake.stdin = JSON.parse(value);
-      fake.proof.runId = fake.wrongRunId ? "00000000-0000-4000-8000-000000000000" : fake.stdin.runId;
+      if (fake.proof?.ok === true) {
+        fake.proof.runId = fake.wrongRunId ? "00000000-0000-4000-8000-000000000000" : fake.stdin.runId;
+      }
       fake.onStarted?.();
       if (!fake.hold) queueMicrotask(completeChild);
     });
@@ -207,12 +213,49 @@ describe("signed PO14 parent HTTP and actual isolated receipt SQL", () => {
     const body = await result.text(); expect(body).toContain("QA_WORKER_FAILED");
     expect(body).not.toContain(fake.stderr); expect(await counts()).toEqual({ runs: 0, audits: 0 });
   });
+  it.each([
+    ["QA_IMPORT_FAILED", "bank_sheet_import", false],
+    ["QA_CLEANUP_TIMEOUT", "cleanup", true],
+    ["QA_CLEANUP_BOOTSTRAP_MISSING", "cleanup", true],
+  ])("logs only allowlisted worker failure stage/code and never treats failure JSON as success: %s", async (code, stage, cleanupFailed) => {
+    fake.exitCode = 1; fake.stderr = "SECRET_TOKEN owner@qa.invalid select * from users";
+    fake.proof = { ok: false, contract: "po14-real-sql-v1", code, stage,
+      isolatedDatabase: { name: "po14_bank_ingestion_qa_0123456789ab", removed: !cleanupFailed }, cleanupFailed };
+    const result = await post(); expect(result.status).toBe(503);
+    expect(await result.json()).toMatchObject({ code: "QA_WORKER_FAILED", phase: "execute_worker" });
+    expect(fake.logError).toHaveBeenCalledWith({ code: "QA_WORKER_FAILED", phase: "execute_worker",
+      workerStage: stage, workerCode: code, cleanupFailed }, "PO14 QA request failed");
+    expect(JSON.stringify(fake.logError.mock.calls)).not.toMatch(/SECRET_TOKEN|owner@qa|select \*|po14_bank_ingestion_qa_/);
+    expect(await counts()).toEqual({ runs: 0, audits: 0 });
+  });
+  it("rejects untrusted failure metadata and suppresses unknown child codes", async () => {
+    fake.exitCode = 1;
+    fake.proof = { ok: false, contract: "po14-real-sql-v1", code: "SECRET_TOKEN", stage: "bank_sheet_import",
+      isolatedDatabase: { name: "po14_bank_ingestion_qa_0123456789ab", removed: true }, cleanupFailed: false };
+    expect((await post()).status).toBe(503);
+    expect(fake.logError.mock.calls[0][0]).toEqual({ code: "QA_WORKER_FAILED", phase: "execute_worker",
+      workerStage: "bank_sheet_import", workerCode: "QA_WORKER_FAILED", cleanupFailed: false });
+    fake.proof.stage = "owner@qa.invalid SELECT private_data";
+    expect((await post()).status).toBe(503);
+    expect(fake.logError.mock.calls[1][0]).toEqual({ code: "QA_WORKER_FAILED", phase: "execute_worker" });
+    fake.proof.stage = "cleanup"; fake.proof.secret = "DO_NOT_LOG";
+    expect((await post()).status).toBe(503);
+    expect(fake.logError.mock.calls[2][0]).toEqual({ code: "QA_WORKER_FAILED", phase: "execute_worker" });
+    expect(JSON.stringify(fake.logError.mock.calls)).not.toMatch(/SECRET_TOKEN|owner@qa|private_data|DO_NOT_LOG/);
+    expect(await counts()).toEqual({ runs: 0, audits: 0 });
+  });
   it("rolls back a receipt if its audit INSERT fails", async () => {
     await db.query(`create function qa_fail_receipt_audit() returns trigger language plpgsql as $$
       begin raise exception 'injected receipt audit fault'; end $$;
       create trigger qa_fail_receipt_audit before insert on public.qa_po14_real_e2e_audit
       for each row execute function qa_fail_receipt_audit()`);
-    try { expect((await post()).status).toBe(503); expect(await counts()).toEqual({ runs: 0, audits: 0 }); }
+    try {
+      const result = await post(); expect(result.status).toBe(503);
+      expect(await result.json()).toMatchObject({ code: "QA_UNAVAILABLE", phase: "insert_receipt_audit" });
+      expect(fake.logError).toHaveBeenCalledWith({ code: "QA_UNAVAILABLE", phase: "insert_receipt_audit", sqlState: "P0001" }, "PO14 QA request failed");
+      expect(JSON.stringify(fake.logError.mock.calls)).not.toContain("injected receipt audit fault");
+      expect(await counts()).toEqual({ runs: 0, audits: 0 });
+    }
     finally { await db.query("drop trigger qa_fail_receipt_audit on public.qa_po14_real_e2e_audit; drop function qa_fail_receipt_audit()"); }
   });
   it("stops a timed-out worker and records no successful receipt", async () => {

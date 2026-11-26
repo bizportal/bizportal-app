@@ -7,7 +7,8 @@
 import pg from "pg";
 import { randomBytes } from "node:crypto";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { configureIsolatedWorkerDatabase, db, pool, flushQaPostCommitCallbacks } from "./po14-worker-shims/db";
+import { configureIsolatedWorkerDatabase, db, pool, flushQaPostCommitCallbacks, isolatedWorkerPoolClients } from "./po14-worker-shims/db";
+import { cleanupPo14WorkerDatabase } from "./po14-worker-cleanup";
 import { flushSuppressedNotificationIntents } from "./po14-worker-shims/notifications";
 import { createMarketplaceVendorInvoice, submitMarketplaceVendorInvoice } from "../../artifacts/api-server/src/lib/services/mktVendorInvoiceService";
 import { createApPreparation, reviewApPreparation, markApPreparationWaitingPayment,
@@ -62,18 +63,9 @@ async function readInput(): Promise<{ actor: VerifiedActor; runId: string }> {
 async function cleanup(): Promise<void> {
   if (cleanupPromise) return cleanupPromise;
   cleanupPromise = (async () => {
-    // Close this worker's connections, then remove only the database it created.
-    // DROP ... FORCE also terminates a query interrupted by parent cancellation.
-    const closing = Promise.allSettled([client?.end(), pool?.end()].filter(Boolean));
-    if (created && bootstrap) {
-      if (!/^po14_bank_ingestion_qa_[a-f0-9]{12}$/.test(databaseName)) throw new Error("QA_CLEANUP_NAME_INVALID");
-      await bootstrap.query(`drop database if exists "${databaseName}" with (force)`);
-      const check = await bootstrap.query("select 1 from pg_database where datname=$1", [databaseName]);
-      removed = check.rows.length === 0;
-      if (!removed) throw new Error("QA_CLEANUP_INCOMPLETE");
-    }
-    await closing;
-    await bootstrap?.end();
+    const result = await cleanupPo14WorkerDatabase({ databaseName, created,
+      bootstrap, client, pool, pooledClients: isolatedWorkerPoolClients });
+    removed = result.removed;
   })();
   return cleanupPromise;
 }
@@ -115,7 +107,7 @@ async function execute() {
   process.env.BIZPORTAL_MARKETPLACE_AP_BANK_STATUS_ADAPTER_DEV = "true";
   stage("create_disposable_database");
   bootstrap = new pg.Client({ connectionString: bootstrapUrl, application_name: "po14-qa-worker-bootstrap",
-    connectionTimeoutMillis: 4000, query_timeout: 10000, statement_timeout: 10000 });
+    connectionTimeoutMillis: 4000, query_timeout: 5500, statement_timeout: 5000 });
   await bootstrap.connect();
   const exists = await bootstrap.query("select 1 from pg_database where datname=$1", [databaseName]);
   assert(exists.rows.length === 0, "QA_DATABASE_ALREADY_EXISTS");
@@ -123,6 +115,7 @@ async function execute() {
   // during CREATE still queues cleanup for this exact database.
   created = true;
   await bootstrap.query(`create database "${databaseName}"`);
+  assert(!cancelled, "QA_CANCELLED");
   client = new pg.Client({ connectionString: `postgres://postgres@127.0.0.1:55495/${databaseName}`,
     application_name: "po14-qa-worker-evidence", connectionTimeoutMillis: 4000,
     query_timeout: 10000, statement_timeout: 10000 });
@@ -161,6 +154,7 @@ async function execute() {
     insert into public.accounting_settings(company_id,bank_journal_id,ap_account_id)
       values(1,1,301);
   `);
+  assert(!cancelled, "QA_CANCELLED");
   configureIsolatedWorkerDatabase(databaseName);
 
   stage("invoice_and_three_way_matching");

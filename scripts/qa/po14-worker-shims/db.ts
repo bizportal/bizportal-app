@@ -6,6 +6,7 @@ export * from "../../../lib/db/src/schema/index";
 
 export let pool: pg.Pool;
 export let db: ReturnType<typeof drizzle<typeof schema>>;
+export const isolatedWorkerPoolClients = new Set<pg.PoolClient>();
 const postCommitCallbacks: Array<() => Promise<void>> = [];
 
 export function configureIsolatedWorkerDatabase(databaseName: string) {
@@ -17,6 +18,10 @@ export function configureIsolatedWorkerDatabase(databaseName: string) {
     application_name: "po14-isolated-real-sql-worker",
     max: 3, connectionTimeoutMillis: 4000, query_timeout: 10000,
     statement_timeout: 10000, idleTimeoutMillis: 1000,
+  });
+  pool.on("connect", client => {
+    isolatedWorkerPoolClients.add(client);
+    client.once("end", () => isolatedWorkerPoolClients.delete(client));
   });
   db = drizzle(pool, { schema });
 }
