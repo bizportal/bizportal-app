@@ -70,7 +70,7 @@ export function assessFutureCashDraft(
     approval.transactionId !== source.transactionId || approval.companyId !== source.companyId ||
     approval.accountId !== source.accountId || approval.sourceFingerprint !== identity.sourceFingerprint ||
     // A prior approval must never authorize a document verified only later.
-    Date.parse(approval.approvedAt) < Date.parse(receipt.verifiedAt)) {
+    Date.parse(approval.approvedAt!) < Date.parse(receipt.verifiedAt!)) {
     return blocked("APPROVAL_NOT_VERIFIED");
   }
   if (!coa || !Number.isSafeInteger(coa.id) || coa.id <= 0 ||
