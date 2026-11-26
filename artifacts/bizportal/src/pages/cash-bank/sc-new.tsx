@@ -90,7 +90,7 @@ export default function ScNewCashPreview() {
         body:JSON.stringify({companyId:1,accountId:18,date,direction,
           amount,counterCoaId:choice.id}),
       });
-      const payload=await response.json().catch(()=>null) as Preview | null;
+      const payload=await response.json().catch(()=>null) as (Preview & {code?:string}) | null;
       if(version!==companyRequestVersion.current)return;
       if(!response.ok)throw Error("Validasi pratinjau ditolak (HTTP "+
         response.status+", "+String(payload?.code??"INVALID")+").");
