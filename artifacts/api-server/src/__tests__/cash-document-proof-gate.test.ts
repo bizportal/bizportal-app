@@ -57,6 +57,28 @@ describe("read-only primary-document-to-cash-row matching contract",()=>{
     });
     expect(duplicates.verifiedEvidence).toHaveLength(0);
   });
+  it("blocks every conflicting duplicate source row regardless of order",()=>{
+    const changed={...row,sourceFingerprint:"a".repeat(64),amountCents:11279};
+    for (const rows of [[row,changed],[changed,row]]) {
+      const result=validateCashDocumentProofs(scope,rows,[doc]);
+      expect(result).toMatchObject({
+        verified:0,blocked:2,reasonCounts:{INVALID_SOURCE_ROW:2},readyForCommit:false,
+      });
+      expect(result.verifiedEvidence).toHaveLength(0);
+      const draft=planEvidenceScopedCashDrafts(scope,rows,result.verifiedEvidence,coa);
+      expect(draft.draft.proposals).toHaveLength(0);
+      expect(draft.readyForCommit).toBe(false);
+    }
+  });
+  it("preserves verification for distinct physical source rows",()=>{
+    const other={...row,rowNumber:4};
+    const otherDoc={...doc,documentId:"synthetic-voucher-002",physicalRow:4};
+    const result=validateCashDocumentProofs(scope,[row,other],[doc,otherDoc]);
+    expect(result).toMatchObject({verified:2,blocked:0,readyForCommit:false});
+    const draft=planEvidenceScopedCashDrafts(scope,[row,other],result.verifiedEvidence,coa);
+    expect(draft.draft.proposals).toHaveLength(2);
+    expect(draft.readyForCommit).toBe(false);
+  });
   it("fails closed on unauthorized cash scope",()=>{
     expect(()=>validateCashDocumentProofs({...scope,accountId:17},[row],[doc]))
       .toThrow("CASH_DOCUMENT_PROOF_SCOPE_INVALID");
