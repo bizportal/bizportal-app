@@ -43,8 +43,7 @@ describe("Account18 future cash server evidence readiness (no posting)", () => {
 
   it("rejects missing or revoked receipts without loading approvals", async () => {
     for (const status of ["PENDING", "REVOKED"] as const) {
-      const reader = repository();
-      reader.getVerifiedReceipt = vi.fn(async () => ({ ...receipt, status }));
+      const reader = { ...repository(), getVerifiedReceipt: vi.fn(async () => ({ ...receipt, status })) };
       expect(await inspectFutureCashEvidence(source, reader)).toMatchObject({
         eligibleForReadOnlyDraft: false, readyForCommit: false,
         reason: "RECEIPT_NOT_VERIFIED",
@@ -59,22 +58,19 @@ describe("Account18 future cash server evidence readiness (no posting)", () => {
       eligibleForReadOnlyDraft: false, readyForCommit: false,
       reason: "APPROVAL_NOT_VERIFIED",
     });
-    const stale = repository();
-    stale.getSignedApproval = vi.fn(async () => ({
+    const stale = { ...repository(), getSignedApproval: vi.fn(async () => ({
       ...approval, approvedAt: "2026-11-26T23:59:59Z",
-    }));
+    })) };
     expect(await inspectFutureCashEvidence(source, stale)).toMatchObject({
       eligibleForReadOnlyDraft: false, readyForCommit: false,
       reason: "APPROVAL_NOT_VERIFIED",
     });
-    const foreign = repository();
-    foreign.getSignedApproval = vi.fn(async () => ({ ...approval, companyId: 3 }));
+    const foreign = { ...repository(), getSignedApproval: vi.fn(async () => ({ ...approval, companyId: 3 })) };
     expect((await inspectFutureCashEvidence(source, foreign)).eligibleForReadOnlyDraft).toBe(false);
   });
 
   it("fails closed if repository cannot authenticate data, without leaking errors", async () => {
-    const reader = repository();
-    reader.getVerifiedReceipt = vi.fn(async () => { throw Error("db-password-secret"); });
+    const reader = { ...repository(), getVerifiedReceipt: vi.fn(async () => { throw Error("db-password-secret"); }) };
     expect(JSON.stringify(await inspectFutureCashEvidence(source, reader)))
       .toBe('{"eligibleForReadOnlyDraft":false,"readyForCommit":false,"reason":"EVIDENCE_REPOSITORY_UNAVAILABLE"}');
   });
