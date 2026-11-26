@@ -8522,12 +8522,15 @@ router.get("/bank-reconciliation/sheet-configs/5/preview", async (req, res): Pro
       : accountCreatedAtRaw instanceof Date
         ? accountCreatedAtRaw.toISOString()
         : new Date(accountCreatedAtRaw).toISOString();
-    const firstSourceTransactionDate = draftInputs.reduce<string | null>(
-      (earliest, row) => !/^\d{4}-\d{2}-\d{2}$/.test(row.transactionDate)
-        ? earliest : earliest === null || row.transactionDate < earliest
-          ? row.transactionDate : earliest,
-      null,
-    );
+    // Source-opening chronology must refer to the first PHYSICAL source
+    // transaction after SALDO AWAL, not the minimum parsed calendar date:
+    // mixed slash-date locale data could otherwise make a later row appear
+    // earlier than the actual beginning of the cash book.
+    const firstSourceRow = [...draftInputs]
+      .sort((a, b) => a.rowNumber - b.rowNumber)[0];
+    const firstSourceTransactionDate =
+      firstSourceRow && /^\d{4}-\d{2}-\d{2}$/.test(firstSourceRow.transactionDate)
+        ? firstSourceRow.transactionDate : null;
     const accountPolicyNotes = String(baseline.rows[0].notes ?? "");
     const explicitlyNotForHistoricalMigration = accountPolicyNotes.includes(
       "tidak digunakan untuk migrasi transaksi historis",
