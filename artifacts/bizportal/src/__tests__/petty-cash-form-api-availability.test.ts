@@ -28,8 +28,8 @@ describe("Petty cash form UI safety: no false posting", () => {
   it("disables creation if GET is missing and checks POST/PATCH response", () => {
     expect(page).toContain("disabled={!serviceAvailable");
     expect(page).toContain("if (!txR.ok)");
-    expect(page).toContain("if (!response.ok)");
-    expect(page).toContain("if (!result.ok)");
+    expect(page).toContain("if (!response.ok || !saveResult || saveResult.ok === false || saveResult.error)");
+    expect(page).toContain("if (!result.ok || !actionResult || actionResult.ok === false || actionResult.error)");
     expect(page).toContain("isPettyCashChoice");
     expect(page).toContain("role=\"alert\"");
   });
