@@ -17,6 +17,14 @@ describe("Petty cash form UI safety: no false posting", () => {
     expect(pettyCashReadError(404)).toContain("belum tersedia");
     expect(pettyCashReadError(401)).toContain("tidak sah");
   });
+  it("invalidates stale company loads and clears state when company is absent", () => {
+    expect(page).toContain("const loadId = ++latestLoadId.current");
+    expect(page).toContain("if (loadId !== latestLoadId.current) return");
+    expect(page).toContain("if (loadId === latestLoadId.current) setLoading(false)");
+    expect(page).toContain("if (!activeCompanyId) {");
+    expect(page).toContain("setServiceAvailable(false)");
+    expect(page).toContain("setShowModal(false)");
+  });
   it("disables creation if GET is missing and checks POST/PATCH response", () => {
     expect(page).toContain("disabled={!serviceAvailable");
     expect(page).toContain("if (!txR.ok)");
