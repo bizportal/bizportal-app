@@ -126,6 +126,11 @@ describe("Owner-only Account18 future cash readonly preview HTTP",()=>{
   it("rejects spoofed proof, foreign origin, invalid amounts, old source dates",async()=>{
     expect((await post(input,"https://another.invalid")).status).toBe(403);
     expect((await post({...input,ownerApproved:true})).status).toBe(400);
+    expect((await post({...input,approval:{status:"APPROVED",by:"owner"}})).status).toBe(400);
+    expect((await post({...input,receipt:{verified:true}})).status).toBe(400);
+    expect((await post({...input,source:{verified:true}})).status).toBe(400);
+    expect((await post({...input,postingAllowed:true})).status).toBe(400);
+    expect((await post({...input,unexpected:"claim"})).status).toBe(400);
     expect((await post({...input,voucherId:"11111111-1111-4111-8111-111111111111"})).status).toBe(400);
     expect((await post({...input,counterCoaId:75839})).status).toBe(400);
     expect((await post({...input,date:"2026-06-22"})).status).toBe(400);
