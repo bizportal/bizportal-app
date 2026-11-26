@@ -59,6 +59,8 @@ export default function ScNewCashPreview() {
   const [receiptFile,setReceiptFile]=useState<File|null>(null);
   const [evidenceBusy,setEvidenceBusy]=useState(false);
   const [pendingEvidence,setPendingEvidence]=useState<PendingCashAcknowledgement|null>(loadCompany1PendingAcknowledgement);
+  const [reviewedUpload,setReviewedUpload]=useState<{transactionId:string;file:File}|null>(null);
+  const [verifiedId,setVerifiedId]=useState<string|null>(null);
   const companyRequestVersion=useRef(0);
   const draftRequestVersion=useRef(0);
   const invalidateDraft=()=>{
@@ -173,10 +175,36 @@ export default function ScNewCashPreview() {
       try{window.sessionStorage.setItem(COMPANY1_PENDING_ACK_KEY,JSON.stringify(ack));}
       catch{/* Keep the successful receipt visible in component state. */}
       setPendingEvidence(ack);
+      setReviewedUpload({transactionId:ack.transactionId,file:receiptFile});
       if(version===companyRequestVersion.current)setReceiptFile(null);
     }catch(err){
       if(version===companyRequestVersion.current && draftVersion===draftRequestVersion.current)
         setError(err instanceof Error?err.message:"Penyimpanan bukti belum tersedia.");
+    }finally{setEvidenceBusy(false);}
+  };
+
+  const verifyEvidence=async()=>{
+    if(activeCompanyId!==1 || !readiness || !pendingEvidence || evidenceBusy ||
+       reviewedUpload?.transactionId!==pendingEvidence.transactionId ||
+       verifiedId===pendingEvidence.transactionId)return;
+    if(!window.confirm("Konfirmasi bahwa Anda telah memeriksa bukti asli yang baru diunggah, nominal dan tanggalnya. Verifikasi ini bukan persetujuan posting."))return;
+    const id=pendingEvidence.transactionId;
+    const version=companyRequestVersion.current;
+    setEvidenceBusy(true);setError(null);
+    try{
+      const response=await fetch(ENDPOINT+"/documents/verify",{
+        method:"POST",credentials:"include",cache:"no-store",
+        headers:{"content-type":"application/json"},
+        body:JSON.stringify({companyId:1,accountId:18,transactionId:id,confirmed:true}),
+      });
+      const payload=await response.json().catch(()=>null);
+      if(response.status!==201 || payload?.transactionId!==id ||
+         payload?.status!=="VERIFIED" || payload?.postingAllowed!==false)
+        throw Error("Verifikasi belum berhasil (HTTP "+response.status+").");
+      setVerifiedId(id);
+    }catch(err){
+      if(version===companyRequestVersion.current)
+        setError(err instanceof Error?err.message:"Verifikasi belum tersedia.");
     }finally{setEvidenceBusy(false);}
   };
 
@@ -195,7 +223,7 @@ export default function ScNewCashPreview() {
         <CardContent className="flex gap-3 py-4 text-sm text-amber-100">
           <ShieldAlert className="shrink-0" size={18}/>
           <p>Pratinjau debit-kredit hanya dihitung dalam memori. File bukti baru dapat disimpan
-            sebagai PENDING, tetapi belum ada verifikasi dokumen maupun persetujuan OTP untuk posting.
+            sebagai PENDING dan diverifikasi oleh Owner. Persetujuan OTP untuk posting belum tersedia.
             Tidak ada penulisan jurnal atau impor Sheet historis.</p>
         </CardContent>
       </Card>
@@ -260,14 +288,20 @@ export default function ScNewCashPreview() {
         <Card className="border-sky-500/40 bg-slate-800/90 text-white">
           <CardContent className="space-y-2 py-4">
             <p role="status" className="text-sm">
-              Bukti tersimpan sebagai PENDING_VERIFICATION (belum disetujui).
+              {verifiedId===pendingEvidence.transactionId?"Bukti VERIFIED oleh server (belum disetujui untuk posting).":"Bukti tersimpan sebagai PENDING_VERIFICATION (belum disetujui)."}
               ID transaksi: <code className="break-all">{pendingEvidence.transactionId}</code>.
               Tidak ada jurnal keuangan yang diposting.
             </p>
+            {reviewedUpload?.transactionId===pendingEvidence.transactionId && verifiedId!==pendingEvidence.transactionId && (
+              <div className="space-y-2">
+                <p className="text-sm">Bukti asli: {reviewedUpload.file.name}. Periksa dokumen asli, nominal dan tanggal sebelum konfirmasi.</p>
+                <Button type="button" disabled={evidenceBusy} onClick={()=>void verifyEvidence()}>Verifikasi Bukti (tanpa posting)</Button>
+              </div>
+            )}
             <Button type="button" variant="outline" disabled={evidenceBusy} onClick={()=>{
               try{window.sessionStorage.removeItem(COMPANY1_PENDING_ACK_KEY);}
               catch{/* Storage may be disabled. */}
-              setPendingEvidence(null);
+              setPendingEvidence(null);setReviewedUpload(null);setVerifiedId(null);
               draftRequestVersion.current++;
               setPreview(null);setReceiptFile(null);
               setAmount("");setCounterCoaId("");
