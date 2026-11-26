@@ -400,6 +400,11 @@ export function VendorInvoicesListPage() {
             <h1 className="text-2xl font-bold">Vendor Invoice (AP)</h1>
             <p className="text-sm text-muted-foreground">Pusat tagihan supplier & 3-way matching</p>
           </div>
+          {isFinanceScopedDevPreview && (
+            <Link href="/finance/payment-approval-qa">
+              <Button variant="outline">Uji Persetujuan Pembayaran (DEV)</Button>
+            </Link>
+          )}
           {!isFinanceReadOnlyPreview && !isFinanceScopedDevPreview && (
             <div className="flex gap-2 flex-wrap">
               <Link href="/finance/recon-config?tab=invoice-sources"><Button variant="outline"><RefreshCw className="mr-2 h-4 w-4" />Sumber Gmail / Sync Now</Button></Link>

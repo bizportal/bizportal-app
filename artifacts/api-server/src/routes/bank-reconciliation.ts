@@ -17,7 +17,15 @@ import {
   getProductionSession,
   getProductionUser,
   isDevelopmentEnvironment,
+  getFinanceCompanyScope,
+  isApprovedFinanceGlobalSuperAdmin,
+  isApprovedFinanceGlobalCompany,
 } from "./dev-auth";
+import {
+  authorizeMarketplaceReadyForApBankAllocation,
+  MarketplaceBankAllocationDenied,
+} from "../lib/finance/marketplaceInvoiceBankStatusAdapter";
+import type { VerifiedActor } from "../lib/finance/marketplacePaymentReleaseGate";
 
 interface SheetConfigInput {
   company_id?: number | null;
@@ -372,6 +380,26 @@ async function getApprovalActor(request: Request): Promise<ApprovalActor | null>
   return { email: user.email, companyId: user.companyId };
 }
 
+async function getMarketplaceMatchingActor(
+  request: Request, actor: ApprovalActor,
+): Promise<VerifiedActor | null> {
+  if (process.env.APP_ENV !== "development" ||
+      process.env.BIZPORTAL_MARKETPLACE_AP_BANK_STATUS_ADAPTER_DEV !== "true") return null;
+  const session = getProductionSession(request);
+  const user = session ? await getProductionUser(session) : null;
+  if (!session || !user || user.role.toLowerCase() !== "super_admin" ||
+      user.email !== actor.email) return null;
+  const selectedCompany = user.companyId ??
+    (isApprovedFinanceGlobalSuperAdmin(user.email) ? getFinanceCompanyScope(request, session) : null);
+  if (selectedCompany == null || !Number.isSafeInteger(selectedCompany) || selectedCompany <= 0 ||
+      (user.companyId === null && !isApprovedFinanceGlobalCompany(selectedCompany))) return null;
+  return {
+    source: "signed_server_session", role: "super_admin", email: user.email,
+    companyId: user.companyId,
+    ...(user.companyId === null ? { approvedGlobalCompanyId: selectedCompany } : {}),
+  };
+}
+
 function normalizeMatchText(value: unknown): string {
   return String(value ?? "")
     .toLowerCase()
@@ -492,6 +520,7 @@ async function isKasBesarScReconciliationAccount(
 async function loadLocalMatchCandidates(
   client: ApprovalClient,
   mutation: MatchingMutation,
+  marketplaceActor: VerifiedActor | null = null,
 ): Promise<LocalMatchCandidate[]> {
   if (mutation.company_id == null) return [];
 
@@ -1399,6 +1428,56 @@ async function loadLocalMatchCandidates(
         if (code !== "42P01" && code !== "42703") throw error;
       }
     }
+    // The existing legacy discovery above remains restricted to posted
+    // invoices. A Marketplace invoice retains ready_for_ap and is a candidate
+    // only after the same locked signed-approval gate used by its batch writer.
+    if (!vendorInvoiceMatchBlocked &&
+        process.env.APP_ENV === "development" &&
+        process.env.BIZPORTAL_MARKETPLACE_AP_BANK_STATUS_ADAPTER_DEV === "true" &&
+        marketplaceActor?.source === "signed_server_session" &&
+        marketplaceActor.role === "super_admin" &&
+        (marketplaceActor.companyId === mutation.company_id ||
+         (marketplaceActor.companyId === null && marketplaceActor.approvedGlobalCompanyId === mutation.company_id))) {
+      const readyInvoices = await client.query<{
+        id: number; invoice_number: string; vendor_invoice_ref: string | null;
+        supplier_name: string; due_date: string | null;
+      }>(
+        `select vi.id, vi.invoice_number, vi.vendor_invoice_ref, vi.supplier_name,
+                vi.due_date::text
+           from public.vendor_invoices vi
+           join public.suppliers supplier on supplier.id = vi.supplier_id
+            and supplier.company_id = vi.company_id and supplier.is_active = true
+          where vi.company_id = $1 and vi.status::text = 'ready_for_ap'
+            and vi.three_way_match_status = 'passed' and vi.cancelled_at is null
+            and vi.grand_total::numeric = $2::numeric
+          order by vi.id limit 50`,
+        [mutation.company_id, mutation.amount],
+      );
+      for (const invoice of readyInvoices.rows) {
+        try {
+          await authorizeMarketplaceReadyForApBankAllocation(
+            client, marketplaceActor, mutation.company_id, invoice.id, mutation.id,
+          );
+        } catch (error) {
+          if (error instanceof MarketplaceBankAllocationDenied) continue;
+          throw error;
+        }
+        const referenceText = ` ${normalizeMatchText([
+          mutation.provider_order_id, mutation.bank_reference, mutation.description,
+        ].filter(Boolean).join(" "))} `;
+        const referenceMatch = [invoice.invoice_number, invoice.vendor_invoice_ref]
+          .map(normalizeMatchText)
+          .some(reference => reference.length >= 4 && referenceText.includes(` ${reference} `));
+        const nameMatch = tokenOverlap(mutation.description, invoice.supplier_name);
+        candidates.push({
+          candidateType: "vendor_invoice", candidateId: invoice.id,
+          score: 60 + (referenceMatch ? 25 : 0) + (nameMatch ? 15 : 0),
+          amountMatch: true, dateMatch: invoice.due_date === date,
+          referenceMatch, nameMatch,
+          reason: "Marketplace AP: nominal dan persetujuan Super Admin terverifikasi; alokasi bank tetap memerlukan konfirmasi.",
+        });
+      }
+    }
   }
 
   return candidates.sort((left, right) => right.score - left.score || left.candidateId - right.candidateId);
@@ -1409,10 +1488,11 @@ async function loadActiveRuleAi(client: ApprovalClient, companyId: number): Prom
   return result.rows.map((r:any)=>({id:Number(r.id),companyId:Number(r.company_id),name:String(r.name),description:r.description??null,priority:Number(r.priority??0),isActive:Boolean(r.is_active),direction:r.direction==='IN'||r.direction==='OUT'?r.direction:null,bankAccountId:r.bank_account_id==null?null:Number(r.bank_account_id),conditionType:String(r.condition_type??'single'),conditionField:r.condition_field,conditionOperator:r.condition_operator,conditionValue:String(r.condition_value??''),conditionsJson:Array.isArray(r.conditions_json)?r.conditions_json:null,logic:String(r.logic??'AND').toUpperCase()==='OR'?'OR':'AND',specificity:Number(r.specificity??1),amountTolerance:r.amount_tolerance==null?null:Number(r.amount_tolerance),referenceAmount:r.reference_amount==null?null:Number(r.reference_amount),candidateRequirement:r.candidate_requirement==='not_required'?'not_required':'required',requiresDocumentUpload:Boolean(r.requires_document_upload),taxType:r.tax_type==='ppn_input'||r.tax_type==='ppn_output'?r.tax_type:'none',aiClassificationRuleId:r.ai_classification_rule_id==null?null:Number(r.ai_classification_rule_id),targetType:r.target_type,targetId:r.target_id==null?null:Number(r.target_id),targetCoaCode:r.target_coa_code??null,confidenceScore:Number(r.confidence_score??100),stopProcessing:Boolean(r.stop_processing),matchCount:Number(r.match_count??0),lastMatchedAt:r.last_matched_at??null,createdBy:r.created_by??null,createdAt:String(r.created_at??''),updatedAt:String(r.updated_at??'')})) as ReconRule[];
 }
 
-async function matchLocalMutation(
+export async function matchLocalMutation(
   client: ApprovalClient,
   mutation: MatchingMutation,
   actor: ApprovalActor,
+  marketplaceActor: VerifiedActor | null = null,
 ): Promise<"matched" | "auto_posted" | "manual_review" | "unmatched"> {
   if (mutation.company_id == null) return "unmatched";
 
@@ -1427,7 +1507,7 @@ async function matchLocalMutation(
   // A previous historical cleanup may have removed an old reconciliation
   // journal while leaving audit rows behind. Audit history is evidence only;
   // it must never be rehydrated as a live matching candidate.
-  const candidates = (await loadLocalMatchCandidates(client, mutation)).filter(
+  const candidates = (await loadLocalMatchCandidates(client, mutation, marketplaceActor)).filter(
     (candidate) => candidate.candidateType !== ("recon_rule" as LocalMatchCandidate["candidateType"]),
   );
   const rules = await loadActiveRuleAi(client, mutation.company_id);
@@ -2005,6 +2085,7 @@ router.post("/bank-reconciliation/run-matching", async (req, res): Promise<void>
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
+  const marketplaceActor = await getMarketplaceMatchingActor(req, actor).catch(() => null);
 
   const body = (req.body ?? {}) as {
     ids?: unknown;
@@ -2128,7 +2209,7 @@ router.post("/bank-reconciliation/run-matching", async (req, res): Promise<void>
         const client = await pool.connect();
         try {
           await client.query("begin");
-          const outcome = await matchLocalMutation(client, mutation, actor);
+          const outcome = await matchLocalMutation(client, mutation, actor, marketplaceActor);
           const marker = await client.query<{ review_code: string | null }>(
             "select review_code from public.bank_mutations where id=$1",
             [mutation.id],
@@ -3043,7 +3124,7 @@ async function assertApprovalCandidateExists(
 ): Promise<void> {
   if (!candidateType || candidateId == null) return;
 
-  let result: { rows: Array<{ id: number }> };
+  let result: { rows: Array<{ id: number; status?: string }> };
   if (candidateType === "sport_payment") {
     if (candidateSource && candidateSource !== "sport_center.sport_payments") {
       throw new ApprovalError("Sumber kandidat Sport Center tidak valid.", 409, "STALE_CANDIDATE");
@@ -3109,9 +3190,15 @@ async function assertApprovalCandidateExists(
       throw new ApprovalError("Sumber kandidat vendor tidak valid.", 409, "STALE_CANDIDATE");
     }
     result = await client.query(
-      `select id from public.vendor_invoices where id = $1 and company_id = $2 limit 1 for update`,
+      `select id, status::text status from public.vendor_invoices where id = $1 and company_id = $2 limit 1 for update`,
       [candidateId, companyId],
     );
+    if (result.rows[0]?.status === "ready_for_ap") {
+      throw new ApprovalError(
+        "Marketplace AP harus menggunakan alokasi invoice vendor dengan persetujuan Super Admin terverifikasi.",
+        409, "MARKETPLACE_VENDOR_BATCH_REQUIRED",
+      );
+    }
   } else if (candidateType === "tenant_invoice") {
     if (candidateSource && candidateSource !== "public.tenant_payments") {
       throw new ApprovalError("Sumber kandidat pembayaran tenant tidak valid.", 409, "STALE_CANDIDATE");
@@ -4012,7 +4099,7 @@ async function approveBankMutation(
   };
 }
 
-async function postBankMutationCanonical(
+export async function postBankMutationCanonical(
   client: ApprovalClient,
   mutationId: number,
   entryId: number,
@@ -8328,60 +8415,36 @@ router.post("/bank-reconciliation/sheet-sync", async (req, res): Promise<void> =
 });
 
 
-router.post("/bank-reconciliation/:mutationId/vendor-invoice-payment-batch", async (req, res): Promise<void> => {
-  const mutationId = parsePositiveInt(req.params.mutationId);
-  const requestedCompanyId = parsePositiveInt(req.header("x-company-id") ?? req.query.company);
-  if (mutationId === null || requestedCompanyId === null) {
-    res.status(400).json({ error: "ID mutasi atau company tidak valid" });
-    return;
+/**
+ * Existing canonical vendor batch writer shared by its HTTP route and the
+ * disposable QA worker. Actor values come only from server-verified context.
+ * Owns BEGIN/COMMIT/ROLLBACK; the caller owns connection acquisition/release.
+ */
+export async function allocateVendorInvoiceBankBatch(
+  client: ApprovalClient,
+  actor: ApprovalActor,
+  requestedCompanyId: number,
+  mutationId: number,
+  vendorInvoiceIds: number[],
+  requestedAllocationByInvoice: Map<number, number> = new Map(),
+  marketplaceActor: VerifiedActor | null = null,
+) {
+  if (safeInteger(mutationId) !== mutationId || safeInteger(requestedCompanyId) !== requestedCompanyId ||
+      vendorInvoiceIds.length === 0 || new Set(vendorInvoiceIds).size !== vendorInvoiceIds.length ||
+      vendorInvoiceIds.some(id => safeInteger(id) !== id)) {
+    throw new ApprovalError("ID mutasi, company atau invoice tidak valid", 400, "INVALID_IDS");
   }
-
-  let actor: ApprovalActor | null;
-  try {
-    actor = await getApprovalActor(req);
-  } catch (error) {
-    req.log.error({ error, mutationId }, "Failed to resolve vendor invoice payment actor");
-    res.status(503).json({ error: "Authorization service unavailable" });
-    return;
+  if (!actor || typeof actor.email !== "string" || !actor.email.trim()) {
+    throw new ApprovalError("Unauthorized", 401, "SIGNED_ACTOR_REQUIRED");
   }
-  if (!actor) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
-
-  const rawIds = Array.isArray(req.body?.vendor_invoice_ids) ? req.body.vendor_invoice_ids : [];
-  const vendorInvoiceIds = Array.from(new Set(
-    rawIds.map((value: unknown) => Number(value)).filter((value: number) => Number.isSafeInteger(value) && value > 0),
-  ));
-  if (vendorInvoiceIds.length === 0 || vendorInvoiceIds.length !== rawIds.length) {
-    res.status(400).json({ error: "Minimal satu invoice vendor yang valid wajib dipilih" });
-    return;
-  }
-
-  const requestedAllocationByInvoice = new Map<number, number>();
-  const rawAllocations = Array.isArray(req.body?.allocations) ? req.body.allocations : [];
-  for (const rawAllocation of rawAllocations as Array<Record<string, unknown>>) {
-    const invoiceId = Number(rawAllocation.vendor_invoice_id ?? rawAllocation.invoice_id);
-    const amount = Math.round(Number(rawAllocation.amount) * 100) / 100;
-    if (
-      !Number.isSafeInteger(invoiceId)
-      || invoiceId <= 0
-      || !Number.isFinite(amount)
-      || amount <= 0
-      || !vendorInvoiceIds.includes(invoiceId)
-      || requestedAllocationByInvoice.has(invoiceId)
-    ) {
-      res.status(400).json({ error: "Alokasi invoice tidak valid atau duplikat" });
-      return;
+  for (const [id, amount] of requestedAllocationByInvoice) {
+    if (!vendorInvoiceIds.includes(id) || !Number.isFinite(amount) || amount <= 0) {
+      throw new ApprovalError("Alokasi invoice tidak valid", 400, "INVALID_INVOICE_ALLOCATION");
     }
-    requestedAllocationByInvoice.set(invoiceId, amount);
   }
-
   const money = (value: number): number => Math.round(value * 100) / 100;
-  const client = await pool.connect();
+  await client.query("begin");
   try {
-    await client.query("begin");
-
     const mutationResult = await client.query<{
       id: number;
       company_id: number;
@@ -8495,8 +8558,38 @@ router.post("/bank-reconciliation/:mutationId/vendor-invoice-payment-batch", asy
       taxesByInvoice.set(Number(row.invoice_id), rows);
     }
 
+    // DEV Marketplace adapter is strictly opt-in and requires the REAL signed
+    // Finance Super Admin. Never change status to "posted" for eligibility.
+    let authorizedMarketplaceInvoiceId: number | null = null;
+    if (invoiceResult.rows.some(row => row.status === "ready_for_ap")) {
+      if (process.env.APP_ENV !== "development" ||
+          process.env.BIZPORTAL_MARKETPLACE_AP_BANK_STATUS_ADAPTER_DEV !== "true" ||
+          invoiceResult.rows.length !== 1 || vendorInvoiceIds.length !== 1 ||
+          invoiceResult.rows[0]?.status !== "ready_for_ap") {
+        throw new ApprovalError("Marketplace AP bank adapter is disabled or batch unsupported", 409, "MARKETPLACE_BANK_ADAPTER_NO_GO");
+      }
+      if (!marketplaceActor || marketplaceActor.source !== "signed_server_session" ||
+          marketplaceActor.role !== "super_admin" || marketplaceActor.email !== actor.email) {
+        throw new ApprovalError("Signed Super Admin required", 403, "SIGNED_SUPERADMIN_REQUIRED");
+      }
+      const selectedCompany = marketplaceActor.companyId ?? marketplaceActor.approvedGlobalCompanyId;
+      if (selectedCompany !== companyId) {
+        throw new ApprovalError("Verified Finance company required", 403, "FINANCE_COMPANY_NOT_VERIFIED");
+      }
+      try {
+        await authorizeMarketplaceReadyForApBankAllocation(
+          client, marketplaceActor, companyId, invoiceResult.rows[0].id, mutationId,
+        );
+      } catch (error) {
+        throw new ApprovalError("Marketplace AP payment evidence not eligible", 409,
+          error instanceof Error && /^[A-Z_]+$/.test(error.message)
+            ? error.message : "MARKETPLACE_AP_NOT_READY");
+      }
+      authorizedMarketplaceInvoiceId = invoiceResult.rows[0].id;
+    }
     const allocations = invoiceResult.rows.map((invoice) => {
-      if (String(invoice.status).toLowerCase() !== "posted") {
+      if (String(invoice.status).toLowerCase() !== "posted" &&
+          invoice.id !== authorizedMarketplaceInvoiceId) {
         throw new ApprovalError(
           `Invoice ${invoice.vendor_invoice_ref ?? invoice.invoice_number} harus berstatus posted sebelum dibayar`,
           422,
@@ -8525,6 +8618,11 @@ router.post("/bank-reconciliation/:mutationId/vendor-invoice-payment-batch", asy
           422,
           "INVALID_INVOICE_ALLOCATION",
         );
+      }
+      if (invoice.id === authorizedMarketplaceInvoiceId &&
+          (cashAmount !== outstanding || cashAmount !== mutationAmount)) {
+        throw new ApprovalError("Marketplace AP requires the full approved amount", 409,
+          "MARKETPLACE_FULL_ALLOCATION_REQUIRED");
       }
 
       const taxes = taxesByInvoice.get(invoice.id) ?? [];
@@ -8788,7 +8886,7 @@ router.post("/bank-reconciliation/:mutationId/vendor-invoice-payment-batch", asy
     );
 
     await client.query("commit");
-    res.json({
+    return {
       ok: true,
       mutation_id: mutationId,
       journal_entry_id: entryId,
@@ -8804,13 +8902,71 @@ router.post("/bank-reconciliation/:mutationId/vendor-invoice-payment-batch", asy
         cash_amount: allocation.cashAmount,
         settled_amount: allocation.grossAmount,
       })),
-    });
+    };
   } catch (error) {
-    try {
-      await client.query("rollback");
-    } catch (rollbackError) {
-      req.log.warn({ rollbackError, mutationId }, "Vendor invoice payment rollback failed");
+    await client.query("rollback");
+    throw error;
+  }
+}
+
+router.post("/bank-reconciliation/:mutationId/vendor-invoice-payment-batch", async (req, res): Promise<void> => {
+  const mutationId = parsePositiveInt(req.params.mutationId);
+  const requestedCompanyId = parsePositiveInt(req.header("x-company-id") ?? req.query.company);
+  if (mutationId === null || requestedCompanyId === null) {
+    res.status(400).json({ error: "ID mutasi atau company tidak valid" });
+    return;
+  }
+
+  let actor: ApprovalActor | null;
+  try {
+    actor = await getApprovalActor(req);
+  } catch (error) {
+    req.log.error({ error, mutationId }, "Failed to resolve vendor invoice payment actor");
+    res.status(503).json({ error: "Authorization service unavailable" });
+    return;
+  }
+  if (!actor) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+
+  const rawIds: unknown[] = Array.isArray(req.body?.vendor_invoice_ids) ? req.body.vendor_invoice_ids : [];
+  const vendorInvoiceIds = Array.from(new Set(
+    rawIds.map((value: unknown) => Number(value)).filter((value: number) => Number.isSafeInteger(value) && value > 0),
+  ));
+  if (vendorInvoiceIds.length === 0 || vendorInvoiceIds.length !== rawIds.length) {
+    res.status(400).json({ error: "Minimal satu invoice vendor yang valid wajib dipilih" });
+    return;
+  }
+
+  const requestedAllocationByInvoice = new Map<number, number>();
+  const rawAllocations = Array.isArray(req.body?.allocations) ? req.body.allocations : [];
+  for (const rawAllocation of rawAllocations as Array<Record<string, unknown>>) {
+    const invoiceId = Number(rawAllocation.vendor_invoice_id ?? rawAllocation.invoice_id);
+    const amount = Math.round(Number(rawAllocation.amount) * 100) / 100;
+    if (
+      !Number.isSafeInteger(invoiceId)
+      || invoiceId <= 0
+      || !Number.isFinite(amount)
+      || amount <= 0
+      || !vendorInvoiceIds.includes(invoiceId)
+      || requestedAllocationByInvoice.has(invoiceId)
+    ) {
+      res.status(400).json({ error: "Alokasi invoice tidak valid atau duplikat" });
+      return;
     }
+    requestedAllocationByInvoice.set(invoiceId, amount);
+  }
+
+  const client = await pool.connect();
+  try {
+    const marketplaceActor = await getMarketplaceMatchingActor(req, actor);
+    const result = await allocateVendorInvoiceBankBatch(
+      client, actor, requestedCompanyId, mutationId, vendorInvoiceIds,
+      requestedAllocationByInvoice, marketplaceActor,
+    );
+    res.json(result);
+  } catch (error) {
     const status = error instanceof ApprovalError ? error.status : 400;
     const code = error instanceof ApprovalError ? error.code : "VENDOR_INVOICE_PAYMENT_FAILED";
     const message = error instanceof Error ? error.message : "Pembayaran invoice vendor gagal diproses";
@@ -8869,6 +9025,7 @@ router.get("/bank-reconciliation/:mutationId/vendor-invoice-candidates", async (
       withholding_tax_amount: string | null;
       invoice_breakdown: unknown;
       tax_review_status: string | null;
+      marketplace_ap?: boolean;
     }>(
       `with requested_mutation as (
          select id
@@ -8923,6 +9080,57 @@ router.get("/bank-reconciliation/:mutationId/vendor-invoice-candidates", async (
        order by ei.due_date nulls last, ei.id`,
       [mutationId, companyId],
     );
+
+    if (process.env.APP_ENV === "development" &&
+        process.env.BIZPORTAL_MARKETPLACE_AP_BANK_STATUS_ADAPTER_DEV === "true") {
+      const approvalActor = await getApprovalActor(req);
+      const marketplaceActor = approvalActor
+        ? await getMarketplaceMatchingActor(req, approvalActor) : null;
+      if (marketplaceActor &&
+          (marketplaceActor.companyId === companyId ||
+           (marketplaceActor.companyId === null && marketplaceActor.approvedGlobalCompanyId === companyId))) {
+        const client = await pool.connect();
+        try {
+          await client.query("begin");
+          const ready = await client.query<(typeof result.rows)[number]>(
+            `select vi.id, vi.invoice_number, vi.vendor_invoice_ref, vi.supplier_name,
+                    vi.total_amount::text subtotal, vi.tax_amount::text,
+                    vi.grand_total::text, '0'::text canonical_paid,
+                    vi.grand_total::text remaining_net, vi.due_date::text,
+                    vi.withholding_tax_amount::text, vi.invoice_breakdown,
+                    vi.tax_review_status, true marketplace_ap
+               from public.vendor_invoices vi
+               join public.suppliers supplier on supplier.id = vi.supplier_id
+                and supplier.company_id = vi.company_id and supplier.is_active = true
+              where vi.company_id = $1 and vi.status::text = 'ready_for_ap'
+                and vi.three_way_match_status = 'passed' and vi.cancelled_at is null
+                and vi.grand_total = (
+                  select amount from public.bank_mutations where id=$2 and company_id=$1
+                )
+              order by vi.id limit 50`,
+            [companyId, mutationId],
+          );
+          for (const invoice of ready.rows) {
+            try {
+              await authorizeMarketplaceReadyForApBankAllocation(
+                client, marketplaceActor, companyId, invoice.id, mutationId,
+              );
+              result.rows.push(invoice);
+            } catch (error) {
+              if (!(error instanceof MarketplaceBankAllocationDenied)) throw error;
+            }
+          }
+          // Candidate discovery verifies locked evidence only. The existing
+          // allocation POST must revalidate it before making financial writes.
+          await client.query("commit");
+        } catch (error) {
+          await client.query("rollback");
+          throw error;
+        } finally {
+          client.release();
+        }
+      }
+    }
 
     const invoiceIds = result.rows.map((row) => row.id);
     const withholdingResult = invoiceIds.length === 0
@@ -8981,6 +9189,7 @@ router.get("/bank-reconciliation/:mutationId/vendor-invoice-candidates", async (
         withholdingTaxAmount: row.withholding_tax_amount == null ? undefined : Number(row.withholding_tax_amount),
         invoiceBreakdown: row.invoice_breakdown,
         taxReviewStatus: row.tax_review_status,
+        marketplaceAp: row.marketplace_ap === true,
         withholdingLines: (withholdingByInvoice.get(row.id) ?? []).map((tax) => ({
           lineTaxId: tax.line_tax_id,
           invoiceLineId: tax.invoice_line_id,

@@ -72,7 +72,7 @@ describe("Finance DEV signed scoped list browser rendering",()=>{
   expect(await screen.findByText(/Perusahaan telah diverifikasi oleh server/)).toBeTruthy();
   await waitFor(()=>expect(container.querySelectorAll("tbody tr")).toHaveLength(10));
   expect(container.querySelectorAll("tbody tr")).toHaveLength(10);
-  const rows=Array.from(container.querySelectorAll("tbody tr"));
+  const rows=Array.from(container.querySelectorAll<HTMLTableRowElement>("tbody tr"));
   expect(rows.filter(row=>within(row).queryByText("draft"))).toHaveLength(8);
   expect(rows.filter(row=>within(row).queryByText("posted"))).toHaveLength(2);
   expect(screen.getAllByText("Historis — tanpa PO")).toHaveLength(10);
