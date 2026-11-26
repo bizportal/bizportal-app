@@ -94,6 +94,7 @@ describe("Account18 server-owned document registry (SELECT only, no writer)", ()
     expect(script).toContain("sc_future_cash_validate_evidence_event");
     expect(script).toContain("force row level security");
     expect(script.match(/set search_path = pg_catalog/g)).toHaveLength(2);
+    expect(script.match(/set search_path = pg_catalog as \$\$/g)).toHaveLength(2);
     expect(script).toContain("revoke execute on function public.sc_future_cash_reject_mutation() from public");
     expect(script).toContain("revoke execute on function public.sc_future_cash_validate_evidence_event() from public");
     expect(script).toContain("revoke all");
