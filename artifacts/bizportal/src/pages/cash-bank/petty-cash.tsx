@@ -1,5 +1,5 @@
 import { DatePicker } from "@/components/ui/date-picker";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useCompany } from "@/contexts/CompanyContext";
 import { Plus, Wallet, RefreshCw, ArrowDownLeft, ArrowUpRight, ArrowLeft } from "lucide-react";
+import { isPettyCashChoice, pettyCashReadError } from "./petty-cash-policy";
 
 const API = "/api";
 function fmt(n: number | string) { return new Intl.NumberFormat("id-ID").format(Number(n) || 0); }
@@ -33,46 +34,118 @@ export default function CashBankPettyCash() {
   const [summary, setSummary] = useState<any>({});
   const [accounts, setAccounts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [serviceAvailable, setServiceAvailable] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState({ account_id: "", transaction_type: "CASH_OUT", date: new Date().toISOString().slice(0,10), amount: "", description: "", category: "", recipient: "", receipt_no: "", notes: "" });
   const [saving, setSaving] = useState(false);
   const [actionLoading, setActionLoading] = useState<number | null>(null);
   const [typeFilter, setTypeFilter] = useState("all");
+  const latestLoadId = useRef(0);
 
-  const load = useCallback(async () => {
-    if (!activeCompanyId) return;
+  const load = useCallback(async (): Promise<void> => {
+    const loadId = ++latestLoadId.current;
+    if (!activeCompanyId) {
+      setServiceAvailable(false);
+      setTxs([]);
+      setSummary({});
+      setAccounts([]);
+      setError(null);
+      setShowModal(false);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
-    const [txR, accR] = await Promise.all([
-      fetch(`${API}/cash-bank/petty-cash?companyId=${activeCompanyId}&limit=100`, { credentials: "include" }).then(r => r.json()),
-      fetch(`${API}/cash-bank/accounts?companyId=${activeCompanyId}`, { credentials: "include" }).then(r => r.json()),
-    ]);
-    setTxs(txR.data ?? []);
-    setSummary(txR.summary ?? {});
-    setAccounts((accR.data ?? []).filter((a: any) => a.is_active));
-    setLoading(false);
+    setError(null);
+    setServiceAvailable(false);
+    try {
+      const [txR, accR] = await Promise.all([
+        fetch(`${API}/cash-bank/petty-cash?companyId=${activeCompanyId}&limit=100`, { credentials: "include" }),
+        fetch(`${API}/cash-bank/accounts?companyId=${activeCompanyId}`, { credentials: "include" }),
+      ]);
+      if (loadId !== latestLoadId.current) return;
+      if (!txR.ok) {
+        setError(pettyCashReadError(txR.status));
+        setTxs([]);
+        setSummary({});
+        setAccounts([]);
+        return;
+      }
+      if (!accR.ok) {
+        setError(pettyCashReadError(accR.status));
+        setAccounts([]);
+        return;
+      }
+      const [txData, accData] = await Promise.all([txR.json(), accR.json()]);
+      if (loadId !== latestLoadId.current) return;
+      if (!Array.isArray(txData?.data) || !Array.isArray(accData?.data)) {
+        setError("Respons layanan Kas Kecil tidak valid; pembuatan transaksi dinonaktifkan.");
+        return;
+      }
+      setTxs(txData.data);
+      setSummary(txData.summary ?? {});
+      setAccounts(accData.data.filter((account: any) => isPettyCashChoice(account, activeCompanyId)));
+      setServiceAvailable(true);
+    } catch {
+      if (loadId !== latestLoadId.current) return;
+      setError("Layanan Kas Kecil tidak dapat dihubungi. Tidak ada transaksi yang disimpan.");
+      setAccounts([]);
+      setTxs([]);
+      setSummary({});
+    } finally {
+      if (loadId === latestLoadId.current) setLoading(false);
+    }
   }, [activeCompanyId]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { void load(); }, [load]);
 
   const save = async () => {
-    if (!form.transaction_type || !form.date || !form.amount) return;
+    if (!serviceAvailable || !activeCompanyId) return;
+    if (!accounts.some((account: any) => String(account.id) === form.account_id)) {
+      setError("Pilih rekening Kas Kecil yang valid. Kas Besar SC tidak menggunakan form ini.");
+      return;
+    }
+    const amount = Number(form.amount);
+    if (!form.transaction_type || !form.date || !Number.isFinite(amount) || amount <= 0) {
+      setError("Lengkapi tipe transaksi, tanggal dan nominal positif.");
+      return;
+    }
     setSaving(true);
+    setError(null);
     try {
-      await fetch(`${API}/cash-bank/petty-cash`, {
+      const response = await fetch(`${API}/cash-bank/petty-cash`, {
         method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
         body: JSON.stringify({ ...form, companyId: activeCompanyId }),
       });
+      const saveResult = response.ok ? await response.json().catch(() => null) : null;
+      if (!response.ok || !saveResult || saveResult.ok === false || saveResult.error) {
+        setError(`Transaksi belum terkonfirmasi tersimpan (HTTP ${response.status}). Periksa layanan Kas Kecil.`);
+        return;
+      }
       setShowModal(false);
       setForm({ account_id: "", transaction_type: "CASH_OUT", date: new Date().toISOString().slice(0,10), amount: "", description: "", category: "", recipient: "", receipt_no: "", notes: "" });
       await load();
+    } catch {
+      setError("Gagal menghubungi layanan. Transaksi belum disimpan.");
     } finally { setSaving(false); }
   };
 
   const action = async (id: number, endpoint: string) => {
+    if (!serviceAvailable) return;
     setActionLoading(id);
+    setError(null);
     try {
-      await fetch(`${API}/cash-bank/petty-cash/${id}/${endpoint}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, credentials: "include" });
+      const result = await fetch(`${API}/cash-bank/petty-cash/${id}/${endpoint}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, credentials: "include",
+      });
+      const actionResult = result.ok ? await result.json().catch(() => null) : null;
+      if (!result.ok || !actionResult || actionResult.ok === false || actionResult.error) {
+        setError(`Perubahan status belum terkonfirmasi (HTTP ${result.status}).`);
+        return;
+      }
       await load();
+    } catch {
+      setError("Gagal menghubungi layanan. Status transaksi belum diubah.");
     } finally { setActionLoading(null); }
   };
 
@@ -95,10 +168,15 @@ export default function CashBankPettyCash() {
             <p className="text-sm text-slate-400 mt-0.5">Transaksi kas kecil & pengeluaran operasional</p>
           </div>
         </div>
-        <Button onClick={() => setShowModal(true)} className="bg-orange-500 hover:bg-orange-600 text-white">
+        <Button onClick={() => setShowModal(true)} disabled={!serviceAvailable || loading} className="bg-orange-500 hover:bg-orange-600 text-white">
           <Plus size={14} className="mr-1.5" /> Transaksi Baru
         </Button>
       </div>
+
+      {error && (
+        <p role="alert" className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">{error}</p>
+      )}
+      <p className="text-xs text-slate-500">Kas Besar SC (Account #18) terpisah dan tidak tersedia melalui alur Kas Kecil.</p>
 
       {/* Summary Cards */}
       <div className="grid grid-cols-3 gap-4">
@@ -198,6 +276,7 @@ export default function CashBankPettyCash() {
       <Dialog open={showModal} onOpenChange={setShowModal}>
         <DialogContent style={{ background: "#1E293B", border: "1px solid rgba(255,255,255,0.1)", color: "white" }}>
           <DialogHeader><DialogTitle>Transaksi Kas Kecil Baru</DialogTitle></DialogHeader>
+          {error && <p role="alert" className="text-sm text-amber-200">{error}</p>}
           <div className="grid grid-cols-2 gap-3 py-2">
             <div>
               <Label className="text-xs text-slate-400">Tipe Transaksi *</Label>
@@ -243,7 +322,7 @@ export default function CashBankPettyCash() {
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setShowModal(false)} className="text-slate-400">Batal</Button>
-            <Button onClick={save} disabled={saving} className="bg-orange-500 hover:bg-orange-600 text-white">
+            <Button onClick={save} disabled={saving || !serviceAvailable} className="bg-orange-500 hover:bg-orange-600 text-white">
               {saving ? "Menyimpan..." : "Simpan (Draft)"}
             </Button>
           </DialogFooter>
