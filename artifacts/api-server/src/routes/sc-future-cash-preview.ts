@@ -1,11 +1,4 @@
 import { Router, type IRouter } from "express";
-import { createHash, randomUUID } from "node:crypto";
-import multer from "multer";
-import { rateLimit } from "express-rate-limit";
-import { makeFileFilter, IMAGE_OR_PDF_ALLOWED_MIME } from "../lib/uploadMiddleware";
-import { ObjectStorageService } from "../lib/objectStorage";
-import { prepareFutureCashSource } from "../lib/future-cash-source-identity";
-import type { PendingPrivateCashEvidence } from "../lib/future-cash-private-upload";
 import { pool } from "@workspace/db";
 import {
   getProductionSession,
@@ -26,17 +19,6 @@ const CASH_ACCOUNT_ID = 18;
 const CASH_COA_ID = 75839;
 const CASH_COA_CODE = "1-1011-CST";
 const OWNER_ORIGIN = "https://dev-bizportal.cstlogistic.co.id";
-const pendingEvidenceStorage = new ObjectStorageService();
-const cashDocumentUploadLimit = 8 * 1024 * 1024;
-const cashDocumentUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: cashDocumentUploadLimit, files: 1, fields: 5, parts: 6 },
-  fileFilter: makeFileFilter(IMAGE_OR_PDF_ALLOWED_MIME),
-}).single("file");
-const cashDocumentRateLimit = rateLimit({
-  windowMs: 10 * 60_000, limit: 6, standardHeaders: "draft-7",
-  legacyHeaders: false, validate: false,
-});
 
 type CashAccount = {
   id: number; name: string; account_type: string; is_active: boolean;
@@ -107,7 +89,6 @@ router.use(PATH, async (req, res, next): Promise<void> => {
       res.status(403).json({ code: "SC_CASH_OWNER_COMPANY_SCOPE_DENIED" });
       return;
     }
-    res.locals.scCashOwnerEmail = typeof actor.email === "string" ? actor.email : null;
     next();
   } catch {
     res.status(503).json({ code: "SC_CASH_OWNER_REVALIDATION_UNAVAILABLE" });
@@ -235,111 +216,6 @@ router.post(PATH + "/preview", async (req, res): Promise<void> => {
     });
   } catch {
     res.status(503).json({ code: "SC_CASH_DRAFT_PREVIEW_UNAVAILABLE" });
-  }
-});
-
-
-/**
- * CST DEV only: signed Owner/Super Admin stores a NEW private proof as PENDING.
- * This is NOT an approval, trusted VERIFIED receipt, voucher posting, or
- * historical cash-sheet import. The existing signed-owner guard runs first.
- */
-router.post(PATH + "/documents/pending", cashDocumentRateLimit, (req, res, next) => {
-  if (req.get("origin") !== OWNER_ORIGIN) {
-    res.status(403).json({ code: "SC_CASH_SAME_ORIGIN_REQUIRED" });
-    return;
-  }
-  cashDocumentUpload(req, res, (err: unknown) => {
-    if (err) {
-      res.status(err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE"
-        ? 413 : 400).json({ code: "SC_CASH_DOCUMENT_UPLOAD_INVALID" });
-      return;
-    }
-    next();
-  });
-}, async (req, res): Promise<void> => {
-  const body = req.body && typeof req.body === "object" && !Array.isArray(req.body)
-    ? req.body as Record<string, unknown> : {};
-  const allowed = new Set(["companyId", "accountId", "date", "direction", "amount"]);
-  if (Object.keys(body).some(key => !allowed.has(key)) ||
-      body.companyId !== "1" || body.accountId !== "18" ||
-      typeof body.date !== "string" || typeof body.amount !== "string" ||
-      (body.direction !== "IN" && body.direction !== "OUT") ||
-      !req.file?.buffer || !res.locals.scCashOwnerEmail) {
-    res.status(400).json({ code: "SC_CASH_INVALID_PENDING_DOCUMENT" });
-    return;
-  }
-  const transactionId = randomUUID();
-  const digest = createHash("sha256").update(req.file.buffer).digest("hex");
-  const source = {
-    companyId: 1, accountId: CASH_ACCOUNT_ID, cashCoaId: CASH_COA_ID,
-    transactionId, sourceDocumentSha256: digest,
-    direction: body.direction, date: body.date, amount: body.amount,
-  } as const;
-  let fingerprint: string, amountCents: bigint;
-  try {
-    fingerprint = prepareFutureCashSource(source).sourceFingerprint;
-    const [whole, frac = ""] = source.amount.split(".");
-    amountCents = BigInt(whole!) * 100n + BigInt(frac.padEnd(2, "0") || "0");
-  } catch {
-    res.status(400).json({ code: "SC_CASH_PENDING_SOURCE_INVALID" });
-    return;
-  }
-  let pending: PendingPrivateCashEvidence | null = null;
-  let inserted = false;
-  try {
-    const account = await cashAccount();
-    if (!validAccount(account) || source.date < account.created_at.slice(0, 10)) {
-      res.status(409).json({ code: "SC_CASH_ACCOUNT18_BASELINE_INVALID" });
-      return;
-    }
-    pending = await pendingEvidenceStorage.uploadFutureCashPrivateEvidence(
-      { companyId: 1, accountId: CASH_ACCOUNT_ID, transactionId },
-      req.file.buffer,
-    );
-    if (pending.sha256 !== digest || pending.transactionId !== transactionId ||
-        pending.byteLength !== req.file.buffer.length) {
-      throw Error("CASH_EVIDENCE_UPLOAD_DIGEST_MISMATCH");
-    }
-    // Read-after-write confirms the stored bytes, not client MIME or file URL.
-    const actualSize = await pendingEvidenceStorage.getObjectEntitySize(pending.objectPath);
-    const handle = await pendingEvidenceStorage.getObjectEntityFile(pending.objectPath);
-    if (actualSize !== pending.byteLength || handle.bucket !== "private-uploads" ||
-        handle.path !== pending.objectPath.slice("/objects/".length)) {
-      throw Error("CASH_EVIDENCE_PRIVATE_READBACK_INVALID");
-    }
-    const readback = Buffer.from(await (await pendingEvidenceStorage
-      .downloadObject(handle, 0)).arrayBuffer());
-    if (readback.length !== pending.byteLength ||
-        createHash("sha256").update(readback).digest("hex") !== digest) {
-      throw Error("CASH_EVIDENCE_PRIVATE_READBACK_MISMATCH");
-    }
-    await pool.query([
-      "insert into public.sc_future_cash_documents",
-      " (transaction_id,company_id,account_id,cash_coa_id,object_path,",
-      "  document_sha256,source_fingerprint,direction,transaction_date,",
-      "  amount_cents,byte_length,uploaded_by)",
-      " values ($1,1,18,75839,$2,$3,$4,$5,$6,$7,$8,$9)",
-    ].join("\n"), [
-      transactionId, pending.objectPath, digest, fingerprint, source.direction,
-      source.date, amountCents.toString(), pending.byteLength,
-      res.locals.scCashOwnerEmail,
-    ]);
-    inserted = true;
-    res.status(201).json({
-      mode: "PENDING_PRIVATE_CASH_EVIDENCE_DEV",
-      transactionId,
-      status: "PENDING_VERIFICATION",
-      postingAllowed: false,
-      historicalSheetConfig5: "NOT_USED_NONMIGRATION",
-    });
-  } catch {
-    // Cleanup only the fresh server-issued path on failure before DB insert.
-    if (pending && !inserted) {
-      await pendingEvidenceStorage.deletePrivateEntity(pending.objectPath)
-        .catch(() => undefined);
-    }
-    res.status(503).json({ code: "SC_CASH_DOCUMENT_INTAKE_UNAVAILABLE" });
   }
 });
 
