@@ -1,7 +1,7 @@
 import { assessFutureCashDraft, type FutureCashPreflightResult,
   type TrustedFutureCashApproval, type TrustedFutureCashCoa,
   type TrustedFutureCashReceipt } from "./future-cash-approval-preflight";
-import type { FutureCashSource } from "./future-cash-source-identity";
+import { prepareFutureCashSource, type FutureCashSource } from "./future-cash-source-identity";
 
 /**
  * Server-side adapter contract for future Account18 voucher evidence.
@@ -35,7 +35,6 @@ export async function inspectFutureCashEvidence(
   try {
     // Validate the future-cash identity before any repository reads.
     // Fail closed if the caller supplies an unsupported account or malformed UUID.
-    const { prepareFutureCashSource } = await import("./future-cash-source-identity");
     prepareFutureCashSource(source);
 
     const receipt = await reader.getVerifiedReceipt(source.transactionId);
