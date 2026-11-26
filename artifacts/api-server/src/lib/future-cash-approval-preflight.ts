@@ -68,7 +68,9 @@ export function assessFutureCashDraft(
     approval.authenticationMethod !== "SIGNED_EMAIL_OTP" ||
     !["owner","super_admin"].includes(approval.authorizedRole) ||
     approval.transactionId !== source.transactionId || approval.companyId !== source.companyId ||
-    approval.accountId !== source.accountId || approval.sourceFingerprint !== identity.sourceFingerprint) {
+    approval.accountId !== source.accountId || approval.sourceFingerprint !== identity.sourceFingerprint ||
+    // A prior approval must never authorize a document verified only later.
+    Date.parse(approval.approvedAt!) < Date.parse(receipt.verifiedAt!)) {
     return blocked("APPROVAL_NOT_VERIFIED");
   }
   if (!coa || !Number.isSafeInteger(coa.id) || coa.id <= 0 ||
