@@ -65,7 +65,7 @@ export async function readPurposeBoundFutureCashApproval(
               o.created_at::text as otp_created_at
          from public.approval_requests a
          left join lateral (
-           select email, verified_at
+           select email, verified_at, expires_at, created_at
              from public.bizportal_email_otp_codes
             where purpose = $4
               and verified_at is not null
