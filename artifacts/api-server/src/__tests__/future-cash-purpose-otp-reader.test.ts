@@ -17,9 +17,12 @@ const row = {
   transaction_id: source.transactionId, source_fingerprint: fp, account_id: 18,
   counter_coa_id: 902, otp_email: "owner@example.test",
   otp_verified_at: "2026-11-27 00:04:00+00",
+  otp_expires_at: "2026-11-27 00:06:00+00",
+  otp_created_at: "2026-11-27 00:03:00+00",
 };
-type TestRow = Omit<typeof row, "otp_email" | "otp_verified_at"> & {
+type TestRow = Omit<typeof row, "otp_email" | "otp_verified_at" | "otp_expires_at" | "otp_created_at"> & {
   otp_email: string | null; otp_verified_at: string | null;
+  otp_expires_at: string | null; otp_created_at: string | null;
 };
 const db = (rows: TestRow[] = [row]) => ({
   query: vi.fn(async (_sql: string, _params: readonly unknown[]) => ({ rows })),
@@ -38,6 +41,9 @@ describe("Account18 purpose-separated OTP approval reader — SELECT only", () =
     expect(sql.startsWith("select")).toBe(true);
     expect(sql).not.toMatch(/\b(insert|update|delete)\b/);
     expect(sql).toContain("verified_at is not null");
+    expect(sql).toContain("verified_at <= expires_at");
+    expect(sql).toContain("verified_at >= created_at");
+    expect(sql).toContain("attempts < 5");
     expect(sql).not.toContain("code_hash");
   });
 
@@ -61,9 +67,13 @@ describe("Account18 purpose-separated OTP approval reader — SELECT only", () =
     }
   });
 
-  it("rejects stale and future OTP confirmation", async () => {
+  it("rejects stale, future, expired and not-yet-issued OTP confirmation", async () => {
     for (const changed of [{ ...row, otp_verified_at: "2026-11-26 23:00:00+00" },
-      { ...row, otp_verified_at: "2026-11-27 00:06:00+00" }]) {
+      { ...row, otp_verified_at: "2026-11-27 00:07:00+00" },
+      { ...row, otp_expires_at: "2026-11-27 00:03:59+00" },
+      { ...row, otp_created_at: "2026-11-27 00:04:01+00" },
+      { ...row, otp_expires_at: null },
+      { ...row, otp_created_at: null }]) {
       expect(await readPurposeBoundFutureCashApproval(source, db([changed])))
         .toBeNull();
     }
