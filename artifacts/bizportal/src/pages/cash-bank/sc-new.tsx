@@ -21,6 +21,22 @@ type Preview = {
   proposedLines:Array<{coaId:number;coaCode:string;name:string;debit:string;credit:string}>;
   counterCoaClassification:string;reasons:string[];
 };
+
+type PendingCashAcknowledgement = { transactionId:string;status:"PENDING_VERIFICATION" };
+const COMPANY1_PENDING_ACK_KEY="cst.account18.pending.evidence.ack.v1";
+function loadCompany1PendingAcknowledgement():PendingCashAcknowledgement|null{
+  if(typeof window==="undefined")return null;
+  try{
+    const raw=window.sessionStorage.getItem(COMPANY1_PENDING_ACK_KEY);
+    if(!raw)return null;
+    const parsed=JSON.parse(raw) as Partial<PendingCashAcknowledgement>;
+    if(parsed.status!=="PENDING_VERIFICATION" || typeof parsed.transactionId!=="string" ||
+       !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(parsed.transactionId))
+      return null;
+    return {transactionId:parsed.transactionId,status:"PENDING_VERIFICATION"};
+  }catch{return null;}
+}
+
 const ENDPOINT="/api/cash-bank/sc-new";
 const money=(s:string)=>new Intl.NumberFormat("id-ID",{
   minimumFractionDigits:2,maximumFractionDigits:2,
@@ -42,14 +58,13 @@ export default function ScNewCashPreview() {
   const [counterCoaId,setCounterCoaId]=useState("");
   const [receiptFile,setReceiptFile]=useState<File|null>(null);
   const [evidenceBusy,setEvidenceBusy]=useState(false);
-  const [pendingEvidence,setPendingEvidence]=useState<{transactionId:string;status:"PENDING_VERIFICATION"}|null>(null);
+  const [pendingEvidence,setPendingEvidence]=useState<PendingCashAcknowledgement|null>(loadCompany1PendingAcknowledgement);
   const companyRequestVersion=useRef(0);
   const draftRequestVersion=useRef(0);
   const invalidateDraft=()=>{
     draftRequestVersion.current++;
     setPreview(null);
     setReceiptFile(null);
-    setPendingEvidence(null);
     setBusy(false);
   };
 
@@ -58,7 +73,7 @@ export default function ScNewCashPreview() {
     const version=++companyRequestVersion.current;
     draftRequestVersion.current++;
     setPreview(null);setReadiness(null);setError(null);setBusy(false);
-    setReceiptFile(null);setPendingEvidence(null);
+    setReceiptFile(null); // Preserve Company #1 acknowledgement across company changes.
     if(activeCompanyId!==1){
       setError("Khusus PT Cahaya Sejati Teknologi (Company #1), Account #18.");
       return ()=>controller.abort();
@@ -91,7 +106,7 @@ export default function ScNewCashPreview() {
   },[activeCompanyId]);
 
   const calculate=async()=>{
-    if(activeCompanyId!==1 || !readiness || busy || evidenceBusy) return;
+    if(activeCompanyId!==1 || !readiness || busy || evidenceBusy || !!pendingEvidence) return;
     const choice=readiness.contraCandidates.find(c=>String(c.id)===counterCoaId);
     if(!choice){setError("Pilih COA lawan kandidat terlebih dahulu.");return;}
     const version=companyRequestVersion.current;
@@ -127,7 +142,7 @@ export default function ScNewCashPreview() {
     }
     const version=companyRequestVersion.current;
     const draftVersion=draftRequestVersion.current;
-    setEvidenceBusy(true);setError(null);setPendingEvidence(null);
+    setEvidenceBusy(true);setError(null);
     try{
       const form=new FormData();
       form.append("companyId","1");
@@ -143,7 +158,7 @@ export default function ScNewCashPreview() {
         mode?:string;transactionId?:string;status?:string;
         postingAllowed?:boolean;code?:string;
       })|null;
-      if(version!==companyRequestVersion.current)return;
+      // Do not discard a successful server write when the global CompanySwitcher changes.
       // Editing is locked during upload. Preserve successful server receipt even if
       // an unrelated preview request changed its local version.
       if(response.status!==201 || payload?.mode!=="PENDING_PRIVATE_CASH_EVIDENCE_DEV" ||
@@ -151,8 +166,14 @@ export default function ScNewCashPreview() {
           typeof payload.transactionId!=="string")
         throw Error("Penyimpanan bukti belum berhasil (HTTP "+response.status+
           ", "+String(payload?.code??"INVALID")+").");
-      setPendingEvidence({transactionId:payload.transactionId,status:"PENDING_VERIFICATION"});
-      setReceiptFile(null);
+      const ack:PendingCashAcknowledgement={
+        transactionId:payload.transactionId,status:"PENDING_VERIFICATION",
+      };
+      // UI-only receipt recovery; never trust this state as financial authorization.
+      try{window.sessionStorage.setItem(COMPANY1_PENDING_ACK_KEY,JSON.stringify(ack));}
+      catch{/* Keep the successful receipt visible in component state. */}
+      setPendingEvidence(ack);
+      if(version===companyRequestVersion.current)setReceiptFile(null);
     }catch(err){
       if(version===companyRequestVersion.current && draftVersion===draftRequestVersion.current)
         setError(err instanceof Error?err.message:"Penyimpanan bukti belum tersedia.");
@@ -193,7 +214,7 @@ export default function ScNewCashPreview() {
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <Label>Arah kas</Label>
-                <Select value={direction} disabled={evidenceBusy} onValueChange={v=>{
+                <Select value={direction} disabled={evidenceBusy||!!pendingEvidence} onValueChange={v=>{
                   if(evidenceBusy)return;
                   setDirection(v as "IN"|"OUT");invalidateDraft();
                 }}>
@@ -206,16 +227,16 @@ export default function ScNewCashPreview() {
               </div>
               <div>
                 <Label>Tanggal transaksi baru</Label>
-                <DatePicker value={date} disabled={evidenceBusy} onChange={v=>{if(evidenceBusy)return;setDate(v);invalidateDraft();}} className="mt-1"/>
+                <DatePicker value={date} disabled={evidenceBusy||!!pendingEvidence} onChange={v=>{if(evidenceBusy)return;setDate(v);invalidateDraft();}} className="mt-1"/>
               </div>
               <div>
                 <Label>Nominal Rp (gunakan titik untuk desimal)</Label>
                 <Input value={amount} inputMode="decimal" placeholder="150000.25"
-                  disabled={evidenceBusy} onChange={e=>{if(evidenceBusy)return;setAmount(e.target.value);invalidateDraft();}} className="mt-1"/>
+                  disabled={evidenceBusy||!!pendingEvidence} onChange={e=>{if(evidenceBusy||pendingEvidence)return;setAmount(e.target.value);invalidateDraft();}} className="mt-1"/>
               </div>
               <div>
                 <Label>Calon COA lawan (belum diverifikasi dokumen)</Label>
-                <Select value={counterCoaId} disabled={evidenceBusy} onValueChange={v=>{if(evidenceBusy)return;setCounterCoaId(v);invalidateDraft();}}>
+                <Select value={counterCoaId} disabled={evidenceBusy||!!pendingEvidence} onValueChange={v=>{if(evidenceBusy)return;setCounterCoaId(v);invalidateDraft();}}>
                   <SelectTrigger className="mt-1"><SelectValue placeholder="Pilih COA kandidat"/></SelectTrigger>
                   <SelectContent>
                     {readiness.contraCandidates.map(c=>
@@ -225,13 +246,32 @@ export default function ScNewCashPreview() {
               </div>
             </div>
             <Button type="button" onClick={()=>void calculate()}
-              disabled={busy || evidenceBusy || loading || !counterCoaId || !amount.trim() || !date}>
+              disabled={busy || evidenceBusy || !!pendingEvidence || loading || !counterCoaId || !amount.trim() || !date}>
               {busy?"Menghitung...":"Uji pratinjau saja (tanpa posting)"}
             </Button>
             <p className="text-xs text-slate-400">
               Tidak ada tombol persetujuan atau posting jurnal. Penyimpanan file hanya menghasilkan
               bukti PENDING yang harus diverifikasi kembali oleh server dan Owner/Super Admin.
             </p>
+          </CardContent>
+        </Card>
+      )}
+      {readiness && pendingEvidence && activeCompanyId===1 && (
+        <Card className="border-sky-500/40 bg-slate-800/90 text-white">
+          <CardContent className="space-y-2 py-4">
+            <p role="status" className="text-sm">
+              Bukti tersimpan sebagai PENDING_VERIFICATION (belum disetujui).
+              ID transaksi: <code className="break-all">{pendingEvidence.transactionId}</code>.
+              Tidak ada jurnal keuangan yang diposting.
+            </p>
+            <Button type="button" variant="outline" disabled={evidenceBusy} onClick={()=>{
+              try{window.sessionStorage.removeItem(COMPANY1_PENDING_ACK_KEY);}
+              catch{/* Storage may be disabled. */}
+              setPendingEvidence(null);
+              draftRequestVersion.current++;
+              setPreview(null);setReceiptFile(null);
+              setAmount("");setCounterCoaId("");
+            }}>Buat transaksi baru</Button>
           </CardContent>
         </Card>
       )}
@@ -265,11 +305,6 @@ export default function ScNewCashPreview() {
                 disabled={evidenceBusy||!!pendingEvidence||!receiptFile||busy}>
                 {evidenceBusy?"Menyimpan bukti...":"Simpan bukti PENDING (tanpa posting)"}
               </Button>
-              {pendingEvidence && <p role="status" className="text-sm text-slate-100">
-                Bukti baru tersimpan sebagai PENDING_VERIFICATION.
-                ID transaksi: <code className="break-all">{pendingEvidence.transactionId}</code>.
-                Belum ada verifikasi dokumen, persetujuan, atau posting keuangan.
-              </p>}
             </div>
             <p role="status" className="text-sm text-amber-200">
               Pratinjau seimbang. Klasifikasi COA lawan belum dibuktikan dengan dokumen.

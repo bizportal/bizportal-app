@@ -11,17 +11,23 @@ describe("Kas Besar SC pending evidence upload resilience", () => {
     expect(route).toContain('SC_CASH_DOCUMENT_UPLOAD_INVALID');
   });
   it("locks all draft changes while evidence upload is in flight", () => {
-    expect(page).toContain('<Select value={direction} disabled={evidenceBusy}');
-    expect(page).toContain('<DatePicker value={date} disabled={evidenceBusy}');
-    expect(page).toContain('disabled={evidenceBusy} onChange={e=>{if(evidenceBusy)return;setAmount');
-    expect(page).toContain('<Select value={counterCoaId} disabled={evidenceBusy}');
-    expect(page).toContain('disabled={busy || evidenceBusy || loading');
-    expect(page).toContain('if(activeCompanyId!==1 || !readiness || busy || evidenceBusy) return;');
+    expect(page).toContain('<Select value={direction} disabled={evidenceBusy||!!pendingEvidence}');
+    expect(page).toContain('<DatePicker value={date} disabled={evidenceBusy||!!pendingEvidence}');
+    expect(page).toContain('disabled={evidenceBusy||!!pendingEvidence} onChange={e=>{if(evidenceBusy||pendingEvidence)return;setAmount');
+    expect(page).toContain('<Select value={counterCoaId} disabled={evidenceBusy||!!pendingEvidence}');
+    expect(page).toContain('disabled={busy || evidenceBusy || !!pendingEvidence || loading');
+    expect(page).toContain('if(activeCompanyId!==1 || !readiness || busy || evidenceBusy || !!pendingEvidence) return;');
   });
-  it("keeps returned transaction UUID when only preview version changes", () => {
-    expect(page).toContain('if(version!==companyRequestVersion.current)return;');
-    expect(page).toContain('setPendingEvidence({transactionId:payload.transactionId,status:"PENDING_VERIFICATION"})');
-    expect(page).toContain('postingAllowed?:boolean');
-    expect(page).not.toContain('readyForCommit:true');
+  it("preserves server receipt across CompanySwitcher changes and disabled sessionStorage", () => {
+    const uploadFn=page.slice(page.indexOf("const uploadPendingEvidence=async()=>"),
+      page.indexOf("  return (\n    <div className=\"space-y-5\">"));
+    expect(uploadFn).not.toContain("if(version!==companyRequestVersion.current)return;");
+    expect(uploadFn).toContain("sessionStorage.setItem(COMPANY1_PENDING_ACK_KEY");
+    expect(uploadFn).toContain("setPendingEvidence(ack)");
+    expect(page).toContain("sessionStorage.getItem(COMPANY1_PENDING_ACK_KEY)");
+    expect(page).toContain("{readiness && pendingEvidence && activeCompanyId===1 && (");
+    expect(page).toContain("sessionStorage.removeItem(COMPANY1_PENDING_ACK_KEY)");
+    expect(page).toContain("Buat transaksi baru");
+    expect(page).not.toContain("readyForCommit:true");
   });
 });
