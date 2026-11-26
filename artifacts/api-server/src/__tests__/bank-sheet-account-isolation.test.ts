@@ -116,6 +116,41 @@ describe("Cash source-only dry-run replay and rollback", () => {
     }
   });
 
+  it("stress-checks 374 synthetic cash rows: replay zero, scoped keys, one changed fingerprint and rollback", () => {
+    const fixture: string[][] = [
+      ["Tanggal", "Keterangan COA", "Debit", "Kredit", "Saldo"],
+      ["opening", "SALDO AWAL", "", "", "13793"],
+      ...Array.from({ length: 374 }, (_, i) => [
+        "26/11/2026", `synthetic cash row ${i + 1}`, "10.25", "", "",
+      ]),
+    ];
+    const first = planCashSheetImportDryRun(fixture, scope);
+    expect(first).toMatchObject({
+      totalParsedRows: 374, openingBalanceRows: 1, rejectedRows: 0,
+      newRows: 374, replayedRows: 0, changedRows: 0,
+      repeatedPayloadRows: 0, readyForCommit: false,
+    });
+    expect(new Set(first.proposed.map((r) => r.sourceKey)).size).toBe(374);
+    expect(new Set(first.proposed.map((r) => r.fingerprint)).size).toBe(374);
+    const ephemeral = new Map(first.proposed.map((r) =>
+      [r.sourceKey, r.fingerprint] as const));
+    expect(planCashSheetImportDryRun(fixture, scope, ephemeral)).toMatchObject({
+      newRows: 0, replayedRows: 374, changedRows: 0, readyForCommit: false,
+    });
+    const changed = fixture.map((row) => [...row]);
+    changed[261]![2] = "10.30"; // The synthetic physical source row 262.
+    expect(planCashSheetImportDryRun(changed, scope, ephemeral)).toMatchObject({
+      newRows: 0, replayedRows: 373, changedRows: 1, readyForCommit: false,
+    });
+    expect(planCashSheetImportDryRun(fixture, { ...scope, accountId: 17 }, ephemeral))
+      .toMatchObject({ newRows: 374, replayedRows: 0, readyForCommit: false });
+    expect(planCashSheetImportDryRun(fixture, scope))
+      .toMatchObject({ newRows: 374, replayedRows: 0, readyForCommit: false });
+    expect(() => assertBankMutationWriterAccountType("cash"))
+      .toThrow("CASH_SHEET_REQUIRES_CASH_LEDGER_IMPORT_PATH");
+    expect(fixture[261]?.[2]).toBe("10.25"); // Never modified the source.
+  });
+
   it("idempotent replay yields zero new candidates; rollback resets the ephemeral proposal", () => {
     const first = planCashSheetImportDryRun(rows, scope);
     const ephemeral = new Map(first.proposed.map((item) =>
