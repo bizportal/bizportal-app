@@ -908,6 +908,47 @@ async function markConfigSync(
   );
 }
 
+/**
+ * Adapt the existing canonical cash parser and its scoped content fingerprints
+ * into strict integer-cent, unmapped draft inputs. No counter COA is inferred.
+ * Pure operation: not connected to an accounting or Google Sheets writer.
+ */
+export function prepareCashLedgerDraftInputs(
+  rows: string[][],
+  scope: { companyId: number; configId: number; accountId: number },
+): Array<{
+  rowNumber: number;
+  transactionDate: string;
+  direction: "IN" | "OUT";
+  amountCents: number;
+  sourceFingerprint: string;
+  counterCoaId: null;
+}> {
+  if (scope.companyId !== 1 || scope.configId !== 5 || scope.accountId !== 18) {
+    throw new Error("CASH_DRAFT_SCOPE_NOT_AUTHORIZED");
+  }
+  if (!previewCashSheetRows(rows).headerValid) return [];
+  const parsed = parseRows(rows, "cash").mutations;
+  const plan = planCashSheetImportDryRun(rows, scope);
+  const hashes = new Map(parsed.map((row, i) => [
+    row.rowNumber, plan.proposed[i]?.fingerprint,
+  ]));
+  return parsed.map((row) => {
+    const value = row.direction === "IN" ? row.debit : row.credit;
+    const cents = Math.round(value * 100);
+    return {
+      rowNumber: row.rowNumber,
+      transactionDate: row.transactionDate,
+      direction: row.direction,
+      // Invalid precision will be blocked by the downstream draft planner.
+      amountCents: Number.isSafeInteger(cents)
+        && Math.abs(value * 100 - cents) <= 0.00001 ? cents : Number.NaN,
+      sourceFingerprint: hashes.get(row.rowNumber) ?? "",
+      counterCoaId: null,
+    };
+  });
+}
+
 // Pure parser-only probe for test and staging validation. It does not call
 // the Google Sheets API or write to bank_mutations; the writer is cash-blocked.
 export function parseCashSheetDirectionDates(rows: string[][]): Array<{

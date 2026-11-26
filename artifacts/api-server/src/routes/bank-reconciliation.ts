@@ -16,10 +16,12 @@ import {
   syncOneBankSheetConfig,
   previewCashSheetRows,
   planCashSheetImportDryRun,
+  prepareCashLedgerDraftInputs,
   auditCashSheetRunningBalances,
   inspectCashSourceSentinels,
   explainCashRawBalanceDifferences,
 } from "../lib/bank-sheet-sync";
+import { planCashLedgerDrafts } from "../lib/cash-ledger-draft-planner";
 import {
   getDevSession,
   getProductionSession,
@@ -8448,6 +8450,9 @@ router.get("/bank-reconciliation/sheet-configs/5/preview", async (req, res): Pro
     const preview = previewCashSheetRows(rows);
     const scope = { companyId: 1, configId: 5, accountId: 18 };
     const initial = planCashSheetImportDryRun(rows, scope);
+    // Input rows are sourced from the already-tested cash parser.
+    // No counter-COA is guessed or approved: every source row stays blocked.
+    const draftInputs = prepareCashLedgerDraftInputs(rows, scope);
     // In-memory only: simulate replay and a rollback to an empty proposal.
     // Neither run writes to PostgreSQL or Google Sheets.
     const transient = new Map(initial.proposed.map(
@@ -8489,8 +8494,8 @@ router.get("/bank-reconciliation/sheet-configs/5/preview", async (req, res): Pro
       }
     }
     // Dedicated company-scoped DEV reader: no bank_mutations SELECT/write grants.
-    const baseline = await reader.query<{ opening_balance: string | number | null }>(
-      "select opening_balance from public.company_bank_accounts where id=$1 and company_id=$2 and account_type='cash' and is_active=true",
+    const baseline = await reader.query<{ opening_balance: string | number | null; coa_id: number | null }>(
+      "select opening_balance, coa_id from public.company_bank_accounts where id=$1 and company_id=$2 and account_type='cash' and is_active=true",
       [18, 1],
     );
     if (baseline.rows.length !== 1) {
@@ -8505,11 +8510,35 @@ router.get("/bank-reconciliation/sheet-configs/5/preview", async (req, res): Pro
       || validAccountOpeningBalance === null ? null
       : Math.round(balanceAudit.openingBalanceAmount * 100)
         === Math.round(validAccountOpeningBalance * 100);
+    // Fail closed if the account has lost its previously verified cash COA.
+    if (Number(baseline.rows[0].coa_id) !== 75839) {
+      res.status(409).json({ ok: false, error: "COA Kas Besar SC tidak sesuai baseline DEV" });
+      return;
+    }
+    const draftPlan = planCashLedgerDrafts(
+      { ...scope, cashCoaId: 75839 }, draftInputs,
+    );
+    const cashDraftReadiness = {
+      parsedRows: draftInputs.length,
+      mappedRows: draftPlan.proposals.length,
+      blockedRows: draftPlan.blocked.length,
+      blockedMissingCounterCoa: draftPlan.blocked.filter(
+        (row) => row.reason === "MISSING_COUNTER_COA",
+      ).length,
+      blockedInvalidSource: draftPlan.blocked.filter(
+        (row) => row.reason === "INVALID_SOURCE",
+      ).length,
+      mappedCoa: "1-1011-CST",
+      counterCoaAssignment: "UNMAPPED_REQUIRES_VERIFIED_ACCOUNTING_SOURCE",
+      mode: "read_only_draft_no_posting",
+      readyForCommit: false,
+    };
     res.json({
       ok: false, configId: 5, accountId: 18, ...preview, safeToImport: false,
       cashDryRun: {
         balanceAudit,
         cashSourceSentinels,
+        cashDraftReadiness,
         mismatchCellEvidence,
         rawBalanceReconciliation,
         accountOpeningBalance: validAccountOpeningBalance,
