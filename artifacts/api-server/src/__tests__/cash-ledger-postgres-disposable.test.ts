@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createRequire } from "node:module";
 import { disposableCashPgAdapter } from "../lib/cash-ledger-postgres-disposable";
-import { postCashJournal, type CashMovement } from "../lib/cash-ledger-posting";
+import { postCashJournal, prepareCashJournal, reverseCashJournalLines, type CashMovement } from "../lib/cash-ledger-posting";
 
 const url = process.env.CASH_QA_PG_URL;
 const suite = url ? describe : describe.skip;
@@ -75,4 +75,53 @@ suite("disposable PostgreSQL cash journal adapter (never business DB)", () => {
     expect(results.filter(x=>x.replay)).toHaveLength(1);
     expect(results.filter(x=>!x.replay)).toHaveLength(1);
   });
+  it("QA-only future Account18 cash: IN/OUT, replay, concurrency, rollback and reversal",async()=>{
+    // Account18/COA75839 are verified identifiers; Config9001 and contra902
+    // are disposable QA fixtures, never historic Config5 or approved live COAs.
+    const futureScope={companyId:1,configId:9001,accountId:18,
+      accountType:"cash" as const,cashCoaId:75839,counterpartyCoaId:902};
+    const inRow={rowNumber:1,date:"2026-11-27",direction:"IN" as const,
+      amount:"150000.25",sourceFingerprint:"a".repeat(64)};
+    const outRow={rowNumber:2,date:"2026-11-27",direction:"OUT" as const,
+      amount:"45000.75",sourceFingerprint:"b".repeat(64)};
+    const first=await postCashJournal(adapter,futureScope,inRow);
+    const second=await postCashJournal(adapter,futureScope,outRow);
+    expect(first.replay).toBe(false);
+    expect(second.replay).toBe(false);
+    const q=await pool.query(`SELECT e.id,e.total_debit::text td,e.total_credit::text tc,
+      array_agg(l.account_id ORDER BY l.line_number) coas,
+      array_agg(l.debit::text ORDER BY l.line_number) dr,
+      array_agg(l.credit::text ORDER BY l.line_number) cr
+      FROM cash_qa.accounting_entries e
+      JOIN cash_qa.accounting_entry_lines l ON l.entry_id=e.id
+      WHERE e.id=ANY($1::bigint[]) GROUP BY e.id ORDER BY e.id`,[[first.id,second.id]]);
+    expect(q.rows).toHaveLength(2);
+    expect(q.rows[0]).toMatchObject({td:"150000.25",tc:"150000.25",
+      coas:[75839,902],dr:["150000.25","0.00"],cr:["0.00","150000.25"]});
+    expect(q.rows[1]).toMatchObject({td:"45000.75",tc:"45000.75",
+      coas:[75839,902],dr:["0.00","45000.75"],cr:["45000.75","0.00"]});
+    expect((await postCashJournal(adapter,futureScope,inRow)).replay).toBe(true);
+    await expect(postCashJournal(adapter,futureScope,
+      {...inRow,sourceFingerprint:"c".repeat(64)}))
+      .rejects.toThrow("CASH_SOURCE_CHANGED_REVIEW_REQUIRED");
+    const concurrent={...inRow,rowNumber:3,sourceFingerprint:"d".repeat(64)};
+    const results=await Promise.all([
+      postCashJournal(adapter,futureScope,concurrent),
+      postCashJournal(adapter,futureScope,concurrent)]);
+    expect(results.filter(x=>x.replay)).toHaveLength(1);
+    expect(results.filter(x=>!x.replay)).toHaveLength(1);
+    const before=(await pool.query("SELECT count(*)::int n FROM cash_qa.cash_sources")).rows[0].n;
+    // Earlier suite test installs a QA-only trigger rejecting account 999.
+    await expect(postCashJournal(adapter,{...futureScope,counterpartyCoaId:999},
+      {...outRow,rowNumber:4,sourceFingerprint:"e".repeat(64)}))
+      .rejects.toThrow("INJECTED_LINE_FAILURE");
+    expect((await pool.query("SELECT count(*)::int n FROM cash_qa.cash_sources")).rows[0].n).toBe(before);
+    expect((await pool.query("SELECT count(*)::int n FROM cash_qa.accounting_entries")).rows[0].n).toBe(before);
+    const original=prepareCashJournal(futureScope,outRow);
+    const reversed=reverseCashJournalLines(original.lines);
+    expect(original.lines[0].creditCents).toBe(4500075n);
+    expect(reversed[0].debitCents).toBe(4500075n);
+    expect(reversed.reduce((acc,line)=>acc+line.debitCents-line.creditCents,0n)).toBe(0n);
+  });
+
 });
