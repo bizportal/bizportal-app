@@ -11,6 +11,11 @@ const mock = vi.hoisted(() => ({
   storageBytes: null as Buffer | null,
   wrongStoredBytes: false, dbInsertFailure: false, queries: [] as string[],
 }));
+// Each regression needs an independent authorization result, not a shared
+// production rate-limit bucket; rate-limiting remains enabled in the route.
+vi.mock("express-rate-limit", () => ({
+  rateLimit: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+}));
 vi.mock("../routes/dev-auth", () => ({
   isDevelopmentEnvironment: () => process.env.APP_ENV === "development",
   isSignedOtpDevEnabled: () => mock.enabled,
