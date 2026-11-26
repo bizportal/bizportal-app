@@ -4,7 +4,7 @@ import { createServer, type Server } from "node:http";
 import { once } from "node:events";
 
 const mock=vi.hoisted(()=>({
-  signed:true, enabled:true,
+  signed:true, enabled:true, actorLookupFailure:false,
   actor:{role:"super_admin",companyId:null as number|null},
   queries:[] as Array<{sql:string,params:unknown[]}>,
   accountValid:true, contraValid:true, dbFailure:false,
@@ -13,7 +13,7 @@ vi.mock("../routes/dev-auth",()=>({
   isDevelopmentEnvironment:()=>process.env.APP_ENV==="development",
   isSignedOtpDevEnabled:()=>mock.enabled,
   getProductionSession:()=>mock.signed?{id:"owner-session"}:null,
-  getProductionUser:async()=>mock.actor,
+  getProductionUser:async()=>{if(mock.actorLookupFailure)throw Error("IDENTITY_RECHECK_UNAVAILABLE");return mock.actor;},
 }));
 vi.mock("@workspace/db",()=>({
   pool:{query:async(sql:string,params:unknown[]=[])=>{
@@ -52,7 +52,7 @@ describe("Owner-only Account18 future cash readonly preview HTTP",()=>{
   afterAll(async()=>await new Promise<void>(resolve=>server.close(()=>resolve())));
   beforeEach(()=>{
     vi.stubEnv("APP_ENV","development");
-    mock.signed=true;mock.enabled=true;mock.actor={role:"super_admin",companyId:null};
+    mock.signed=true;mock.enabled=true;mock.actorLookupFailure=false;mock.actor={role:"super_admin",companyId:null};
     mock.accountValid=true;mock.contraValid=true;mock.dbFailure=false;mock.queries.length=0;
   });
   afterEach(()=>vi.unstubAllEnvs());
@@ -69,6 +69,14 @@ describe("Owner-only Account18 future cash readonly preview HTTP",()=>{
     vi.stubEnv("APP_ENV","development");
     mock.enabled=false;expect((await get()).status).toBe(503);
     mock.enabled=true;mock.signed=false;expect((await get()).status).toBe(401);
+    expect(mock.queries).toHaveLength(0);
+  });
+  it("fails closed when signed Owner DB revalidation is unavailable",async()=>{
+    mock.actorLookupFailure=true;
+    const response=await get();
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({code:"SC_CASH_OWNER_REVALIDATION_UNAVAILABLE"});
+    expect((await post()).status).toBe(503);
     expect(mock.queries).toHaveLength(0);
   });
   it("rejects non-owner, different company and wrong scope",async()=>{
