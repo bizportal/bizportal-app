@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS public.sc_future_cash_document_events (
 );
 
 CREATE OR REPLACE FUNCTION public.sc_future_cash_reject_mutation()
-RETURNS trigger LANGUAGE plpgsql AS $$
+RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $
 BEGIN
   RAISE EXCEPTION 'SC_FUTURE_CASH_EVIDENCE_APPEND_ONLY';
 END;
@@ -66,7 +66,7 @@ BEFORE UPDATE OR DELETE ON public.sc_future_cash_document_events
 FOR EACH ROW EXECUTE FUNCTION public.sc_future_cash_reject_mutation();
 
 CREATE OR REPLACE FUNCTION public.sc_future_cash_validate_evidence_event()
-RETURNS trigger LANGUAGE plpgsql AS $$
+RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $
 DECLARE
   source_row public.sc_future_cash_documents%ROWTYPE;
   has_verified boolean;
@@ -120,3 +120,7 @@ ALTER TABLE public.sc_future_cash_documents FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.sc_future_cash_document_events FORCE ROW LEVEL SECURITY;
 REVOKE ALL ON public.sc_future_cash_documents FROM PUBLIC;
 REVOKE ALL ON public.sc_future_cash_document_events FROM PUBLIC;
+
+-- Functions are trigger-only internals, never public RPC endpoints.
+REVOKE EXECUTE ON FUNCTION public.sc_future_cash_reject_mutation() FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.sc_future_cash_validate_evidence_event() FROM PUBLIC;
