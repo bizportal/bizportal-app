@@ -43,6 +43,21 @@ function goodDate(value: string): boolean {
 const positive = (n: number): boolean => Number.isSafeInteger(n) && n > 0;
 const fingerprintValid = (s: string): boolean => /^[a-f0-9]{64}$/.test(s);
 
+// Document verifier timestamps must be canonical UTC audit instants, not
+// Date.parse's permissive acceptance of short strings or local timestamps.
+function validVerifiedAt(value: string | null): boolean {
+  if (typeof value !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(value)) {
+    return false;
+  }
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) return false;
+  const normalized = parsed.toISOString();
+  return value === normalized ||
+    value === normalized.replace(/\.000Z$/, "Z") ||
+    value === normalized.replace(/0+Z$/, "Z");
+}
+
 export function validateCashDocumentProofs(
   scope: CashEvidenceScope,
   parsedRows: readonly CashDraftRow[],
@@ -100,7 +115,7 @@ export function validateCashDocumentProofs(
         !positive(doc.counterCoaId) || doc.counterCoaId === scope.cashCoaId ||
         !/^[a-zA-Z0-9._:/-]{3,120}$/.test(doc.documentId) ||
         !/^[a-zA-Z0-9@._-]{3,120}$/.test(doc.verifiedBy ?? "") ||
-        !doc.verifiedAt || !Number.isFinite(Date.parse(doc.verifiedAt)) ||
+        !validVerifiedAt(doc.verifiedAt) ||
         !["journal","supplier_invoice","approved_cash_document"].includes(doc.documentType)) {
       block("DOCUMENT_SOURCE_MISMATCH_OR_UNVERIFIED");
       continue;
