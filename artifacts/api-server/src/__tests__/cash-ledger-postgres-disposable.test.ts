@@ -114,10 +114,10 @@ suite("disposable PostgreSQL cash journal adapter (never business DB)", () => {
     // Install a test-local failure trigger so this rollback assertion does
     // not rely on another test having executed before this one.
     await pool.query(`CREATE FUNCTION cash_qa.fail_future_cash_line() RETURNS trigger
-      LANGUAGE plpgsql AS $BEGIN
+      LANGUAGE plpgsql AS $$BEGIN
         IF NEW.account_id=998 THEN RAISE EXCEPTION 'FUTURE_CASH_INJECTED_FAILURE'; END IF;
         RETURN NEW;
-      END$`);
+      END$$`);
     await pool.query(`CREATE TRIGGER reject_future_cash_line
       BEFORE INSERT ON cash_qa.accounting_entry_lines
       FOR EACH ROW EXECUTE FUNCTION cash_qa.fail_future_cash_line()`);
