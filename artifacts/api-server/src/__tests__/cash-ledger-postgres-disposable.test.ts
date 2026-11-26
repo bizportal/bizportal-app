@@ -111,12 +111,26 @@ suite("disposable PostgreSQL cash journal adapter (never business DB)", () => {
     expect(results.filter(x=>x.replay)).toHaveLength(1);
     expect(results.filter(x=>!x.replay)).toHaveLength(1);
     const before=(await pool.query("SELECT count(*)::int n FROM cash_qa.cash_sources")).rows[0].n;
-    // Earlier suite test installs a QA-only trigger rejecting account 999.
-    await expect(postCashJournal(adapter,{...futureScope,counterpartyCoaId:999},
-      {...outRow,rowNumber:4,sourceFingerprint:"e".repeat(64)}))
-      .rejects.toThrow("INJECTED_LINE_FAILURE");
-    expect((await pool.query("SELECT count(*)::int n FROM cash_qa.cash_sources")).rows[0].n).toBe(before);
-    expect((await pool.query("SELECT count(*)::int n FROM cash_qa.accounting_entries")).rows[0].n).toBe(before);
+    // Install a test-local failure trigger so this rollback assertion does
+    // not rely on another test having executed before this one.
+    await pool.query(`CREATE FUNCTION cash_qa.fail_future_cash_line() RETURNS trigger
+      LANGUAGE plpgsql AS $BEGIN
+        IF NEW.account_id=998 THEN RAISE EXCEPTION 'FUTURE_CASH_INJECTED_FAILURE'; END IF;
+        RETURN NEW;
+      END$`);
+    await pool.query(`CREATE TRIGGER reject_future_cash_line
+      BEFORE INSERT ON cash_qa.accounting_entry_lines
+      FOR EACH ROW EXECUTE FUNCTION cash_qa.fail_future_cash_line()`);
+    try {
+      await expect(postCashJournal(adapter,{...futureScope,counterpartyCoaId:998},
+        {...outRow,rowNumber:4,sourceFingerprint:"e".repeat(64)}))
+        .rejects.toThrow("FUTURE_CASH_INJECTED_FAILURE");
+      expect((await pool.query("SELECT count(*)::int n FROM cash_qa.cash_sources")).rows[0].n).toBe(before);
+      expect((await pool.query("SELECT count(*)::int n FROM cash_qa.accounting_entries")).rows[0].n).toBe(before);
+    } finally {
+      await pool.query("DROP TRIGGER reject_future_cash_line ON cash_qa.accounting_entry_lines");
+      await pool.query("DROP FUNCTION cash_qa.fail_future_cash_line()");
+    }
     const original=prepareCashJournal(futureScope,outRow);
     const reversed=reverseCashJournalLines(original.lines);
     expect(original.lines[0].creditCents).toBe(4500075n);
