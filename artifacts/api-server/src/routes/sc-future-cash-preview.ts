@@ -108,6 +108,7 @@ router.use(PATH, async (req, res, next): Promise<void> => {
       return;
     }
     res.locals.scCashOwnerEmail = typeof actor.email === "string" ? actor.email : null;
+    res.locals.scCashOwnerRole = actor.role.toLowerCase();
     next();
   } catch {
     res.status(503).json({ code: "SC_CASH_OWNER_REVALIDATION_UNAVAILABLE" });
@@ -340,6 +341,109 @@ router.post(PATH + "/documents/pending", cashDocumentRateLimit, (req, res, next)
         .catch(() => undefined);
     }
     res.status(503).json({ code: "SC_CASH_DOCUMENT_INTAKE_UNAVAILABLE" });
+  }
+});
+
+/** Explicit Owner review of a server-owned pending document; no financial write. */
+router.post(PATH + "/documents/verify", cashDocumentRateLimit, async (req, res): Promise<void> => {
+  if (req.get("origin") !== OWNER_ORIGIN) {
+    res.status(403).json({ code: "SC_CASH_SAME_ORIGIN_REQUIRED" });
+    return;
+  }
+  const body = req.body && typeof req.body === "object" && !Array.isArray(req.body)
+    ? req.body as Record<string, unknown> : {};
+  const allowed = new Set(["companyId", "accountId", "transactionId", "confirmed"]);
+  const actorEmail = res.locals.scCashOwnerEmail;
+  const actorRole = res.locals.scCashOwnerRole;
+  if (Object.keys(body).some(key => !allowed.has(key)) ||
+      body.companyId !== 1 || body.accountId !== 18 || body.confirmed !== true ||
+      typeof body.transactionId !== "string" ||
+      !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(body.transactionId) ||
+      typeof actorEmail !== "string" || !actorEmail.trim() ||
+      !["owner", "super_admin"].includes(actorRole)) {
+    res.status(400).json({ code: "SC_CASH_INVALID_DOCUMENT_REVIEW" });
+    return;
+  }
+  try {
+    const account = await cashAccount();
+    if (!validAccount(account)) {
+      res.status(409).json({ code: "SC_CASH_ACCOUNT18_BASELINE_INVALID" });
+      return;
+    }
+    const result = await pool.query<{
+      transaction_id: string; object_bucket: string; object_path: string;
+      document_sha256: string; source_fingerprint: string; direction: "IN" | "OUT";
+      transaction_date: string; amount_cents: string; byte_length: number;
+      event_type: string | null;
+    }>([
+      "select d.transaction_id::text, d.object_bucket, d.object_path,",
+      " d.document_sha256, d.source_fingerprint, d.direction,",
+      " d.transaction_date::text, d.amount_cents::text, d.byte_length, ev.event_type",
+      " from public.sc_future_cash_documents d",
+      " left join lateral (select event_type from public.sc_future_cash_document_events",
+      " where transaction_id=d.transaction_id order by event_id desc limit 1) ev on true",
+      " where d.transaction_id=$1::uuid and d.company_id=1 and d.account_id=18",
+      " and d.cash_coa_id=75839 limit 1",
+    ].join("\n"), [body.transactionId]);
+    const doc = result.rows[0];
+    if (!doc) {
+      res.status(404).json({ code: "SC_CASH_DOCUMENT_NOT_FOUND" });
+      return;
+    }
+    if (doc.event_type !== null) {
+      res.status(409).json({ code: "SC_CASH_DOCUMENT_NOT_PENDING" });
+      return;
+    }
+    const source = {
+      companyId: 1, accountId: 18, cashCoaId: 75839,
+      transactionId: doc.transaction_id, sourceDocumentSha256: doc.document_sha256,
+      direction: doc.direction, date: doc.transaction_date,
+      amount: decimal(BigInt(doc.amount_cents)),
+    };
+    if (doc.transaction_id !== body.transactionId ||
+        prepareFutureCashSource(source).sourceFingerprint !== doc.source_fingerprint ||
+        source.date < account.created_at.slice(0, 10) ||
+        doc.object_bucket !== "private-uploads" ||
+        !/^\/objects\/uploads\/[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\.(pdf|png|jpe?g|webp)$/.test(doc.object_path) ||
+        !Number.isSafeInteger(doc.byte_length) || doc.byte_length < 1 ||
+        doc.byte_length > cashDocumentUploadLimit) {
+      res.status(409).json({ code: "SC_CASH_DOCUMENT_BINDING_INVALID" });
+      return;
+    }
+    const size = await pendingEvidenceStorage.getObjectEntitySize(doc.object_path);
+    const file = await pendingEvidenceStorage.getObjectEntityFile(doc.object_path);
+    if (size !== doc.byte_length || file.bucket !== doc.object_bucket ||
+        file.path !== doc.object_path.slice("/objects/".length)) {
+      res.status(409).json({ code: "SC_CASH_DOCUMENT_READBACK_INVALID" });
+      return;
+    }
+    const bytes = Buffer.from(await (await pendingEvidenceStorage.downloadObject(file, 0)).arrayBuffer());
+    const magic = doc.object_path.endsWith(".pdf") ? bytes.subarray(0, 5).toString("ascii") === "%PDF-"
+      : doc.object_path.endsWith(".png") ? bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))
+      : doc.object_path.endsWith(".webp") ? bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP"
+      : bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
+    if (bytes.length !== size || !magic ||
+        createHash("sha256").update(bytes).digest("hex") !== doc.document_sha256) {
+      res.status(409).json({ code: "SC_CASH_DOCUMENT_READBACK_INVALID" });
+      return;
+    }
+    const event = await pool.query([
+      "insert into public.sc_future_cash_document_events",
+      " (transaction_id,event_type,document_sha256,source_fingerprint,actor_email,actor_role)",
+      " select d.transaction_id,'VERIFIED',d.document_sha256,d.source_fingerprint,$4,$5",
+      " from public.sc_future_cash_documents d",
+      " where d.transaction_id=$1::uuid and d.company_id=1 and d.account_id=18",
+      " and d.cash_coa_id=75839 and d.document_sha256=$2 and d.source_fingerprint=$3",
+      " and not exists (select 1 from public.sc_future_cash_document_events e where e.transaction_id=d.transaction_id)",
+      " returning event_id",
+    ].join("\n"), [body.transactionId, doc.document_sha256, doc.source_fingerprint, actorEmail, actorRole]);
+    if (event.rowCount !== 1) {
+      res.status(409).json({ code: "SC_CASH_DOCUMENT_NOT_PENDING" });
+      return;
+    }
+    res.status(201).json({ transactionId: body.transactionId, status: "VERIFIED", postingAllowed: false });
+  } catch {
+    res.status(503).json({ code: "SC_CASH_DOCUMENT_VERIFICATION_UNAVAILABLE" });
   }
 });
 
