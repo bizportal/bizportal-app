@@ -84,7 +84,7 @@ describe("Owner-only Account18 future cash readonly preview HTTP",()=>{
   it("readiness lists only candidate COA and always blocks posting",async()=>{
     const r=await get();
     expect(r.status).toBe(200);
-    const result=await r.json();
+    const result=await r.json() as {reasons:string[]};
     expect(result).toMatchObject({
       mode:"READ_ONLY_FUTURE_CASH_DEV",postingAllowed:false,
       signedOwnerSession:"VERIFIED",historicalSheetConfig5:"NOT_USED_NONMIGRATION",
@@ -109,7 +109,8 @@ describe("Owner-only Account18 future cash readonly preview HTTP",()=>{
     expect(JSON.stringify(parsed)).not.toContain("sourceKey");
     const outgoing=await post({...input,direction:"OUT",amount:"45000.75"});
     expect(outgoing.status).toBe(200);
-    expect((await outgoing.json()).proposedLines).toMatchObject([
+    const outgoingBody=await outgoing.json() as {proposedLines:unknown[]};
+    expect(outgoingBody.proposedLines).toMatchObject([
       {debit:"0.00",credit:"45000.75"},
       {debit:"45000.75",credit:"0.00"},
     ]);

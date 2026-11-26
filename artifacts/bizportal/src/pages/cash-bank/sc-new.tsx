@@ -56,7 +56,7 @@ export default function ScNewCashPreview() {
         const response=await fetch(ENDPOINT+"/readiness?company_id=1",{
           credentials:"include",cache:"no-store",signal:controller.signal,
         });
-        const payload=await response.json().catch(()=>null);
+        const payload=await response.json().catch(()=>null) as Readiness | null;
         if(!response.ok)throw Error(response.status===401
           ?"Diperlukan login OTP Owner/Super Admin yang sah."
           :"Pratinjau kas belum tersedia (HTTP "+response.status+").");
@@ -90,7 +90,7 @@ export default function ScNewCashPreview() {
         body:JSON.stringify({companyId:1,accountId:18,date,direction,
           amount,counterCoaId:choice.id}),
       });
-      const payload=await response.json().catch(()=>null);
+      const payload=await response.json().catch(()=>null) as Preview | null;
       if(version!==companyRequestVersion.current)return;
       if(!response.ok)throw Error("Validasi pratinjau ditolak (HTTP "+
         response.status+", "+String(payload?.code??"INVALID")+").");
