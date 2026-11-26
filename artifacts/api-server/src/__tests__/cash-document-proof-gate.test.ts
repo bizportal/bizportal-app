@@ -49,7 +49,11 @@ describe("read-only primary-document-to-cash-row matching contract",()=>{
   it("does not accept duplicate document identity or duplicate row candidates",()=>{
     expect(validateCashDocumentProofs(scope,[row],[doc,doc]).verified).toBe(0);
     expect(validateCashDocumentProofs(scope,[row,{...row,rowNumber:4}],[doc,{...doc,physicalRow:4}]).verified).toBe(0);
-    expect(validateCashDocumentProofs(scope,[row,row],[doc]).verified).toBe(1);
+    const duplicates = validateCashDocumentProofs(scope,[row,row],[doc]);
+    expect(duplicates).toMatchObject({
+      verified:0,blocked:2,reasonCounts:{INVALID_SOURCE_ROW:2},readyForCommit:false,
+    });
+    expect(duplicates.verifiedEvidence).toHaveLength(0);
   });
   it("fails closed on unauthorized cash scope",()=>{
     expect(()=>validateCashDocumentProofs({...scope,accountId:17},[row],[doc]))
