@@ -67,19 +67,23 @@ export function validateCashDocumentProofs(
   }
   const reasonCounts: Record<string, number> = {};
   const verifiedEvidence: CounterCoaEvidence[] = [];
-  const seenSourceRows = new Set<number>();
+  // No source row may be trusted when it occurs more than once in the
+  // incoming batch. Reject EVERY occurrence, regardless of order.
+  const rowCounts = new Map<number, number>();
+  for (const row of parsedRows) {
+    rowCounts.set(row.rowNumber, (rowCounts.get(row.rowNumber) ?? 0) + 1);
+  }
   const block = (reason: string): void => {
     reasonCounts[reason] = (reasonCounts[reason] ?? 0) + 1;
   };
   for (const row of parsedRows) {
-    if (!positive(row.rowNumber) || seenSourceRows.has(row.rowNumber)
+    if (!positive(row.rowNumber) || rowCounts.get(row.rowNumber) !== 1
       || !fingerprintValid(row.sourceFingerprint) || !positive(row.amountCents)
       || !goodDate(row.transactionDate) ||
       !["IN","OUT"].includes(row.direction)) {
       block("INVALID_SOURCE_ROW");
       continue;
     }
-    seenSourceRows.add(row.rowNumber);
     const docs = byRow.get(row.rowNumber) ?? [];
     if (docs.length === 0) { block("MISSING_DOCUMENT"); continue; }
     if (docs.length !== 1 || ambiguousDocs.has(docs[0]!.documentId)) {
