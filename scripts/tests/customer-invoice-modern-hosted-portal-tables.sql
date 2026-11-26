@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS public.portal_customer_notifications(
 );
 INSERT INTO public.portal_customers(id,name,email,role,account_status) VALUES
 (501,'Synthetic Global Owner Portal Admin','qa-owner@example.invalid','admin','active'),
-(503,'Synthetic Diva Admin','qa-issuer-diva@example.invalid','admin','active');
+(503,'Synthetic Diva Admin','qa-issuer-diva@example.invalid','admin','active'),
+(504,'Synthetic Unassigned Admin','qa-unassigned@example.invalid','admin','active');
 INSERT INTO public.portal_company_members(portal_customer_id,company_id,is_active)
 VALUES (501,1,true),(503,3,true);
