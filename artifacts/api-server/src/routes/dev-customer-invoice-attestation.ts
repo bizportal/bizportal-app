@@ -53,6 +53,7 @@ export function getCustomerInvoiceAttestationPublicKeyDev(): string {
 
 function canonicalChallenge(raw: string): {
   companyId: number; invoiceId: number; portalEmail: string;
+  reviewDigest: string | null;
 } | null {
   if (typeof raw !== "string" || raw.length < 60 || raw.length > 1600 ||
       !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(raw)) return null;
@@ -75,7 +76,10 @@ function canonicalChallenge(raw: string): {
         typeof data.iat !== "number" || typeof data.exp !== "number" ||
         data.exp <= Date.now() || data.exp > Date.now() + MAX_AGE_MS ||
         data.iat > Date.now() + 5_000 || data.exp - data.iat > MAX_AGE_MS) return null;
-    return {companyId, invoiceId, portalEmail:data.portalEmail.trim().toLowerCase()};
+    const reviewDigest=typeof data.reviewDigest==="string"
+      && /^[a-f0-9]{64}$/.test(data.reviewDigest)?data.reviewDigest:null;
+    return {companyId, invoiceId,
+      portalEmail:data.portalEmail.trim().toLowerCase(),reviewDigest};
   } catch { return null; }
 }
 
@@ -96,6 +100,53 @@ function createProof(args: {
   const signature = sign(null, Buffer.from(PROOF_DOMAIN + body), getSigningKey())
     .toString("base64url");
   return body + "." + signature;
+}
+
+// Data is never copied into URL, query string or token; Owner sees the
+// authoritative Portal source via this strictly pinned, short-lived ticket.
+function esc(value:unknown):string {
+  return String(value??"").replace(/[&<>"']/g,
+    ch=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]??""));
+}
+function idr(value:unknown):string {
+  const str=String(value??"");
+  if(!/^\d{1,14}\.\d{2}$/.test(str))throw Error("DEV_REVIEW_AMOUNT_INVALID");
+  const [whole,decimal]=str.split(".");
+  return "Rp "+whole.replace(/\B(?=(\d{3})+(?!\d))/g,".")+","+decimal;
+}
+async function fetchPinnedReview(target:string,ticket:string,claims:{
+  companyId:number;invoiceId:number;reviewDigest:string|null;
+}) {
+  if(!claims.reviewDigest || !/^[a-f0-9]{64}$/.test(claims.reviewDigest))
+    throw Error("DEV_OWNER_REVIEW_DIGEST_MISSING");
+  const url=target+"/api/portal/dev/invoice-owner-handoff/"+ticket+"/review";
+  const result=await fetch(url,{
+    method:"GET",headers:{accept:"application/json"},cache:"no-store",
+    redirect:"error",signal:AbortSignal.timeout(2500),
+  });
+  if(!result.ok)throw Error("DEV_OWNER_REVIEW_UNAVAILABLE");
+  const data=await result.json() as {snapshot?:Record<string,unknown>;digest?:string};
+  const value=data?.snapshot;
+  if(!value || typeof value!=="object" || Array.isArray(value) ||
+      Number(value.schemaVersion)!==1 ||
+      value.companyId!==claims.companyId ||
+      value.invoiceId!==claims.invoiceId ||
+      value.currency!=="IDR" ||
+      typeof value.customerName!=="string" || !value.customerName.trim() ||
+      typeof value.documentNumber!=="string" || !value.documentNumber.trim() ||
+      !["to_invoice","invoiced"].includes(String(value.invoiceStatus)) ||
+      !/^\d{1,3}\.\d{3}$/.test(String(value.ppnRatePercent??""))) {
+    throw Error("DEV_OWNER_REVIEW_INVALID");
+  }
+  // Require exact same byte-serialized canonical snapshot held in Portal's
+  // HMAC challenge. A mismatched/tampered summary fails before Owner sees
+  // a usable approval form, even though this transport uses HTTPS.
+  const digest=createHash("sha256").update(JSON.stringify(value),"utf8").digest("hex");
+  if(digest!==claims.reviewDigest || data.digest!==claims.reviewDigest)
+    throw Error("DEV_OWNER_REVIEW_DIGEST_MISMATCH");
+  // Validate all money strings without guessing or recalculating tax.
+  for(const key of ["subtotal","ppn","total"])idr(value[key]);
+  return value;
 }
 
 router.get("/auth/dev/customer-invoice-attestation", async (
@@ -121,9 +172,14 @@ router.get("/auth/dev/customer-invoice-attestation", async (
     // the original BizPortal user are checked via its original auth code.
     const session = getProductionSession(request);
     const actor = session ? await getProductionUser(session) : null;
+    // The Portal issuer can be a DIFFERENT person from the BizPortal Owner
+    // approving this exact challenge. Never equate Portal issuer email with
+    // the cryptographically authenticated Owner's email.
+    // The signed BizPortal session stays pinned to its own active DB account.
     if (!actor || actor.id !== session?.id ||
-        actor.email.trim().toLowerCase() !== claims.portalEmail ||
-        actor.role !== "super_admin" || actor.companyId !== null) {
+        actor.email.trim().toLowerCase() !== session.email ||
+        actor.role !== "super_admin" ||
+        (actor.companyId !== null && Number(actor.companyId) !== claims.companyId)) {
       response.status(401).json({error:"Signed BizPortal Super Admin session required"});
       return;
     }
@@ -131,6 +187,58 @@ router.get("/auth/dev/customer-invoice-attestation", async (
       actorId:actor.id,email:actor.email.trim().toLowerCase(),
       challenge,companyId:claims.companyId,invoiceId:claims.invoiceId,
     });
+    const handoff = typeof request.query.handoff === "string"
+      ? request.query.handoff : "";
+    // When signed financial review is mandatory, the original bare popup
+    // must not mint a financial authorization without showing source details.
+    if (!handoff && process.env.BIZPORTAL_CUSTOMER_INVOICE_SIGNED_REVIEW_SNAPSHOT_DEV === "true") {
+      response.status(409).json({error:"Ringkasan Invoice Owner wajib diverifikasi sebelum persetujuan."});
+      return;
+    }
+    if (handoff) {
+      if (process.env.BIZPORTAL_CUSTOMER_INVOICE_HANDOFF_DEV !== "true" ||
+          process.env.BIZPORTAL_CUSTOMER_INVOICE_SIGNED_REVIEW_SNAPSHOT_DEV !== "true" ||
+          !claims.reviewDigest ||
+          !/^[A-Za-z0-9_-]{43}$/.test(handoff)) {
+        response.status(404).json({error:"Invoice handoff not available"});
+        return;
+      }
+      // A signed-in Owner can review the transaction on their OWN device.
+      // Explicit button press sends only the short-lived signed proof, not
+      // the Owner's cookie, session token, password or email OTP.
+      const target = (process.env.BIZPORTAL_CUSTOMER_PORTAL_ORIGIN_DEV ?? "").trim();
+      let origin:URL;
+      try {origin=new URL(target);}
+      catch {response.status(503).json({error:"Portal origin not configured"});return;}
+      if (origin.origin !== target ||
+          !(origin.protocol === "https:" ||
+            (origin.protocol === "http:" && origin.hostname === "127.0.0.1"))) {
+        response.status(503).json({error:"Portal origin not trusted"});
+        return;
+      }
+      const summary=await fetchPinnedReview(target,handoff,claims);
+      response.setHeader("Content-Security-Policy",
+        "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; "+
+        "form-action "+target);
+      response.status(200).type("html").send(
+        "<!doctype html><html lang=\"id\"><meta charset=\"utf-8\">"+
+        "<title>Persetujuan Invoice</title><body>"+
+        "<h1>Persetujuan Invoice</h1>"+
+        "<p>Perusahaan: "+esc(summary.companyName)+"</p>"+
+        "<p>Nomor dokumen: "+esc(summary.documentNumber)+"</p>"+
+        "<p>Customer: "+esc(summary.customerName)+"</p>"+
+        "<p>Nilai sebelum pajak: "+esc(idr(summary.subtotal))+"</p>"+
+        "<p>PPN "+esc(summary.ppnRatePercent)+"%: "+esc(idr(summary.ppn))+"</p>"+
+        "<p>Total tagihan: <strong>"+esc(idr(summary.total))+"</strong></p>"+
+        "<p>Persetujuan hanya berlaku untuk rincian ini. "+
+        "Jika angka berubah, sistem menolak penerbitan.</p>"+
+        "<form method=\"POST\" action=\""+target+
+          "/api/portal/dev/invoice-owner-handoff/"+handoff+"\">"+
+        "<input type=\"hidden\" name=\"proof\" value=\""+proof+"\">"+
+        "<button type=\"submit\">Setujui satu kali</button></form>"+
+        "</body></html>");
+      return;
+    }
     if (request.headers.accept?.includes("application/json")) {
       response.json({proof,expiresInSeconds:60});
       return;
