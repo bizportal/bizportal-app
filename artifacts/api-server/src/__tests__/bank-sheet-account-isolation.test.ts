@@ -493,6 +493,10 @@ describe("CST-DEV Kas Besar SC read-only preflight", () => {
     expect(routeSource).toContain("from public.company_bank_accounts where id=$1 and company_id=$2");
     expect(routeSource).toContain("openingBalanceMatchesAccount");
     expect(routeSource).toContain("openingBalanceContext,");
+    expect(routeSource).toContain("a.rowNumber - b.rowNumber");
+    expect(routeSource).toContain("firstSourceRow.transactionDate");
+    expect(routeSource).not.toContain("draftInputs.reduce<string | null>");
+
     expect(routeSource).toContain("DISTINCT_BASELINES_NONMIGRATION");
     expect(routeSource).toContain("SOURCE_PROVENANCE_UNVERIFIED");
     expect(routeSource).toContain("READ_ONLY_DO_NOT_ADJUST_ACCOUNT_OR_POST_OPENING");
