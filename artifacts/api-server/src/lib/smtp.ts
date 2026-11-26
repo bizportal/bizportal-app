@@ -224,7 +224,14 @@ function dotStuff(value: string): string {
     .join("\r\n");
 }
 
-export async function sendAdminLoginOtpEmail(recipient: string, code: string): Promise<void> {
+async function sendScopedOtpEmail(
+  recipient: string, code: string, scope: "login" | "cash-voucher",
+  voucherId?: string,
+): Promise<void> {
+  if (scope === "cash-voucher" &&
+      (!voucherId || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(voucherId))) {
+    throw new SmtpError("Invalid cash voucher identifier");
+  }
   const config = await resolveSmtpConfig();
   const safeRecipient = validateAddress(recipient);
   if (!/^\d{6}$/.test(code)) throw new SmtpError("OTP format is invalid");
@@ -263,15 +270,18 @@ export async function sendAdminLoginOtpEmail(recipient: string, code: string): P
     await command(socket, `RCPT TO:<${safeRecipient}>`, [250, 251]);
     await command(socket, "DATA", 354);
 
+    const cashVoucher = scope === "cash-voucher";
     const message = [
       `From: ${config.from}`,
       `To: ${safeRecipient}`,
-      "Subject: Kode OTP Login BizPortal",
+      cashVoucher ? "Subject: Kode OTP Persetujuan Voucher Kas Besar SC" : "Subject: Kode OTP Login BizPortal",
       "MIME-Version: 1.0",
       "Content-Type: text/plain; charset=UTF-8",
       "",
-      "Kode OTP Login BizPortal",
+      cashVoucher ? "Kode OTP Persetujuan Voucher Kas Besar SC" : "Kode OTP Login BizPortal",
       "",
+      ...(cashVoucher ? [`Voucher: ${voucherId}`,
+        "Kode ini hanya untuk persetujuan voucher tersebut, bukan untuk login atau transaksi lain.", ""] : []),
       `Kode Anda: ${code}`,
       "Kode ini berlaku selama 5 menit dan hanya dapat digunakan satu kali.",
       "Jangan bagikan kode ini kepada siapa pun.",
@@ -286,4 +296,16 @@ export async function sendAdminLoginOtpEmail(recipient: string, code: string): P
   } finally {
     socket?.end();
   }
+}
+
+/** Existing login OTP remains unchanged; cash vouchers get a distinct email. */
+export async function sendAdminLoginOtpEmail(recipient: string, code: string): Promise<void> {
+  return sendScopedOtpEmail(recipient, code, "login");
+}
+
+/** Delivery only. Does not issue or verify an OTP, approve a voucher, or post cash. */
+export async function sendFutureCashVoucherOtpEmail(
+  recipient: string, code: string, voucherId: string,
+): Promise<void> {
+  return sendScopedOtpEmail(recipient, code, "cash-voucher", voucherId);
 }
