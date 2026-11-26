@@ -23,6 +23,9 @@ describe("Kas Besar SC future cash UI: DEV-only view and non-posting controls",(
     expect(page).not.toContain('cash-bank/petty-cash');
   });
   it("removes previous-company result, validates signed response, and shows posting blocked",()=>{
+    expect(page).toContain("draftRequestVersion.current++");
+    expect(page).toContain("draftVersion!==draftRequestVersion.current");
+    expect(page).toContain("invalidateDraft()");
     expect(page).toContain("controller.abort()");
     expect(page).toContain("version!==companyRequestVersion.current");
     expect(page).toContain("activeCompanyId!==1");
