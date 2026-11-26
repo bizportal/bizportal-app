@@ -10,12 +10,7 @@ import type { TrustedFutureCashApproval } from "./future-cash-approval-preflight
  * An authorized backend issuer/immutable audit is still required to create
  * matching records; never use client-provided approval metadata.
  */
-export interface CashApprovalSqlReader {
-  query<T extends Record<string, unknown>>(
-    sql: string, parameters: readonly unknown[],
-  ): Promise<{ rows: T[] }>;
-}
-type EvidenceRow = Record<string, unknown> & {
+type EvidenceRow = {
   transaction_id: string;
   source_fingerprint: string;
   account_id: number;
@@ -29,6 +24,9 @@ type EvidenceRow = Record<string, unknown> & {
   otp_email: string | null;
   otp_verified_at: string | null;
 };
+export interface CashApprovalSqlReader {
+  query(sql: string, parameters: readonly unknown[]): Promise<{ rows: EvidenceRow[] }>;
+}
 
 const validUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const validFingerprint = /^[a-f0-9]{64}$/;
@@ -52,7 +50,7 @@ export async function readPurposeBoundFutureCashApproval(
   try {
     const { sourceFingerprint } = prepareFutureCashSource(source);
     const purpose = futureCashOtpPurpose(source.transactionId, sourceFingerprint);
-    const result = await reader.query<EvidenceRow>(
+    const result = await reader.query(
       `select a.company_id,
               a.status, a.approval_type, a.approver_role, a.approved_by,
               a.approved_at::text as approved_at,
