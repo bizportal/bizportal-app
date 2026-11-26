@@ -8495,8 +8495,11 @@ router.get("/bank-reconciliation/sheet-configs/5/preview", async (req, res): Pro
       }
     }
     // Dedicated company-scoped DEV reader: no bank_mutations SELECT/write grants.
-    const baseline = await reader.query<{ opening_balance: string | number | null; coa_id: number | null }>(
-      "select opening_balance, coa_id from public.company_bank_accounts where id=$1 and company_id=$2 and account_type='cash' and is_active=true",
+    const baseline = await reader.query<{
+      opening_balance: string | number | null; coa_id: number | null;
+      notes: string | null; created_at: Date | string | null;
+    }>(
+      "select opening_balance, coa_id, notes, created_at from public.company_bank_accounts where id=$1 and company_id=$2 and account_type='cash' and is_active=true",
       [18, 1],
     );
     if (baseline.rows.length !== 1) {
@@ -8511,6 +8514,38 @@ router.get("/bank-reconciliation/sheet-configs/5/preview", async (req, res): Pro
       || validAccountOpeningBalance === null ? null
       : Math.round(balanceAudit.openingBalanceAmount * 100)
         === Math.round(validAccountOpeningBalance * 100);
+    // Provenance context only: the historical Sheet opening and the account
+    // created for future cash operations are not necessarily comparable.
+    // Do NOT turn a policy note into posting authorization or a journal.
+    const accountCreatedAtRaw = baseline.rows[0].created_at;
+    const accountCreatedAt = accountCreatedAtRaw == null ? null
+      : accountCreatedAtRaw instanceof Date
+        ? accountCreatedAtRaw.toISOString()
+        : new Date(accountCreatedAtRaw).toISOString();
+    const firstSourceTransactionDate = draftInputs.reduce<string | null>(
+      (earliest, row) => !/^\d{4}-\d{2}-\d{2}$/.test(row.transactionDate)
+        ? earliest : earliest === null || row.transactionDate < earliest
+          ? row.transactionDate : earliest,
+      null,
+    );
+    const accountPolicyNotes = String(baseline.rows[0].notes ?? "");
+    const explicitlyNotForHistoricalMigration = accountPolicyNotes.includes(
+      "tidak digunakan untuk migrasi transaksi historis",
+    );
+    const createdAfterHistoricalSource = accountCreatedAt !== null
+      && firstSourceTransactionDate !== null
+      && accountCreatedAt.slice(0, 10) > firstSourceTransactionDate;
+    const openingBalanceContext = {
+      sourceOpeningBalance: balanceAudit.openingBalanceAmount,
+      accountOpeningBalance: validAccountOpeningBalance,
+      accountCreatedAt,
+      firstSourceTransactionDate,
+      explicitlyNotForHistoricalMigration,
+      comparisonStatus: explicitlyNotForHistoricalMigration && createdAfterHistoricalSource
+        ? "DISTINCT_BASELINES_NONMIGRATION" : "SOURCE_PROVENANCE_UNVERIFIED",
+      policy: "READ_ONLY_DO_NOT_ADJUST_ACCOUNT_OR_POST_OPENING",
+      readyForCommit: false,
+    };
     // Fail closed if the account has lost its previously verified cash COA.
     if (Number(baseline.rows[0].coa_id) !== 75839) {
       res.status(409).json({ ok: false, error: "COA Kas Besar SC tidak sesuai baseline DEV" });
@@ -8563,6 +8598,7 @@ router.get("/bank-reconciliation/sheet-configs/5/preview", async (req, res): Pro
         rawBalanceReconciliation,
         accountOpeningBalance: validAccountOpeningBalance,
         openingBalanceMatchesAccount,
+        openingBalanceContext,
         databaseDuplicateCheck: "NOT_RUN_NO_MUTATIONS_READER_PRIVILEGE",
         proposedRows: initial.totalParsedRows,
         freshCandidates: initial.newRows,
