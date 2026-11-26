@@ -409,6 +409,10 @@ export function AppShell({ children, noPadding }: AppShellProps) {
         { titleKey: "Rekonsiliasi",    href: "/accounting/bank-reconciliation",  icon: ClipboardCheck },
         { titleKey: "Forecast",        href: "/cash-bank/forecast",        icon: TrendingUp },
         { titleKey: "Petty Cash",      href: "/cash-bank/petty-cash",      icon: Wallet },
+        ...(typeof window !== "undefined"
+          && window.location.hostname === "dev-bizportal.cstlogistic.co.id" ? [
+            { titleKey: "Kas Besar SC (DEV)", href: "/cash-bank/sc-new", icon: Wallet },
+          ] : []),
         { titleKey: "Pengaturan",      href: "/cash-bank/settings",        icon: Settings },
       ],
     },
