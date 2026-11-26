@@ -328,6 +328,14 @@ describe("CST-DEV cash draft preflight integration", () => {
     expect(routeSource).toContain("const draftInputs = prepareCashLedgerDraftInputs(rows, scope)");
     expect(routeSource).toContain("const draftPlan = planCashLedgerDrafts(");
     expect(routeSource).toContain("blockedMissingCounterCoa:");
+    expect(routeSource).toContain("const evidenceDraftPlan = planEvidenceScopedCashDrafts(");
+    expect(routeSource).toContain("const cashEvidenceReadiness = {");
+    expect(routeSource).toContain("evidenceEligibleRows: evidenceDraftPlan.evidence.eligibleRows");
+    expect(routeSource).toContain("evidenceBlockedRows: evidenceDraftPlan.evidence.blockedRows");
+    expect(routeSource).toContain("read_only_no_verified_counter_coa_source");
+    expect(routeSource).toContain("cashEvidenceReadiness,");
+    expect(routeSource).toContain("[], // No independently verified counter-COA evidence exists yet.");
+
     expect(routeSource).toContain("counterCoaAssignment: \"UNMAPPED_REQUIRES_VERIFIED_ACCOUNTING_SOURCE\"");
     expect(routeSource).toContain("readyForCommit: false");
     expect(routeSource).toContain('router.get("/bank-reconciliation/sheet-configs/5/preview"');

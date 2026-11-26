@@ -22,6 +22,7 @@ import {
   explainCashRawBalanceDifferences,
 } from "../lib/bank-sheet-sync";
 import { planCashLedgerDrafts } from "../lib/cash-ledger-draft-planner";
+import { planEvidenceScopedCashDrafts } from "../lib/cash-evidence-draft-bridge";
 import {
   getDevSession,
   getProductionSession,
@@ -8518,6 +8519,24 @@ router.get("/bank-reconciliation/sheet-configs/5/preview", async (req, res): Pro
     const draftPlan = planCashLedgerDrafts(
       { ...scope, cashCoaId: 75839 }, draftInputs,
     );
+    // PR #227 evidence bridge: explicit empty trusted-source set until
+    // a separately verified, company-scoped document reader is available.
+    // Do not treat a client-supplied reference or sheet narrative as proof.
+    const evidenceDraftPlan = planEvidenceScopedCashDrafts(
+      { ...scope, cashCoaId: 75839 },
+      draftInputs,
+      [], // No independently verified counter-COA evidence exists yet.
+      [], // No account may be selected without valid upstream evidence.
+    );
+    const cashEvidenceReadiness = {
+      sourceRows: draftInputs.length,
+      evidenceEligibleRows: evidenceDraftPlan.evidence.eligibleRows,
+      evidenceBlockedRows: evidenceDraftPlan.evidence.blockedRows,
+      draftRows: evidenceDraftPlan.draft.proposals.length,
+      missingEvidence: evidenceDraftPlan.evidence.reasonCounts.EVIDENCE_MISSING ?? 0,
+      mode: "read_only_no_verified_counter_coa_source",
+      readyForCommit: false,
+    };
     const cashDraftReadiness = {
       parsedRows: draftInputs.length,
       mappedRows: draftPlan.proposals.length,
@@ -8539,6 +8558,7 @@ router.get("/bank-reconciliation/sheet-configs/5/preview", async (req, res): Pro
         balanceAudit,
         cashSourceSentinels,
         cashDraftReadiness,
+        cashEvidenceReadiness,
         mismatchCellEvidence,
         rawBalanceReconciliation,
         accountOpeningBalance: validAccountOpeningBalance,
