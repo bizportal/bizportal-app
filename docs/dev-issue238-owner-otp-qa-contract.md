@@ -44,3 +44,24 @@ issue or verify an OTP itself; no second user login or second signing secret is 
    before considering a separate hosted DBA installation or Invoice #108.
 
 **Do not treat this endpoint's JSON or a successful unit test as a runtime QA approval.**
+
+## Exact AI Core command/job binding — source change 26 Nov 2026
+
+The Owner QA #238 challenge now **requires** both real, canonical AI Core
+command and task UUIDs (`commandId`, `jobId`). It no longer generates synthetic
+`CMD-*` and `JOB-*` identifiers that cannot match AI Core's durable work
+records. Both IDs become part of the HMAC-protected challenge, explicit Owner
+consent and Ed25519-signed claims. The Owner UI displays two labeled fields
+and an exact-target confirmation, and refuses requests with missing or invalid
+UUIDs. Existing DEV-only, fresh signed Owner OTP, three-test allowlist,
+short expiry, exact purpose, same-origin POST and independent issuer remain.
+
+**Important boundary:** this BizPortal route validates UUID *shape*, not the
+existence, ownership or active lease of a claimed AI Core work item. A trusted
+control-plane adapter must derive those IDs from an authenticated active
+claim and supply them to the Owner; the isolated runner must verify them
+again against the authoritative durable claim before accepting an Owner
+signature. This source change does not provide such an adapter and does not
+send approvals, install a runner, execute SQL, or enable a Finance actor.
+The old unbound issuance path fails closed rather than silently creating
+unusable signed receipts. PROD is out of scope.

@@ -57,6 +57,10 @@ describe("Owner QA #238 consent UI fail-closed",()=>{
   const r=await fetch(url());expect(r.status).toBe(200);
   const html=await r.text();
   expect(html).toContain('id="approve"');
+  expect(html).toContain('id="commandId"');
+  expect(html).toContain('id="jobId"');
+  expect(html).toContain('&commandId=');
+  expect(html).toContain('&jobId=');
   expect(html).toContain("Setujui QA #238 DEV");
   expect(html).toContain("belum mengirim ke pelaksana");
   expect(html).toContain("credentials:\"same-origin\"");
