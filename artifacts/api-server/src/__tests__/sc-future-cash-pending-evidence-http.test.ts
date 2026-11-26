@@ -7,6 +7,7 @@ import { once } from "node:events";
 const mock = vi.hoisted(() => ({
   signed: true, enabled: true, actorRole: "owner", actorCompany: 1,
   actorEmail: "owner@example.test", accountValid: true,
+  verifiedEvents: 0, pendingDoc: null as Record<string, unknown> | null,
   storageWrites: 0, storageDeletes: [] as string[],
   storageBytes: null as Buffer | null,
   wrongStoredBytes: false, dbInsertFailure: false, queries: [] as string[],
@@ -26,7 +27,7 @@ vi.mock("../routes/dev-auth", () => ({
   }),
 }));
 vi.mock("@workspace/db", () => ({
-  pool: { query: async (sql: string) => {
+  pool: { query: async (sql: string, args: unknown[] = []) => {
     mock.queries.push(sql);
     if (sql.includes("from public.company_bank_accounts a")) return { rows: [{
       id: 18, name: "Kas Besar SC", account_type: "cash",
@@ -38,7 +39,14 @@ vi.mock("@workspace/db", () => ({
     }] };
     if (sql.includes("insert into public.sc_future_cash_documents")) {
       if (mock.dbInsertFailure) throw Error("INSERT_FAILED");
+      mock.pendingDoc = { transaction_id: args[0], object_bucket: "private-uploads", object_path: args[1], document_sha256: args[2], source_fingerprint: args[3], direction: args[4], transaction_date: args[5], amount_cents: args[6], byte_length: args[7], event_type: null };
       return { rowCount: 1, rows: [] };
+    }
+    if (sql.includes("from public.sc_future_cash_documents d") && sql.startsWith("select")) return { rows: mock.pendingDoc && mock.pendingDoc.transaction_id === args[0] ? [mock.pendingDoc] : [] };
+    if (sql.includes("insert into public.sc_future_cash_document_events")) {
+      if (!mock.pendingDoc || mock.pendingDoc.event_type !== null) return { rowCount: 0, rows: [] };
+      mock.pendingDoc.event_type = "VERIFIED"; mock.verifiedEvents++;
+      return { rowCount: 1, rows: [{ event_id: 1 }] };
     }
     throw Error("UNEXPECTED_SQL");
   } },
@@ -97,6 +105,7 @@ describe("Account18 pending receipt intake HTTP — no journal or approval", () 
     mock.actorRole = "owner"; mock.actorCompany = 1;
     mock.actorEmail = "owner@example.test"; mock.accountValid = true;
     mock.storageWrites = 0; mock.storageBytes = null;
+    mock.pendingDoc = null; mock.verifiedEvents = 0;
     mock.wrongStoredBytes = false; mock.dbInsertFailure = false;
     mock.storageDeletes.length = 0; mock.queries.length = 0;
   });
@@ -188,4 +197,39 @@ describe("Account18 pending receipt intake HTTP — no journal or approval", () 
     expect((await post()).status).toBe(409);
     expect(mock.storageWrites).toBe(0);
   });
+  const verify = (transactionId: string, updates: Record<string, unknown> = {}, from = origin) =>
+    fetch(base + "/api/cash-bank/sc-new/documents/verify", {
+      method: "POST", headers: { Origin: from, "Content-Type": "application/json" },
+      body: JSON.stringify({ companyId: 1, accountId: 18, transactionId, confirmed: true, ...updates }),
+    });
+  it("explicit signed Owner review appends only one verified event after byte readback", async () => {
+    const uploaded = await post();
+    const { transactionId } = await uploaded.json() as { transactionId: string };
+    expect((await verify(transactionId)).status).toBe(201);
+    expect((await verify(transactionId)).status).toBe(409);
+    expect(mock.verifiedEvents).toBe(1);
+    expect(mock.queries.some(q => /accounting_entries|bank_mutations|approval_requests|bank_sheet_configs/.test(q))).toBe(false);
+  });
+  it("blocks unconfirmed, unauthorized, foreign-origin and forged verification", async () => {
+    const { transactionId } = await (await post()).json() as { transactionId: string };
+    expect((await verify(transactionId, { confirmed: false })).status).toBe(400);
+    expect((await verify(transactionId, { document_sha256: "forged" })).status).toBe(400);
+    expect((await verify(transactionId, {}, "https://malicious.invalid")).status).toBe(403);
+    mock.signed = false;
+    expect((await verify(transactionId)).status).toBe(401);
+    mock.signed = true; mock.actorRole = "finance";
+    expect((await verify(transactionId)).status).toBe(403);
+    expect(mock.verifiedEvents).toBe(0);
+  });
+  it("does not verify changed stored bytes or mismatched server source", async () => {
+    const { transactionId } = await (await post()).json() as { transactionId: string };
+    mock.wrongStoredBytes = true;
+    expect((await verify(transactionId)).status).toBe(409);
+    mock.wrongStoredBytes = false;
+    if (!mock.pendingDoc) throw Error("MISSING_FIXTURE");
+    mock.pendingDoc.source_fingerprint = "0".repeat(64);
+    expect((await verify(transactionId)).status).toBe(409);
+    expect(mock.verifiedEvents).toBe(0);
+  });
+
 });
