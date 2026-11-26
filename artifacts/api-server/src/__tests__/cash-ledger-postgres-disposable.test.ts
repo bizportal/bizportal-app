@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createRequire } from "node:module";
 import { disposableCashPgAdapter } from "../lib/cash-ledger-postgres-disposable";
 import { postCashJournal, prepareCashJournal, reverseCashJournalLines, type CashMovement } from "../lib/cash-ledger-posting";
+import { postFutureCashVoucherQa } from "../lib/cash-future-voucher";
 
 const url = process.env.CASH_QA_PG_URL;
 const suite = url ? describe : describe.skip;
@@ -136,6 +137,48 @@ suite("disposable PostgreSQL cash journal adapter (never business DB)", () => {
     expect(original.lines[0].creditCents).toBe(4500075n);
     expect(reversed[0].debitCents).toBe(4500075n);
     expect(reversed.reduce((acc,line)=>acc+line.debitCents-line.creditCents,0n)).toBe(0n);
+  });
+
+  it("QA future voucher UUID: atomic posting, unchanged replay, conflict, concurrent lock and rollback",async()=>{
+    // Uses same disposable cash_qa schema, not the historical Config5 source.
+    const futureScope={companyId:1,accountId:18,cashCoaId:75839,counterpartyCoaId:902};
+    const original={voucherId:"33333333-3333-4333-8333-333333333333",
+      date:"2026-11-27", direction:"IN" as const, amount:"150000.25",
+      documentSha256:"a".repeat(64),approvalSha256:"b".repeat(64)};
+    const before=(await pool.query("SELECT count(*)::int n FROM cash_qa.accounting_entries")).rows[0].n;
+    const first=await postFutureCashVoucherQa(adapter,futureScope,original);
+    expect(first.replay).toBe(false);
+    expect((await postFutureCashVoucherQa(adapter,futureScope,original)).replay).toBe(true);
+    await expect(postFutureCashVoucherQa(adapter,futureScope,
+      {...original,documentSha256:"c".repeat(64)}))
+      .rejects.toThrow("CASH_SOURCE_CHANGED_REVIEW_REQUIRED");
+    const concurrent={...original,voucherId:"44444444-4444-4444-8444-444444444444"};
+    const both=await Promise.all([
+      postFutureCashVoucherQa(adapter,futureScope,concurrent),
+      postFutureCashVoucherQa(adapter,futureScope,concurrent),
+    ]);
+    expect(both.filter(x=>x.replay)).toHaveLength(1);
+    expect(both.filter(x=>!x.replay)).toHaveLength(1);
+    const after=(await pool.query("SELECT count(*)::int n FROM cash_qa.accounting_entries")).rows[0].n;
+    expect(after).toBe(before+2);
+
+    await pool.query(`CREATE FUNCTION cash_qa.reject_voucher_998() RETURNS trigger
+      LANGUAGE plpgsql AS $$BEGIN
+        IF NEW.account_id=998 THEN RAISE EXCEPTION 'INJECTED_VOUCHER_LINE_FAILURE'; END IF;
+        RETURN NEW;
+      END$$`);
+    await pool.query(`CREATE TRIGGER reject_voucher_998 BEFORE INSERT ON cash_qa.accounting_entry_lines
+      FOR EACH ROW EXECUTE FUNCTION cash_qa.reject_voucher_998()`);
+    try {
+      await expect(postFutureCashVoucherQa(adapter,{...futureScope,counterpartyCoaId:998},
+        {...original,voucherId:"55555555-5555-4555-8555-555555555555"}))
+        .rejects.toThrow("INJECTED_VOUCHER_LINE_FAILURE");
+      expect((await pool.query("SELECT count(*)::int n FROM cash_qa.accounting_entries")).rows[0].n).toBe(after);
+      expect((await pool.query("SELECT count(*)::int n FROM cash_qa.cash_sources")).rows[0].n).toBe(after);
+    } finally {
+      await pool.query("DROP TRIGGER reject_voucher_998 ON cash_qa.accounting_entry_lines");
+      await pool.query("DROP FUNCTION cash_qa.reject_voucher_998()");
+    }
   });
 
 });
