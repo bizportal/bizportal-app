@@ -39,6 +39,8 @@ describe("read-only primary-document-to-cash-row matching contract",()=>{
       {direction:"IN"},{amountCents:11279},{documentStatus:"DRAFT"},
       {documentStatus:"REVOKED"},{verifiedAt:null},{verifiedBy:null},
       {counterCoaId:75839},
+      {verifiedAt:"1"},{verifiedAt:"2026-11-26"},{verifiedAt:"2026-11-26T12:00:00+07:00"},
+      {verifiedAt:"2026-02-30T12:00:00Z"},{verifiedAt:"2026-11-26T25:00:00Z"},
     ];
     for(const patch of alterations) {
       const result=validateCashDocumentProofs(scope,[row],[{...doc,...patch}]);
