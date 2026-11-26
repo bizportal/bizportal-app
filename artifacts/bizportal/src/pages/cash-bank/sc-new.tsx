@@ -40,11 +40,16 @@ export default function ScNewCashPreview() {
   const [direction,setDirection]=useState<"IN"|"OUT">("IN");
   const [amount,setAmount]=useState("");
   const [counterCoaId,setCounterCoaId]=useState("");
+  const [receiptFile,setReceiptFile]=useState<File|null>(null);
+  const [evidenceBusy,setEvidenceBusy]=useState(false);
+  const [pendingEvidence,setPendingEvidence]=useState<{transactionId:string;status:"PENDING_VERIFICATION"}|null>(null);
   const companyRequestVersion=useRef(0);
   const draftRequestVersion=useRef(0);
   const invalidateDraft=()=>{
     draftRequestVersion.current++;
     setPreview(null);
+    setReceiptFile(null);
+    setPendingEvidence(null);
     setBusy(false);
   };
 
@@ -53,6 +58,7 @@ export default function ScNewCashPreview() {
     const version=++companyRequestVersion.current;
     draftRequestVersion.current++;
     setPreview(null);setReadiness(null);setError(null);setBusy(false);
+    setReceiptFile(null);setPendingEvidence(null);
     if(activeCompanyId!==1){
       setError("Khusus PT Cahaya Sejati Teknologi (Company #1), Account #18.");
       return ()=>controller.abort();
@@ -114,6 +120,43 @@ export default function ScNewCashPreview() {
     }
   };
 
+  const uploadPendingEvidence=async()=>{
+    if(activeCompanyId!==1 || !preview || !receiptFile || evidenceBusy) return;
+    if(receiptFile.size>8*1024*1024 || receiptFile.size<5){
+      setError("Ukuran bukti harus lebih dari 0 dan maksimal 8 MB.");return;
+    }
+    const version=companyRequestVersion.current;
+    const draftVersion=draftRequestVersion.current;
+    setEvidenceBusy(true);setError(null);setPendingEvidence(null);
+    try{
+      const form=new FormData();
+      form.append("companyId","1");
+      form.append("accountId","18");
+      form.append("date",preview.date);
+      form.append("direction",preview.direction);
+      form.append("amount",preview.amount);
+      form.append("file",receiptFile,receiptFile.name);
+      const response=await fetch(ENDPOINT+"/documents/pending",{
+        method:"POST",credentials:"include",cache:"no-store",body:form,
+      });
+      const payload=await response.json().catch(()=>null) as ({
+        mode?:string;transactionId?:string;status?:string;
+        postingAllowed?:boolean;code?:string;
+      })|null;
+      if(version!==companyRequestVersion.current || draftVersion!==draftRequestVersion.current)return;
+      if(response.status!==201 || payload?.mode!=="PENDING_PRIVATE_CASH_EVIDENCE_DEV" ||
+          payload?.status!=="PENDING_VERIFICATION" || payload?.postingAllowed!==false ||
+          typeof payload.transactionId!=="string")
+        throw Error("Penyimpanan bukti belum berhasil (HTTP "+response.status+
+          ", "+String(payload?.code??"INVALID")+").");
+      setPendingEvidence({transactionId:payload.transactionId,status:"PENDING_VERIFICATION"});
+      setReceiptFile(null);
+    }catch(err){
+      if(version===companyRequestVersion.current && draftVersion===draftRequestVersion.current)
+        setError(err instanceof Error?err.message:"Penyimpanan bukti belum tersedia.");
+    }finally{setEvidenceBusy(false);}
+  };
+
   return (
     <div className="space-y-5">
       <div className="flex items-center gap-3">
@@ -128,8 +171,9 @@ export default function ScNewCashPreview() {
       <Card className="border-amber-500/30 bg-amber-500/10">
         <CardContent className="flex gap-3 py-4 text-sm text-amber-100">
           <ShieldAlert className="shrink-0" size={18}/>
-          <p>Hanya menghitung draft debit-kredit dalam memori. Belum ada verifikasi dokumen,
-            persetujuan OTP untuk posting, maupun penulisan jurnal. Jangan anggap kandidat COA sebagai bukti akuntansi.</p>
+          <p>Pratinjau debit-kredit hanya dihitung dalam memori. File bukti baru dapat disimpan
+            sebagai PENDING, tetapi belum ada verifikasi dokumen maupun persetujuan OTP untuk posting.
+            Tidak ada penulisan jurnal atau impor Sheet historis.</p>
         </CardContent>
       </Card>
       {error && <p role="alert" className="rounded-md border border-red-500/30 p-3 text-sm text-red-300">{error}</p>}
@@ -182,8 +226,8 @@ export default function ScNewCashPreview() {
               {busy?"Menghitung...":"Uji pratinjau saja (tanpa posting)"}
             </Button>
             <p className="text-xs text-slate-400">
-              Tidak ada tombol Simpan, Setujui, atau Posting pada tahap ini.
-              Sumber voucher UUID, dokumen asli, dan otorisasi posting harus diverifikasi oleh server.
+              Tidak ada tombol persetujuan atau posting jurnal. Penyimpanan file hanya menghasilkan
+              bukti PENDING yang harus diverifikasi kembali oleh server dan Owner/Super Admin.
             </p>
           </CardContent>
         </Card>
@@ -205,6 +249,24 @@ export default function ScNewCashPreview() {
                     <td className="text-right tabular-nums">Rp {money(line.credit)}</td>
                   </tr>)}</tbody>
               </table>
+            </div>
+            <div className="space-y-2 rounded-md border border-slate-600 p-3">
+              <Label htmlFor="sc-cash-evidence-file">File bukti transaksi baru (PDF/JPG/PNG/WebP, maksimal 8 MB)</Label>
+              <input id="sc-cash-evidence-file" type="file"
+                accept="application/pdf,image/jpeg,image/png,image/webp"
+                disabled={evidenceBusy||!!pendingEvidence}
+                onChange={e=>setReceiptFile(e.target.files?.[0]??null)}
+                className="block w-full text-xs text-slate-300" />
+              <Button type="button" variant="outline"
+                onClick={()=>void uploadPendingEvidence()}
+                disabled={evidenceBusy||!!pendingEvidence||!receiptFile||busy}>
+                {evidenceBusy?"Menyimpan bukti...":"Simpan bukti PENDING (tanpa posting)"}
+              </Button>
+              {pendingEvidence && <p role="status" className="text-sm text-slate-100">
+                Bukti baru tersimpan sebagai PENDING_VERIFICATION.
+                ID transaksi: <code className="break-all">{pendingEvidence.transactionId}</code>.
+                Belum ada verifikasi dokumen, persetujuan, atau posting keuangan.
+              </p>}
             </div>
             <p role="status" className="text-sm text-amber-200">
               Pratinjau seimbang. Klasifikasi COA lawan belum dibuktikan dengan dokumen.
