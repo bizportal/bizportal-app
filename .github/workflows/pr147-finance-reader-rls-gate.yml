@@ -1,0 +1,115 @@
+name: PR147 Finance Sheet Reader RLS Gate
+
+on:
+  pull_request:
+    paths:
+      - "artifacts/api-server/scripts/pr147-finance-sheet-scoped-reader-staged-only.sql"
+      - "artifacts/api-server/scripts/pr147-secret-readiness-preflight.mjs"
+      - "scripts/dev-pr147-actual-topology-preflight-readonly.sh"
+      - "artifacts/api-server/scripts/pr147-sheet-reader-rls-readiness-readonly.sql"
+      - "artifacts/api-server/scripts/pr147-finance-sheet-scoped-reader-rollback-staged-only.sql"
+      - "artifacts/api-server/scripts/tests/pr147-finance-reader-isolated-fixture.sql"
+      - ".github/workflows/pr147-finance-reader-rls-gate.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  disposable-reader-rls:
+    name: CST and Diva read-only isolation on disposable PostgreSQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: pr147_disposable_only
+          POSTGRES_DB: pr147_reader_ci
+        ports:
+          - 65436:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d pr147_reader_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: "65436"
+      PGUSER: postgres
+      PGPASSWORD: pr147_disposable_only
+      PGDATABASE: pr147_reader_ci
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify PR147 credential delivery gate rejects missing or ambiguous sources
+        run: |
+          set -eu
+          GATE=artifacts/api-server/scripts/pr147-secret-readiness-preflight.mjs
+          set +e
+          env -i PATH="$PATH" APP_ENV=development node "$GATE" >/tmp/pr147_cfg_missing 2>&1
+          missing=$?
+          env -i PATH="$PATH" APP_ENV=development PR147_BANK_SHEET_CST_GCP_SECRET_NAME_DEV=wrong-name PR147_BANK_SHEET_DIVA_GCP_SECRET_NAME_DEV=bizportal-pr147-bank-sheet-diva-dev GCP_SECRET_MANAGER_BOOTSTRAP_JSON=fixture node "$GATE" >/tmp/pr147_cfg_wrong 2>&1
+          wrong=$?
+          env -i PATH="$PATH" APP_ENV=development PR147_BANK_SHEET_CST_GCP_SECRET_NAME_DEV=bizportal-pr147-bank-sheet-cst-dev PR147_BANK_SHEET_DIVA_GCP_SECRET_NAME_DEV=bizportal-pr147-bank-sheet-diva-dev GCP_SECRET_MANAGER_BOOTSTRAP_JSON=fixture node "$GATE" >/tmp/pr147_cfg_synthetic 2>&1
+          synthetic=$?
+          env -i PATH="$PATH" APP_ENV=development PR147_BANK_SHEET_COMPANIES_GCP_SECRET_NAME_DEV=bizportal-marketplace-finance-dev-companies GCP_SECRET_MANAGER_BOOTSTRAP_JSON=fixture node "$GATE" >/tmp/pr147_cfg_bundle 2>&1
+          bundle=$?
+          env -i PATH="$PATH" APP_ENV=development PR147_BANK_SHEET_COMPANIES_GCP_SECRET_NAME_DEV=bizportal-marketplace-finance-dev-companies PR147_BANK_SHEET_CST_GCP_SECRET_NAME_DEV=bizportal-pr147-bank-sheet-cst-dev GCP_SECRET_MANAGER_BOOTSTRAP_JSON=fixture node "$GATE" >/tmp/pr147_cfg_bundle_ambiguous 2>&1
+          bundle_ambiguous=$?
+          env -i PATH="$PATH" bash scripts/dev-pr147-actual-topology-preflight-readonly.sh >/tmp/pr147_sha_missing 2>&1
+          sha_missing=$?
+          set -e
+          test "$missing" -eq 2
+          test "$wrong" -eq 2
+          test "$synthetic" -eq 0
+          test "$bundle" -eq 0
+          test "$bundle_ambiguous" -eq 2
+          test "$sha_missing" -eq 2
+          grep -q 'CST_READER_SOURCE=EXISTING_COMPANY_BUNDLE_PRESENT_UNVERIFIED' /tmp/pr147_cfg_bundle
+          grep -q 'DIVA_READER_SOURCE=EXISTING_COMPANY_BUNDLE_PRESENT_UNVERIFIED' /tmp/pr147_cfg_bundle
+          grep -q 'CONFIGURATION_PREFLIGHT=CONFIG_PRESENT_BUT_UNVERIFIED' /tmp/pr147_cfg_synthetic
+          grep -q 'CUTOVER_APPROVED=false' /tmp/pr147_cfg_synthetic
+          grep -q 'PREFLIGHT_BLOCKED=expected_candidate_sha_required' /tmp/pr147_sha_missing
+          echo "PASS: absent/wrong secrets and SHA refuse, synthetic config never authorizes cutover"
+      - name: Seed disposable CST / Diva identities and synthetic records
+        run: psql -v ON_ERROR_STOP=1 -f artifacts/api-server/scripts/tests/pr147-finance-reader-isolated-fixture.sql
+      - name: Apply staged policy to disposable PostgreSQL only
+        run: psql -v ON_ERROR_STOP=1 -f artifacts/api-server/scripts/pr147-finance-sheet-scoped-reader-staged-only.sql
+      - name: Runtime principal readiness must fail closed unless explicitly verified
+        run: |
+          set -eu
+          SCRIPT=artifacts/api-server/scripts/pr147-sheet-reader-rls-readiness-readonly.sql
+          psql -At -v ON_ERROR_STOP=1 -f "$SCRIPT" | grep -q 'BLOCKED_RUNTIME_PRINCIPAL_UNVERIFIED'
+          {
+            printf "BEGIN;\\nSET LOCAL app.pr147_expected_runtime_role = 'bizportal_finance_cst_login_dev';\\n"
+            cat "$SCRIPT"
+            printf "\\nROLLBACK;\\n"
+          } | psql -At -v ON_ERROR_STOP=1 | grep -q 'REVIEW_SIGNED_E2E'
+          echo "PASS: unknown principal blocked; explicitly verified role can only advance to signed E2E review"
+      - name: Verify CST-only read, Diva-only read and zero write permission
+        run: |
+          set -eu
+          cst="$(psql -Atqc "set session authorization bizportal_finance_cst_login_dev; select count(*) from public.bank_sheet_configs; select count(*) from public.company_bank_accounts; select count(*) from public.chart_of_accounts;" | tail -3)"
+          test "$cst" = "$(printf '2\n2\n2')"
+          diva="$(psql -Atqc "set session authorization bizportal_finance_diva_login_dev; select count(*) from public.bank_sheet_configs; select count(*) from public.company_bank_accounts; select count(*) from public.chart_of_accounts;" | tail -3)"
+          test "$diva" = "$(printf '1\n1\n1')"
+          test "$(psql -Atqc "select count(*) from public.bank_sheet_configs")" = "3"
+          set +e
+          psql -v ON_ERROR_STOP=1 -c "set session authorization bizportal_finance_cst_login_dev; update public.bank_sheet_configs set label='denied' where id=2" > /tmp/pr147_write_out 2> /tmp/pr147_write_err
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+          grep -q 'permission denied' /tmp/pr147_write_err
+          echo "PASS: CST=2, Diva=1, cross-company hidden, update denied, synthetic records unchanged"
+
+      - name: Verify rollback restores pre-policy privileges and leaves data intact
+        run: |
+          set -eu
+          psql -v ON_ERROR_STOP=1 -f artifacts/api-server/scripts/pr147-finance-sheet-scoped-reader-rollback-staged-only.sql
+          test "$(psql -Atqc "select count(*) from pg_policies where schemaname='public' and policyname like 'pr147_finance_%_sheet_read_dev'")" = "0"
+          test "$(psql -Atqc "select count(*) from pg_policies where schemaname='public' and policyname like 'pr147_finance_%_bank_read_dev'")" = "0"
+          test "$(psql -Atqc "select count(*) from public.bank_sheet_configs")" = "3"
+          test "$(psql -Atqc "select count(*) from public.company_bank_accounts")" = "3"
+          test "$(psql -Atqc "select has_table_privilege('bizportal_finance_cst_login_dev','public.bank_sheet_configs','SELECT')")" = "f"
+          test "$(psql -Atqc "select has_table_privilege('bizportal_finance_diva_login_dev','public.company_bank_accounts','SELECT')")" = "f"
+          test "$(psql -Atqc "select has_table_privilege('bizportal_finance_cst_login_dev','public.chart_of_accounts','SELECT')")" = "t"
+          echo "PASS: rollback removes PR147 policies/SELECT grants, preserves prior COA grant and synthetic rows"

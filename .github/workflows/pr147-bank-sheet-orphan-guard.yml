@@ -1,0 +1,174 @@
+name: PR147 Bank Sheet Orphan Migration Guard
+
+on:
+  pull_request:
+    paths:
+      - "artifacts/api-server/scripts/ensure-bank-sheet-account-isolation.sql"
+      - "artifacts/api-server/scripts/tests/bank-sheet-cutover-orphan-fixture.sql"
+      - ".github/workflows/pr147-bank-sheet-orphan-guard.yml"
+      - "artifacts/api-server/scripts/tests/bank-sheet-cutover-positive-fixture.sql"
+      - "artifacts/api-server/scripts/tests/bank-sheet-reader-rls-disposable.sql"
+      - "artifacts/api-server/scripts/tests/bank-sheet-account-join-compatibility.py"
+      - "artifacts/api-server/src/lib/bankSheetConfigAccountJoin.ts"
+      - "artifacts/api-server/src/__tests__/bank-sheet-legacy-schema-read-contract.test.ts"
+      - "artifacts/bizportal/src/pages/accounting/bank-reconciliation.tsx"
+      - "artifacts/bizportal/src/__tests__/bank-sheet-company-test-scope.test.ts"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-orphan-refusal:
+    name: Reject orphan source before DDL on disposable PG
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: pr147_ephemeral_only
+          POSTGRES_DB: pr147_ci
+        ports:
+          - 65434:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d pr147_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: "65434"
+      PGUSER: postgres
+      PGPASSWORD: pr147_ephemeral_only
+      PGDATABASE: pr147_ci
+    steps:
+      - uses: actions/checkout@v4
+      - name: Seed disposable historical orphan fixture
+        run: psql -v ON_ERROR_STOP=1 -f artifacts/api-server/scripts/tests/bank-sheet-cutover-orphan-fixture.sql
+      - name: Extract actual migration guard into a rollback-only isolated candidate
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path("artifacts/api-server/scripts/ensure-bank-sheet-account-isolation.sql").read_text()
+          guard=src.split("alter table public.bank_sheet_configs",1)[0]
+          assert "BANK_SHEET_CUTOVER_BLOCKED" in guard
+          assert guard.count("$pr147_preflight$")==2
+          Path("/tmp/pr147_guard_candidate.sql").write_text(guard + "\nALTER TABLE public.bank_sheet_configs ADD COLUMN bank_account_id integer;\nCOMMIT;\n")
+          PY
+      - name: Assert actual guard rejects orphaned posted source
+        run: |
+          set +e
+          psql -v ON_ERROR_STOP=1 -f /tmp/pr147_guard_candidate.sql > /tmp/pr147_guard_stdout 2> /tmp/pr147_guard_stderr
+          result=$?
+          set -e
+          if [ "$result" -eq 0 ]; then
+            echo "FAIL: orphaned posted source was permitted"
+            exit 1
+          fi
+          if ! grep -q 'BANK_SHEET_CUTOVER_BLOCKED: 21 orphan mutations, 7 journal-linked, 2 missing journals, 5 non-posted journals, 7 not accounting-posted' /tmp/pr147_guard_stderr; then
+            echo "FAIL: did not fail for the expected orphan custody reason"
+            sed -E 's/(password|token|key)=[^ ]+/\1=[REDACTED]/gi' /tmp/pr147_guard_stderr | tail -15
+            exit 1
+          fi
+          echo "PASS: actual migration preflight rejects the orphaned posted source"
+      - name: Verify rejected migration left original schema and historical rows unchanged
+        run: |
+          test "$(psql -Atqc "select count(*) from information_schema.columns where table_schema='public' and table_name='bank_sheet_configs' and column_name='bank_account_id'")" = "0"
+          test "$(psql -Atqc "select count(*) from public.bank_mutations where sheet_config_id=4")" = "21"
+          test "$(psql -Atqc "select count(*) from public.bank_mutations where sheet_config_id=4 and journal_entry_id is not null")" = "7"
+          test "$(psql -Atqc "select count(*) from public.accounting_entries where status='draft'")" = "5"
+          test "$(psql -Atqc "select count(*) from public.bank_mutations where sheet_config_id=4 and accounting_posted=false")" = "21"
+          echo "PASS: zero schema changes, zero historical mutation or journal changes on transaction rollback"
+ 
+      - name: Refuse inconsistent accounting journal even after synthetic Sheet 4 restoration
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "insert into public.bank_sheet_configs(id,company_id,bank_account_number) values (4,1,'synthetic-restored-only')"
+          set +e
+          psql -v ON_ERROR_STOP=1 -f /tmp/pr147_guard_candidate.sql > /tmp/pr147_journal_out 2> /tmp/pr147_journal_err
+          result=$?
+          set -e
+          test "$result" -ne 0
+          grep -q 'BANK_JOURNAL_CUTOVER_BLOCKED' /tmp/pr147_journal_err
+          test "$(psql -Atqc "select count(*) from information_schema.columns where table_schema='public' and table_name='bank_sheet_configs' and column_name='bank_account_id'")" = "0"
+          test "$(psql -Atqc "select count(*) from public.bank_mutations where sheet_config_id=4")" = "21"
+          echo "PASS: restoring source config alone never authorizes inconsistent journal custody"
+
+  isolated-success-and-rollback:
+    name: Full migration success, idempotence, and rollback on disposable PG
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: pr147_ephemeral_only
+          POSTGRES_DB: pr147_ci
+        ports:
+          - 65435:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d pr147_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: "65435"
+      PGUSER: postgres
+      PGPASSWORD: pr147_ephemeral_only
+      PGDATABASE: pr147_ci
+    steps:
+      - uses: actions/checkout@v4
+      - name: Seed isolated valid source fixture
+        run: psql -v ON_ERROR_STOP=1 -f artifacts/api-server/scripts/tests/bank-sheet-cutover-positive-fixture.sql
+      - name: Rehearse full migration with transaction rollback
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path("artifacts/api-server/scripts/ensure-bank-sheet-account-isolation.sql").read_text()
+          assert src.rstrip().lower().endswith("commit;")
+          rollback_sql=src.rstrip()[:-len("commit;")]+"ROLLBACK;\n"
+          Path("/tmp/pr147_full_rollback.sql").write_text(rollback_sql)
+          PY
+          psql -v ON_ERROR_STOP=1 -f /tmp/pr147_full_rollback.sql
+          test "$(psql -Atqc "select count(*) from information_schema.columns where table_schema='public' and table_name='bank_sheet_configs' and column_name='bank_account_id'")" = "0"
+          test "$(psql -Atqc "select count(*) from pg_constraint where conname='bank_mutations_sheet_config_id_fkey'")" = "0"
+          test "$(psql -Atqc "select count(*) from public.bank_mutations")" = "2"
+          echo "PASS: full transactional rollback preserves source schema and rows"
+      - name: Execute actual migration twice and verify company/account scope
+        run: |
+          psql -v ON_ERROR_STOP=1 -f artifacts/api-server/scripts/ensure-bank-sheet-account-isolation.sql
+          psql -v ON_ERROR_STOP=1 -f artifacts/api-server/scripts/ensure-bank-sheet-account-isolation.sql
+          test "$(psql -Atqc "select count(*) from public.bank_sheet_configs where (id=2 and bank_account_id=17 and is_active=false) or (id=3 and bank_account_id=2 and is_active=true)")" = "2"
+          test "$(psql -Atqc "select count(*) from pg_constraint where conname='bank_mutations_sheet_config_id_fkey' and convalidated")" = "1"
+          test "$(psql -Atqc "select count(*) from pg_trigger where tgname='trg_enforce_google_sheet_mutation_scope' and not tgisinternal")" = "1"
+          test "$(psql -Atqc "select count(*) from public.bank_mutations")" = "2"
+          echo "PASS: actual schema migration, idempotence, FK, trigger, and original rows"
+      - name: Verify NOLOGIN company-scoped read-only bank Sheet role (disposable)
+        run: |
+          psql -v ON_ERROR_STOP=1 -f artifacts/api-server/scripts/tests/bank-sheet-reader-rls-disposable.sql
+          test "$(psql -Atqc "select rolcanlogin from pg_roles where rolname='pr147_bank_sheet_reader_cst_dev'")" = "f"
+          test "$(psql -Atqc "select has_table_privilege('pr147_bank_sheet_reader_cst_dev','public.bank_sheet_configs','INSERT,UPDATE,DELETE')")" = "f"
+          test "$(psql -Atqc "select has_table_privilege('pr147_bank_sheet_reader_cst_dev','public.bank_mutations','SELECT')")" = "f"
+          actual="$(psql -Atqc "set session authorization pr147_bank_sheet_reader_cst_dev; select count(*) from public.bank_sheet_configs; select count(*) from public.company_bank_accounts; select count(*) from public.bank_sheet_configs where company_id=3;" | tail -3)"
+          expected="$(printf '2\n2\n0')"
+          test "$actual" = "$expected"
+          set +e
+          psql -v ON_ERROR_STOP=1 -c "set session authorization pr147_bank_sheet_reader_cst_dev; update public.bank_sheet_configs set is_active=true where id=2" >/tmp/pr147_rls_write_out 2>/tmp/pr147_rls_write_err
+          result=$?
+          set -e
+          test "$result" -ne 0
+          grep -q 'permission denied' /tmp/pr147_rls_write_err
+          echo "PASS: CST-only SELECT, cross-company hidden, NOLOGIN, writes denied"
+
+      - name: Reject cross-company Google Sheet mutations and preserve historical rows
+        run: |
+          set +e
+          psql -v ON_ERROR_STOP=1 -c "insert into public.bank_mutations(id,company_id,bank_account_id,source,sheet_config_id,status) values (99,3,'31','google_sheet',3,'pending')" >/tmp/pr147_cross_company_out 2>/tmp/pr147_cross_company_err
+          code=$?
+          set -e
+          test "$code" -ne 0
+          grep -q 'Google Sheet mutation scope mismatch' /tmp/pr147_cross_company_err
+          test "$(psql -Atqc "select count(*) from public.bank_mutations")" = "2"
+          test "$(psql -Atqc "select count(*) from public.bank_mutations where id=99")" = "0"
+          echo "PASS: cross-company insertion denied without data changes"
+      - name: Verify legacy and migrated bank account bindings with the actual source SQL
+        run: python3 artifacts/api-server/scripts/tests/bank-sheet-account-join-compatibility.py

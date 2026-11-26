@@ -263,20 +263,36 @@ function SheetConfigManager() {
   };
 
   const saveConfig = async () => {
-    if (!form.company_id || !form.bank_account_id || !form.label || !form.sheet_id) {
+    if (editTarget?.id === 3 && !form.tab_name.trim()) {
+      toast({ title: "Nama Tab wajib diisi", variant: "destructive" });
+      return;
+    }
+    if (editTarget?.id !== 3 && (!form.company_id || !form.bank_account_id || !form.label || !form.sheet_id)) {
       toast({
         title: "Perusahaan, Akun Rekonsiliasi, Label, dan Sheet ID wajib diisi",
         variant: "destructive",
       });
       return;
     }
-    const body = {
-      company_id: Number(form.company_id),
-      bank_account_id: Number(form.bank_account_id),
-      label: form.label,
-      sheet_id: form.sheet_id,
-      tab_name: form.tab_name || "Mutasi_Bank",
-    };
+    // The signed DEV route permits only tab-name metadata edits.
+    // Do not silently discard edits to the other form fields.
+    if (editTarget && editTarget.id !== 3 && (
+      form.company_id !== String(editTarget.company_id ?? "") ||
+      form.bank_account_id !== String(editTarget.bank_account_id ?? "") ||
+      form.label !== editTarget.label || form.sheet_id !== editTarget.sheet_id
+    )) {
+      toast({ title: "Pada DEV hanya Nama Tab yang dapat diubah", variant: "destructive" });
+      return;
+    }
+    const body = editTarget
+      ? { tab_name: form.tab_name.trim() }
+      : {
+          company_id: Number(form.company_id),
+          bank_account_id: Number(form.bank_account_id),
+          label: form.label,
+          sheet_id: form.sheet_id,
+          tab_name: form.tab_name || "Mutasi_Bank",
+        };
     const url  = editTarget
       ? `/api/bank-reconciliation/sheet-configs/${editTarget.id}`
       : "/api/bank-reconciliation/sheet-configs";
@@ -333,7 +349,12 @@ function SheetConfigManager() {
   const testOne = async (cfg: SheetConfig) => {
     setTesting(prev => ({ ...prev, [cfg.id]: true }));
     try {
-      const r = await fetch(`/api/bank-reconciliation/sheet-configs/${cfg.id}/test`, {
+      const companyId = cfg.company_id ?? activeCompanyId;
+      if (!Number.isInteger(companyId) || (companyId ?? 0) <= 0) {
+        throw new Error("Pilih perusahaan sebelum menguji koneksi Google Sheet.");
+      }
+      const params = new URLSearchParams({ company_id: String(companyId) });
+      const r = await fetch(`/api/bank-reconciliation/sheet-configs/${cfg.id}/test?${params}`, {
         method: "POST", credentials: "include",
       });
       const data = await r.json() as TestResult;
@@ -531,6 +552,7 @@ function SheetConfigManager() {
               </label>
               <Select
                 value={form.company_id || undefined}
+                disabled={editTarget?.id === 3}
                 onValueChange={v => setForm(f => ({
                   ...f,
                   company_id: v,
@@ -555,6 +577,7 @@ function SheetConfigManager() {
               <Input
                 placeholder="Contoh: CST Group - BCA Operasional"
                 value={form.label}
+                disabled={editTarget?.id === 3}
                 onChange={e => setForm(f => ({ ...f, label: e.target.value }))}
               />
             </div>
@@ -563,6 +586,7 @@ function SheetConfigManager() {
               <Input
                 placeholder="1VcbUujz6WHRgj5Fa1QkWja..."
                 value={form.sheet_id}
+                disabled={editTarget?.id === 3}
                 onChange={e => setForm(f => ({ ...f, sheet_id: e.target.value }))}
               />
               <p className="text-xs text-muted-foreground">
@@ -579,7 +603,7 @@ function SheetConfigManager() {
                   ...f,
                   bank_account_id: value === "none" ? "" : value,
                 }))}
-                disabled={!form.company_id || sheetAccountsLoading}
+                disabled={!form.company_id || sheetAccountsLoading || editTarget?.id === 3}
               >
                 <SelectTrigger>
                   <SelectValue placeholder={
@@ -7888,7 +7912,7 @@ function SheetConfigCollapsed() {
       ? activeCompanyId
       : null;
 
-  const { data: configsData, isLoading } = useQuery({
+  const { data: configsData, isLoading, isError: sheetConfigsError, error: sheetConfigsFetchError, refetch: retrySheetConfigs } = useQuery({
     queryKey: ["sheet-configs", isConsolidated ? "all" : sheetCompanyId],
     queryFn: async () => {
       const params = new URLSearchParams();
@@ -7947,7 +7971,12 @@ function SheetConfigCollapsed() {
   const testOne = async (cfg: SheetConfig) => {
     setTesting(p => ({ ...p, [cfg.id]: true }));
     try {
-      const r      = await fetch(`/api/bank-reconciliation/sheet-configs/${cfg.id}/test`, { method: "POST", credentials: "include" });
+      const companyId = cfg.company_id ?? sheetCompanyId;
+      if (!Number.isInteger(companyId) || (companyId ?? 0) <= 0) {
+        throw new Error("Pilih perusahaan sebelum menguji koneksi Google Sheet.");
+      }
+      const params = new URLSearchParams({ company_id: String(companyId) });
+      const r      = await fetch(`/api/bank-reconciliation/sheet-configs/${cfg.id}/test?${params}`, { method: "POST", credentials: "include" });
       const result = await r.json();
       setTestResults(p => ({ ...p, [cfg.id]: result }));
     } catch (e: any) {
@@ -7996,17 +8025,33 @@ function SheetConfigCollapsed() {
     setShowForm(true);
   };
   const saveConfig = async () => {
-    if (!form.company_id || !form.bank_account_id || !form.label || !form.sheet_id) {
+    if (editTarget?.id === 3 && !form.tab_name.trim()) {
+      toast({ title: "Nama Tab wajib diisi", variant: "destructive" });
+      return;
+    }
+    if (editTarget?.id !== 3 && (!form.company_id || !form.bank_account_id || !form.label || !form.sheet_id)) {
       toast({ title: "Perusahaan, Akun Rekonsiliasi, Label, dan Sheet ID wajib diisi", variant: "destructive" });
       return;
     }
-    const body = {
-      company_id: Number(form.company_id),
-      bank_account_id: Number(form.bank_account_id),
-      label: form.label,
-      sheet_id: form.sheet_id,
-      tab_name: form.tab_name || "Mutasi_Bank",
-    };
+    // The signed DEV route permits only tab-name metadata edits.
+    // Do not silently discard edits to the other form fields.
+    if (editTarget && editTarget.id !== 3 && (
+      form.company_id !== String(editTarget.company_id ?? "") ||
+      form.bank_account_id !== String(editTarget.bank_account_id ?? "") ||
+      form.label !== editTarget.label || form.sheet_id !== editTarget.sheet_id
+    )) {
+      toast({ title: "Pada DEV hanya Nama Tab yang dapat diubah", variant: "destructive" });
+      return;
+    }
+    const body = editTarget
+      ? { tab_name: form.tab_name.trim() }
+      : {
+          company_id: Number(form.company_id),
+          bank_account_id: Number(form.bank_account_id),
+          label: form.label,
+          sheet_id: form.sheet_id,
+          tab_name: form.tab_name || "Mutasi_Bank",
+        };
     const url  = editTarget ? `/api/bank-reconciliation/sheet-configs/${editTarget.id}` : "/api/bank-reconciliation/sheet-configs";
     const r    = await fetch(url, { method: editTarget ? "PUT" : "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const d    = await r.json();
@@ -8035,7 +8080,7 @@ function SheetConfigCollapsed() {
               {isLoading ? <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" /> :
                lastSyncOk ? <Wifi className="w-4 h-4 text-green-500" /> : <WifiOff className="w-4 h-4 text-orange-500" />}
               <span className="text-sm font-medium">Google Sheet</span>
-              <Badge variant="secondary" className="text-xs">{configs.length} koneksi</Badge>
+              <Badge variant="secondary" className="text-xs">{sheetConfigsError ? "Gagal memuat koneksi" : `${configs.length} koneksi`}</Badge>
               {activeConfigs.length > 0 && (
                 <span className="text-xs text-muted-foreground hidden sm:inline">
                   · Sync terakhir: {fmtDateTime(activeConfigs[0]?.last_synced_at)}
@@ -8043,7 +8088,7 @@ function SheetConfigCollapsed() {
               )}
             </div>
             <div className="flex items-center gap-2">
-              <Button size="sm" variant="outline" className="h-6 text-xs gap-1" onClick={e => { e.stopPropagation(); openCreate(); }}>
+              <Button size="sm" variant="outline" className="h-6 text-xs gap-1" disabled={sheetConfigsError || isLoading} onClick={e => { e.stopPropagation(); openCreate(); }}>
                 <Plus className="w-3 h-3" /> Tambah
               </Button>
               {expanded ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
@@ -8052,7 +8097,17 @@ function SheetConfigCollapsed() {
 
           {expanded && (
             <div className="mt-3 space-y-2 border-t pt-3">
-              {configs.length === 0 ? (
+              {sheetConfigsError ? (
+                <div role="alert" className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+                  <p>Daftar koneksi Google Sheet gagal dimuat. Konfigurasi yang sudah ada tidak akan diubah.</p>
+                  <p className="mt-1 text-xs">{sheetConfigsFetchError instanceof Error ? sheetConfigsFetchError.message.slice(0, 240) : "Periksa koneksi API rekonsiliasi."}</p>
+                  <Button className="mt-2" size="sm" variant="outline" onClick={() => void retrySheetConfigs()}>
+                    Coba lagi
+                  </Button>
+                </div>
+              ) : isLoading ? (
+                <p role="status" className="text-sm text-muted-foreground text-center py-4">Memuat konfigurasi Google Sheet...</p>
+              ) : configs.length === 0 ? (
                 <p className="text-sm text-muted-foreground text-center py-4">
                   Belum ada koneksi. Klik <strong>Tambah</strong> untuk menambahkan.
                 </p>
@@ -8119,6 +8174,7 @@ function SheetConfigCollapsed() {
               <label className="text-sm font-medium">Perusahaan</label>
               <Select
                 value={form.company_id || undefined}
+                disabled={editTarget?.id === 3}
                 onValueChange={v => setForm(f => ({ ...f, company_id: v, bank_account_id: "" }))}
               >
                 <SelectTrigger><SelectValue placeholder="Pilih perusahaan" /></SelectTrigger>
@@ -8146,7 +8202,7 @@ function SheetConfigCollapsed() {
                   ...f,
                   bank_account_id: value === "none" ? "" : value,
                 }))}
-                disabled={!form.company_id || sheetAccountsLoading}
+                disabled={!form.company_id || sheetAccountsLoading || editTarget?.id === 3}
               >
                 <SelectTrigger>
                   <SelectValue placeholder={

@@ -1,5 +1,6 @@
 import { Router, type IRouter } from "express";
 import healthRouter from "./health";
+import pr147SuperAdminVerificationRouter from "./pr147-super-admin-verification";
 import companiesRouter from "./companies";
 import payrollRouter from "./payroll";
 import hrdRouter from "./hrd-routes";
@@ -11,6 +12,8 @@ import purchaseWorkflowRouter from "./purchase-workflow";
 import businessDashboardRouter from "./business-dashboard";
 import localProductionAuthRouter from "./local-production-auth";
 import devCustomerInvoiceAttestationRouter from "./dev-customer-invoice-attestation";
+import issue238QaOwnerOtpRouter from "./dev-issue238-qa-owner-otp";
+import issue238ConsentUiRouter from "./dev-issue238-qa-consent-ui";
 import salesCoreRouter from "./sales-core";
 import adminRealtimeRouter from "./admin-realtime";
 import driverGeofenceRouter from "./driver-geofence";
@@ -44,10 +47,15 @@ router.use(createDevAuthRouter());
 // DEV-only signed Owner OTP; refuses unless existing signed OTP and explicit feature flags.
 // Mount before the generic auth fallback, without changing production sessions.
 router.use(devCustomerInvoiceAttestationRouter);
+// QA #238: purpose-separated Owner OTP consent; disabled by default.
+router.use(issue238QaOwnerOtpRouter);
+router.use(issue238ConsentUiRouter);
 
 // Production auth is local to this deployment and is mounted before the
 // remaining API-owned routes.
 router.use(localProductionAuthRouter);
+// Signed Super Admin release evidence is opt-in and disabled outside DEV.
+router.use(pr147SuperAdminVerificationRouter);
 
 // Canonical DEV-only document-template API, imported from verified legacy implementation.
 // OFF by default; do not activate before signed-session and A4 PDF E2E verification.

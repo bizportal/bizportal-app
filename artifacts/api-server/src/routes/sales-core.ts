@@ -16,8 +16,8 @@ function numeric(value: unknown): number {
   return Number.isFinite(result) ? result : 0;
 }
 
-router.use(authenticateAdmin);
-router.use(authenticateAdmin);
+// Only Sales routes require this guard. Never intercept unrelated API routers.
+router.use("/sales", authenticateAdmin);
 
 // DEV-only read parity for the exact synthetic Order #108.
 // The old UI queries GET /sales/documents/:id, which the canonical DEV router

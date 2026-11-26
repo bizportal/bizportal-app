@@ -794,6 +794,17 @@ export default function SalesDocumentDetailPage() {
       toast({ title: "Customer ID wajib diisi", description: "Pilih customer terdaftar melalui Edit Dokumen sebelum konfirmasi Sales Order.", variant: "destructive" });
       return;
     }
+    // The canonical DEV Sales router supports confirm only; the Portal's
+    // mark_invoiced action can notify recipients without a posted AR/GL
+    // receipt. Never issue synthetic QA #108 through that legacy action.
+    if (action === "mark_invoiced" && canShowQa108) {
+      toast({
+        title: "Invoice QA #108 belum dapat diterbitkan",
+        description: "Menunggu penghubung PostingEngine kanonis dan bukti jurnal/AR atomik. Tidak ada invoice atau notifikasi yang dikirim.",
+        variant: "destructive",
+      });
+      return;
+    }
     if (!confirm(`${label}?`)) return;
     setActionLoading(action);
     try {
@@ -1009,10 +1020,11 @@ export default function SalesDocumentDetailPage() {
             {isOrder && (isConfirmed || isDone) && doc.invoiceStatus !== "invoiced" && (
               <Button size="sm" variant="outline" className="gap-2 text-orange-600 border-orange-200 hover:bg-orange-50"
                 onClick={() => handleAction("mark_invoiced", "Buat invoice untuk dokumen ini")}
-                disabled={actionLoading === "mark_invoiced"}
+                disabled={actionLoading === "mark_invoiced" || canShowQa108}
+                title={canShowQa108 ? "QA #108: PostingEngine kanonis dan bukti jurnal/AR belum tersedia" : undefined}
               >
                 {actionLoading === "mark_invoiced" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Receipt className="h-3.5 w-3.5" />}
-                Buat Invoice
+                {canShowQa108 ? "Invoice QA menunggu PostingEngine" : "Buat Invoice"}
               </Button>
             )}
 

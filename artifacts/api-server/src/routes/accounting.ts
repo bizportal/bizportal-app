@@ -14,48 +14,48 @@ type AccountingRequest = Request & {
   accountingUser?: DevAuthUser;
 };
 
-router.use(async (req, res, next) => {
-  try {
-    const user = isDevelopmentEnvironment()
-      ? getDevSession(req)
-      : (() => {
-          const session = getProductionSession(req);
-          return session ? getProductionUser(session) : Promise.resolve(null);
-        })();
-    const resolvedUser = await user;
-    const role = resolvedUser?.role.toLowerCase();
-
-    if (!resolvedUser) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-    if (!role || !["admin", "owner", "finance", "accounting"].includes(role)) {
-      res.status(403).json({ error: "Forbidden" });
-      return;
-    }
-
-    (req as AccountingRequest).accountingUser = resolvedUser;
-    next();
-  } catch (error) {
-    req.log.error({ error }, "Failed to authenticate accounting request");
-    res.status(503).json({ error: "Authorization service unavailable" });
+/** Preserve legacy DEV/PROD auth, but recognize canonical signed-OTP DEV sessions.
+ * A signed DEV Super Admin can read accounting for the selected company; no
+ * additional write privileges or cross-tenant bypass are granted here.
+ */
+/** Use the same signed OTP DEV cookie as BizPortal login, but preserve the
+ * historical picker only when signed OTP mode is not configured.
+ * No direct dependency on test-only optional dev-auth exports.
+ */
+async function getAccountingUser(req: Request): Promise<DevAuthUser | null> {
+  const dev = isDevelopmentEnvironment();
+  if (dev && process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV !== "true") {
+    return getDevSession(req);
   }
-});
-
-router.use(async (req, res, next) => {
+  const session = getProductionSession(req);
+  return session ? getProductionUser(session) : null;
+}
+function allowedAccountingRole(user: DevAuthUser | null, req: Request): boolean {
+  const role = user?.role?.trim().toLowerCase();
+  if (role && ["admin", "owner", "finance", "accounting"].includes(role)) return true;
+  // Exact four read-only resources, no journal posting or accounting writes.
+  const path = req.path.startsWith("/accounting/") ? req.path.slice("/accounting".length) : req.path;
+  return role === "super_admin" && isDevelopmentEnvironment() &&
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV === "true" &&
+    req.method === "GET" &&
+    ["/settings", "/accounts", "/journals", "/taxes"].includes(path);
+}
+router.use("/accounting", async (req, res, next) => {
   try {
-    const session = isDevelopmentEnvironment() ? null : getProductionSession(req);
-    const user = isDevelopmentEnvironment()
-      ? getDevSession(req)
-      : session ? await getProductionUser(session) : null;
-    if (!user || !["admin", "owner", "finance", "accounting"].includes(user.role)) {
-      res.status(401).json({ error: "Unauthorized" });
+    const user = await getAccountingUser(req);
+    if (!user) {
+      res.status(401).json({error:"Unauthorized"});
       return;
     }
+    if (!allowedAccountingRole(user, req)) {
+      res.status(403).json({error:"Forbidden"});
+      return;
+    }
+    (req as AccountingRequest).accountingUser = user;
     next();
   } catch (error) {
-    req.log.error({ error }, "Accounting authorization failed");
-    res.status(503).json({ error: "Authorization service unavailable." });
+    req.log?.error({error},"Accounting DEV OTP authorization failed");
+    res.status(503).json({error:"Authorization service unavailable."});
   }
 });
 

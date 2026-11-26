@@ -67,14 +67,16 @@ function getSessionSecret(): string | null {
   return getExplicitSessionSecret() ?? initializedProductionSessionSecret;
 }
 
-/** Opt-in only. Never infer DEV OTP eligibility from a cookie or DB credential. */
-export function isSignedOtpDevEnabled(): boolean {
-  // APP_ENV is the authoritative deployment/DB boundary; NODE_ENV only sets
-  // Node's build/runtime mode and may be production for a bundled DEV server.
+/** Explicit DEV policy, independent of whether its signing secret is ready. */
+export function isSignedOtpDevRequired(): boolean {
   return process.env.APP_ENV?.trim().toLowerCase() === "development"
     && isDevelopmentEnvironment()
-    && process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV === "true"
-    && getExplicitSessionSecret() !== null;
+    && process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV === "true";
+}
+
+/** Signed OTP is usable only when the policy is on and an explicit secret is ready. */
+export function isSignedOtpDevEnabled(): boolean {
+  return isSignedOtpDevRequired() && getExplicitSessionSecret() !== null;
 }
 
 export async function initializeProductionSessionSigning(): Promise<void> {
@@ -472,6 +474,17 @@ export function createDevAuthRouter(): Router {
     }
   });
 
+  router.get("/auth/dev-auth-policy", (_request, response) => {
+    response.setHeader("Cache-Control", "no-store");
+    // This route is also queried by production-built frontends deployed to a
+    // DEV API. Production must explicitly report that DEV-only OTP is not required.
+    const signedOtpRequired = isDevelopmentEnvironment() && isSignedOtpDevRequired();
+    return response.json({
+      signedOtpRequired,
+      signedOtpReady: !signedOtpRequired || isSignedOtpDevEnabled(),
+    });
+  });
+
   router.get("/auth/dev-users", (_request, response) => {
     if (!isDevelopmentEnvironment()) return response.status(404).json({ error: "Not found" });
     return response.json({ users: getDevUsers() });
@@ -479,6 +492,12 @@ export function createDevAuthRouter(): Router {
 
   router.post("/auth/dev-login", async (request, response) => {
     if (!isDevelopmentEnvironment()) return response.status(404).json({ error: "Not found" });
+    // Signed OTP is the only accepted Super Admin identity once explicitly
+    // enabled. Do not mint a parallel legacy DEV cookie that can make the UI
+    // display a role the protected approval endpoint must reject.
+    if (isSignedOtpDevRequired()) {
+      return response.status(404).json({ error: "Legacy DEV login is disabled; use verified email OTP." });
+    }
 
     const email =
       typeof request.body?.email === "string"
@@ -537,23 +556,30 @@ export function createDevAuthRouter(): Router {
       return;
     }
 
-    // When OTP is enabled, prefer its verified identity over a legacy cookie.
-    if (isSignedOtpDevEnabled()) {
+    // Signed OTP mode is fail-closed: never fall back to the legacy DEV
+    // cookie. A cached/legacy super_admin label is not a verified Owner session.
+    if (isSignedOtpDevRequired()) {
+      if (!isSignedOtpDevEnabled()) {
+        response.status(503).json({ error: "Signed email OTP is not configured." });
+        return;
+      }
       const signed = getProductionSession(request);
-      if (signed) {
-        try {
-          const verifiedUser = await getProductionUser(signed);
-          if (!verifiedUser) {
-            response.status(403).json({ error: "Forbidden" });
-            return;
-          }
-          response.json({ user: verifiedUser });
-          return;
-        } catch (error) {
-          request.log?.error?.({ error }, "DEV signed OTP user lookup unavailable");
-          response.status(503).json({ error: "Authorization service unavailable" });
+      if (!signed) {
+        response.status(401).json({ error: "Signed email OTP session required" });
+        return;
+      }
+      try {
+        const verifiedUser = await getProductionUser(signed);
+        if (!verifiedUser) {
+          response.status(403).json({ error: "Forbidden" });
           return;
         }
+        response.json({ user: verifiedUser });
+        return;
+      } catch (error) {
+        request.log?.error?.({ error }, "DEV signed OTP user lookup unavailable");
+        response.status(503).json({ error: "Authorization service unavailable" });
+        return;
       }
     }
     const legacyUser = getDevSession(request);
@@ -568,23 +594,30 @@ export function createDevAuthRouter(): Router {
     if (!isDevelopmentEnvironment()) return next();
 
     let user: DevAuthUser | null = null;
-    if (isSignedOtpDevEnabled()) {
+    if (isSignedOtpDevRequired()) {
+      if (!isSignedOtpDevEnabled()) {
+        response.status(503).json({ error: "Signed email OTP is not configured." });
+        return;
+      }
       const signed = getProductionSession(request);
-      if (signed) {
-        try {
-          user = await getProductionUser(signed);
-          if (!user) {
-            response.status(403).json({ error: "Forbidden" });
-            return;
-          }
-        } catch (error) {
-          request.log?.error?.({ error }, "DEV signed OTP profile unavailable");
-          response.status(503).json({ error: "Authorization service unavailable" });
+      if (!signed) {
+        response.status(401).json({ error: "Signed email OTP session required" });
+        return;
+      }
+      try {
+        user = await getProductionUser(signed);
+        if (!user) {
+          response.status(403).json({ error: "Forbidden" });
           return;
         }
+      } catch (error) {
+        request.log?.error?.({ error }, "DEV signed OTP profile unavailable");
+        response.status(503).json({ error: "Authorization service unavailable" });
+        return;
       }
+    } else {
+      user = getDevSession(request);
     }
-    user ??= getDevSession(request);
     if (!user) return next();
 
     return response.json({
