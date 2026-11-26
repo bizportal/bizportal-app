@@ -41,10 +41,17 @@ export default function ScNewCashPreview() {
   const [amount,setAmount]=useState("");
   const [counterCoaId,setCounterCoaId]=useState("");
   const companyRequestVersion=useRef(0);
+  const draftRequestVersion=useRef(0);
+  const invalidateDraft=()=>{
+    draftRequestVersion.current++;
+    setPreview(null);
+    setBusy(false);
+  };
 
   useEffect(()=>{
     const controller=new AbortController();
     const version=++companyRequestVersion.current;
+    draftRequestVersion.current++;
     setPreview(null);setReadiness(null);setError(null);setBusy(false);
     if(activeCompanyId!==1){
       setError("Khusus PT Cahaya Sejati Teknologi (Company #1), Account #18.");
@@ -82,6 +89,7 @@ export default function ScNewCashPreview() {
     const choice=readiness.contraCandidates.find(c=>String(c.id)===counterCoaId);
     if(!choice){setError("Pilih COA lawan kandidat terlebih dahulu.");return;}
     const version=companyRequestVersion.current;
+    const draftVersion=++draftRequestVersion.current;
     setPreview(null);setError(null);setBusy(true);
     try{
       const response=await fetch(ENDPOINT+"/preview",{
@@ -91,7 +99,7 @@ export default function ScNewCashPreview() {
           amount,counterCoaId:choice.id}),
       });
       const payload=await response.json().catch(()=>null) as (Preview & {code?:string}) | null;
-      if(version!==companyRequestVersion.current)return;
+      if(version!==companyRequestVersion.current || draftVersion!==draftRequestVersion.current)return;
       if(!response.ok)throw Error("Validasi pratinjau ditolak (HTTP "+
         response.status+", "+String(payload?.code??"INVALID")+").");
       if(payload?.postingAllowed!==false || payload?.mode!=="READ_ONLY_IN_MEMORY_DRAFT"
@@ -99,10 +107,10 @@ export default function ScNewCashPreview() {
         throw Error("Respons pratinjau tidak memenuhi pembatasan read-only.");
       setPreview(payload as Preview);
     }catch(err){
-      if(version===companyRequestVersion.current)
+      if(version===companyRequestVersion.current && draftVersion===draftRequestVersion.current)
         setError(err instanceof Error?err.message:"Tidak dapat menghitung pratinjau.");
     }finally{
-      if(version===companyRequestVersion.current)setBusy(false);
+      if(version===companyRequestVersion.current && draftVersion===draftRequestVersion.current)setBusy(false);
     }
   };
 
@@ -140,7 +148,7 @@ export default function ScNewCashPreview() {
               <div>
                 <Label>Arah kas</Label>
                 <Select value={direction} onValueChange={v=>{
-                  setDirection(v as "IN"|"OUT");setPreview(null);
+                  setDirection(v as "IN"|"OUT");invalidateDraft();
                 }}>
                   <SelectTrigger className="mt-1"><SelectValue/></SelectTrigger>
                   <SelectContent>
@@ -151,16 +159,16 @@ export default function ScNewCashPreview() {
               </div>
               <div>
                 <Label>Tanggal transaksi baru</Label>
-                <DatePicker value={date} onChange={v=>{setDate(v);setPreview(null);}} className="mt-1"/>
+                <DatePicker value={date} onChange={v=>{setDate(v);invalidateDraft();}} className="mt-1"/>
               </div>
               <div>
                 <Label>Nominal Rp (gunakan titik untuk desimal)</Label>
                 <Input value={amount} inputMode="decimal" placeholder="150000.25"
-                  onChange={e=>{setAmount(e.target.value);setPreview(null);}} className="mt-1"/>
+                  onChange={e=>{setAmount(e.target.value);invalidateDraft();}} className="mt-1"/>
               </div>
               <div>
                 <Label>Calon COA lawan (belum diverifikasi dokumen)</Label>
-                <Select value={counterCoaId} onValueChange={v=>{setCounterCoaId(v);setPreview(null);}}>
+                <Select value={counterCoaId} onValueChange={v=>{setCounterCoaId(v);invalidateDraft();}}>
                   <SelectTrigger className="mt-1"><SelectValue placeholder="Pilih COA kandidat"/></SelectTrigger>
                   <SelectContent>
                     {readiness.contraCandidates.map(c=>
