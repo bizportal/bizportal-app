@@ -18,7 +18,10 @@ const row = {
   counter_coa_id: 902, otp_email: "owner@example.test",
   otp_verified_at: "2026-11-27 00:04:00+00",
 };
-const db = (rows: Array<typeof row> = [row]) => ({
+type TestRow = Omit<typeof row, "otp_email" | "otp_verified_at"> & {
+  otp_email: string | null; otp_verified_at: string | null;
+};
+const db = (rows: TestRow[] = [row]) => ({
   query: vi.fn(async (_sql: string, _params: readonly unknown[]) => ({ rows })),
 });
 describe("Account18 purpose-separated OTP approval reader — SELECT only", () => {
