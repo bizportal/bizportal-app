@@ -256,7 +256,7 @@ export default function ScNewCashPreview() {
           </CardContent>
         </Card>
       )}
-      {pendingEvidence && activeCompanyId===1 && (
+      {readiness && pendingEvidence && activeCompanyId===1 && (
         <Card className="border-sky-500/40 bg-slate-800/90 text-white">
           <CardContent className="space-y-2 py-4">
             <p role="status" className="text-sm">
