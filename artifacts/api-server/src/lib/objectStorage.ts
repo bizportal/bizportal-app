@@ -3,6 +3,8 @@ import { isSafeDevTestMode } from "./safeDev.js";
 import WebSocket from "ws";
 import { Readable } from "stream";
 import { randomUUID } from "crypto";
+import { stageFutureCashPrivateEvidence, type FutureCashPrivateUploadScope,
+  type PendingPrivateCashEvidence } from "./future-cash-private-upload.js";
 import {
   ObjectAclPolicy,
   ObjectPermission,
@@ -314,6 +316,35 @@ export class ObjectStorageService {
       throw new Error("External storage URLs are not supported; use Supabase Storage.");
     }
     return rawPath;
+  }
+
+  /**
+   * New Account18 vouchers ONLY: stage pending evidence in the existing
+   * nonpublic private-uploads bucket with a server-issued unique filename.
+   * Bypasses the generic upsert:true uploader intentionally.
+   *
+   * Server callers MUST authenticate a valid signed Company1 Owner/Super Admin
+   * session first. This method alone neither verifies/approves evidence nor
+   * persists an audit record or writes a financial ledger.
+   */
+  async uploadFutureCashPrivateEvidence(
+    scope: FutureCashPrivateUploadScope,
+    bytes: Buffer,
+  ): Promise<PendingPrivateCashEvidence> {
+    if (process.env.APP_ENV !== "development" ||
+        isSafeDevTestMode() || process.env.E2E_TEST_MODE === "true") {
+      throw new Error("CASH_EVIDENCE_UPLOAD_DISABLED");
+    }
+    return stageFutureCashPrivateEvidence(scope, bytes, async (relativePath, contents, options) => {
+      const { data, error } = await getSupabase().storage.from(PRIVATE_BUCKET)
+        .upload(relativePath, contents, {
+          contentType: options.contentType,
+          upsert: false,
+        });
+      if (error || !data || data.path !== relativePath) {
+        throw new Error("CASH_EVIDENCE_PRIVATE_UPLOAD_FAILED");
+      }
+    });
   }
 
   // ── Private entity upload ────────────────────────────────────────────────────
