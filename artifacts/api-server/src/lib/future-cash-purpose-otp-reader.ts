@@ -23,6 +23,8 @@ type EvidenceRow = {
   approved_at: string;
   otp_email: string | null;
   otp_verified_at: string | null;
+  otp_expires_at: string | null;
+  otp_created_at: string | null;
 };
 export interface CashApprovalSqlReader {
   query(sql: string, parameters: readonly unknown[]): Promise<{ rows: EvidenceRow[] }>;
@@ -58,13 +60,18 @@ export async function readPurposeBoundFutureCashApproval(
               a.metadata->>'sourceFingerprint' as source_fingerprint,
               (a.metadata->>'accountId')::integer as account_id,
               (a.metadata->>'counterCoaId')::integer as counter_coa_id,
-              o.email as otp_email, o.verified_at::text as otp_verified_at
+              o.email as otp_email, o.verified_at::text as otp_verified_at,
+              o.expires_at::text as otp_expires_at,
+              o.created_at::text as otp_created_at
          from public.approval_requests a
          left join lateral (
            select email, verified_at
              from public.bizportal_email_otp_codes
             where purpose = $4
               and verified_at is not null
+              and verified_at <= expires_at
+              and verified_at >= created_at
+              and attempts < 5
               and lower(email) = lower(a.approved_by)
               and verified_at <= a.approved_at
               and verified_at >= a.approved_at - interval '10 minutes'
@@ -91,10 +98,13 @@ export async function readPurposeBoundFutureCashApproval(
         !["owner", "super_admin"].includes(a.approver_role) ||
         !a.approved_by || !a.otp_email ||
         a.approved_by.toLowerCase() !== a.otp_email.toLowerCase() ||
-        !a.otp_verified_at || !a.approved_at) return null;
+        !a.otp_verified_at || !a.otp_expires_at || !a.otp_created_at || !a.approved_at) return null;
     const verifiedAtMs = Date.parse(a.otp_verified_at);
+    const expiresAtMs = Date.parse(a.otp_expires_at);
+    const createdAtMs = Date.parse(a.otp_created_at);
     const approvedAtMs = Date.parse(a.approved_at);
-    if (!Number.isFinite(verifiedAtMs) || !Number.isFinite(approvedAtMs) ||
+    if (![verifiedAtMs, expiresAtMs, createdAtMs, approvedAtMs].every(Number.isFinite) ||
+        verifiedAtMs < createdAtMs || verifiedAtMs > expiresAtMs ||
         approvedAtMs < verifiedAtMs || approvedAtMs - verifiedAtMs > 10 * 60_000) return null;
     const approvedAt = new Date(approvedAtMs).toISOString();
     return {
