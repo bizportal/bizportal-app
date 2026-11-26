@@ -2,6 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createRequire } from "node:module";
 import { disposableCashPgAdapter } from "../lib/cash-ledger-postgres-disposable";
 import { postCashJournal, prepareCashJournal, reverseCashJournalLines, type CashMovement } from "../lib/cash-ledger-posting";
+import { createHash } from "node:crypto";
+import { prepareFutureCashSource, type FutureCashSource } from "../lib/future-cash-source-identity";
 
 const url = process.env.CASH_QA_PG_URL;
 const suite = url ? describe : describe.skip;
@@ -136,6 +138,71 @@ suite("disposable PostgreSQL cash journal adapter (never business DB)", () => {
     expect(original.lines[0].creditCents).toBe(4500075n);
     expect(reversed[0].debitCents).toBe(4500075n);
     expect(reversed.reduce((acc,line)=>acc+line.debitCents-line.creditCents,0n)).toBe(0n);
+  });
+
+  it("canonical PR239 voucher UUID flows through existing disposable PG adapter without Sheet identity",async()=>{
+    // Source key and fingerprint come exclusively from PR239's canonical
+    // future-cash identity module, NOT an alternate bespoke identity format.
+    // This is QA-only composition, not an authorized business HTTP writer.
+    const voucherScope={ companyId:1,configId:9001,accountId:18,
+      accountType:"cash" as const,cashCoaId:75839,counterpartyCoaId:902 };
+    const source:FutureCashSource={
+      companyId:1,accountId:18,cashCoaId:75839,
+      transactionId:"33333333-3333-4333-8333-333333333333",
+      date:"2026-11-27",direction:"IN",amount:"150000.25",
+      sourceDocumentSha256:"a".repeat(64),
+    };
+    const post=async(input:FutureCashSource,counterCoaId=902)=>{
+      const identity=prepareFutureCashSource(input);
+      const provisional=prepareCashJournal({...voucherScope,counterpartyCoaId:counterCoaId},{
+        rowNumber:1,date:input.date,direction:input.direction,amount:input.amount,
+        sourceFingerprint:identity.sourceFingerprint,
+      });
+      // The canonical source fingerprint covers content; an independently
+      // verified future contra COA must also be bound to journal idempotency.
+      const fingerprint=createHash("sha256").update(JSON.stringify([
+        "future-cash-qa-journal-v1",identity.sourceFingerprint,counterCoaId,
+      ])).digest("hex");
+      const journal={...provisional,sourceKey:identity.sourceKey,fingerprint};
+      return adapter.transaction(async tx=>{
+        const existing=await tx.findForUpdate(journal.sourceKey);
+        if(existing){
+          if(existing.fingerprint!==journal.fingerprint) throw new Error("CASH_SOURCE_CHANGED_REVIEW_REQUIRED");
+          return {id:existing.id,replay:true};
+        }
+        const id=await tx.insertWithLines(journal);
+        return {id,replay:false};
+      });
+    };
+    const before=(await pool.query("SELECT count(*)::int n FROM cash_qa.accounting_entries")).rows[0].n;
+    const first=await post(source);
+    expect(first.replay).toBe(false);
+    expect((await post(source)).replay).toBe(true);
+    await expect(post({...source,sourceDocumentSha256:"c".repeat(64)}))
+      .rejects.toThrow("CASH_SOURCE_CHANGED_REVIEW_REQUIRED");
+    await expect(post(source,903)).rejects.toThrow("CASH_SOURCE_CHANGED_REVIEW_REQUIRED");
+    const concurrent={...source,transactionId:"44444444-4444-4444-8444-444444444444"};
+    const both=await Promise.all([post(concurrent),post(concurrent)]);
+    expect(both.filter(x=>x.replay)).toHaveLength(1);
+    expect(both.filter(x=>!x.replay)).toHaveLength(1);
+    const after=(await pool.query("SELECT count(*)::int n FROM cash_qa.accounting_entries")).rows[0].n;
+    expect(after).toBe(before+2);
+    await pool.query(`CREATE FUNCTION cash_qa.reject_source_998() RETURNS trigger
+      LANGUAGE plpgsql AS $$BEGIN
+        IF NEW.account_id=998 THEN RAISE EXCEPTION 'INJECTED_FUTURE_SOURCE_FAILURE'; END IF;
+        RETURN NEW;
+      END$$`);
+    await pool.query(`CREATE TRIGGER reject_source_998 BEFORE INSERT ON cash_qa.accounting_entry_lines
+      FOR EACH ROW EXECUTE FUNCTION cash_qa.reject_source_998()`);
+    try {
+      await expect(post({...source,transactionId:"55555555-5555-4555-8555-555555555555"},998))
+        .rejects.toThrow("INJECTED_FUTURE_SOURCE_FAILURE");
+      expect((await pool.query("SELECT count(*)::int n FROM cash_qa.accounting_entries")).rows[0].n).toBe(after);
+      expect((await pool.query("SELECT count(*)::int n FROM cash_qa.cash_sources")).rows[0].n).toBe(after);
+    } finally {
+      await pool.query("DROP TRIGGER reject_source_998 ON cash_qa.accounting_entry_lines");
+      await pool.query("DROP FUNCTION cash_qa.reject_source_998()");
+    }
   });
 
 });
