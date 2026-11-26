@@ -1,0 +1,65 @@
+name: DEV Customer Invoice — atomic exclusive PPN on original owner
+
+on:
+  pull_request:
+    branches:
+      - test/dev-original-owner-disposable-journal-20261118
+    paths:
+      - 'artifacts/api-server/src/lib/posting-engine/portalInvoiceAdapter.ts'
+      - 'scripts/tests/customer-invoice-original-owner-synthetic-fixture.sql'
+      - 'scripts/tests/customer-invoice-original-owner-disposable.mjs'
+      - 'scripts/tests/customer-invoice-original-owner-disposable.sh'
+      - 'scripts/tests/customer-invoice-portal-handler-disposable-extra.sql'
+      - 'scripts/tests/customer-invoice-portal-handler-disposable-bundle.mjs'
+      - 'scripts/tests/customer-invoice-portal-handler-disposable.mjs'
+      - 'scripts/tests/customer-invoice-bizportal-otp-issuer-disposable-bundle.mjs'
+      - 'artifacts/api-server/src/lib/__tests__/portal-invoice-existing-owner-adapter.test.ts'
+      - '.github/workflows/customer-invoice-atomic-ppn-dev.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  original-owner-atomic-ppn:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout pinned original Customer Portal issuer handler
+        uses: actions/checkout@v4
+        with:
+          repository: Travelintrips/CST-CUSTOMER-PORTAL
+          ref: e005a3e7593c467693a7b2e7101fa47a929f9b6c
+          path: vendor/customer-portal
+          persist-credentials: false
+      - name: Checkout pinned original BizPortal signed OTP issuer
+        uses: actions/checkout@v4
+        with:
+          repository: bizportal/bizportal-app
+          ref: 69a811809ef250cc1b26296c59a27908eaa13e75
+          path: vendor/bizportal-otp
+          persist-credentials: false
+      - name: Verify signed OTP issuer exact SHA
+        run: |
+          test "$(git -C vendor/bizportal-otp rev-parse HEAD)" = 69a811809ef250cc1b26296c59a27908eaa13e75
+          test -f vendor/bizportal-otp/artifacts/api-server/src/routes/dev-customer-invoice-attestation.ts
+      - name: Verify exact Portal handler source SHA
+        run: |
+          test "$(git -C vendor/customer-portal rev-parse HEAD)" = e005a3e7593c467693a7b2e7101fa47a929f9b6c
+          test -f vendor/customer-portal/server/billing-operations.mjs
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Install locked workspace packages
+        run: pnpm install --frozen-lockfile
+      - name: Original owner atomic output PPN and AR E2E on synthetic DB
+        run: bash scripts/tests/customer-invoice-original-owner-disposable.sh
+      - name: Adapter and original-owner regression
+        run: pnpm --dir artifacts/api-server exec vitest run src/lib/__tests__/legacy-posting-owner-transactions.test.ts src/lib/__tests__/portal-invoice-existing-owner-adapter.test.ts
+      - name: Complete API typecheck
+        run: pnpm --dir artifacts/api-server run typecheck

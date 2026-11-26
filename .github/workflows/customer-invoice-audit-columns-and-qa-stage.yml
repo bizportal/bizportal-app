@@ -1,0 +1,73 @@
+name: DEV Customer Invoice — original owner QA stage and audit column parity
+
+on:
+  pull_request:
+    branches:
+      - test/dev-customer-invoice-modern-original-owner-pg16-e2e-20261119
+      - test/dev-customer-invoice-audit-column-permissions-20261119
+      - test/dev-invoice-real-grant-parity-20261119
+      - test/dev-customer-invoice-rls-policy-parity-20261119
+      - test/dev-customer-invoice-issuer-notification-qa-20261119
+    paths:
+      - 'scripts/dev-customer-invoice-audit-columns-20261119.sql'
+      - 'scripts/dev-customer-invoice-audit-columns-rollback-20261119.sql'
+      - 'scripts/tests/customer-invoice-audit-columns-*'
+      - 'scripts/tests/customer-invoice-reviewed-owner-qa-stage.sh'
+      - 'scripts/tests/customer-invoice-hosted-20261119-grant-parity.sql'
+      - 'scripts/tests/customer-invoice-hosted-rls-source-snapshot-20261119.sql'
+      - 'scripts/tests/customer-invoice-modern-original-owner-pg16.mjs'
+      - 'scripts/tests/customer-invoice-modern-owner-bundles.mjs'
+      - 'scripts/tests/customer-invoice-modern-hosted-portal-tables.sql'
+      - 'scripts/tests/customer-invoice-modern-role-pg16.qa.sh'
+      - 'scripts/tests/customer-invoice-portal-handler-disposable-extra.sql'
+      - '.github/workflows/customer-invoice-audit-columns-and-qa-stage.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  original-engine-audit-qa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pin Customer Portal PR 235 (company-scoped payment and invoice Admin notifications)
+        uses: actions/checkout@v4
+        with:
+          repository: Travelintrips/CST-CUSTOMER-PORTAL
+          ref: b47b1e1fb559f0a51a8cdf3ac4df6a4a1e3ce63c
+          path: vendor/customer-portal
+          persist-credentials: false
+      - name: Pin BizPortal signed Owner PR 155
+        uses: actions/checkout@v4
+        with:
+          repository: bizportal/bizportal-app
+          ref: 9ade41f0ab3459841a7e3b154202357f9000496d
+          path: vendor/bizportal-otp
+          persist-credentials: false
+      - name: Assert exact verified sources
+        run: |
+          test "$(git -C vendor/customer-portal rev-parse HEAD)" = b47b1e1fb559f0a51a8cdf3ac4df6a4a1e3ce63c
+          test "$(git -C vendor/bizportal-otp rev-parse HEAD)" = 9ade41f0ab3459841a7e3b154202357f9000496d
+          test -f artifacts/api-server/src/lib/posting-engine/portalInvoiceAdapter.ts
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Install pinned Accounting dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Test exact two-column GRANT, tenant RLS, forged audit and rollback
+        run: bash scripts/tests/customer-invoice-audit-columns-least-privilege.qa.sh
+      - name: Rebuild five SHA-pinned original Accounting files in QA-only path
+        run: |
+          STAGE_DIR="/tmp/cst-reviewed-owner-qa-${GITHUB_RUN_ID}"
+          trap 'chmod u+w "$STAGE_DIR" 2>/dev/null || :; rm -rf -- "$STAGE_DIR"' EXIT
+          OWNER_QA_STAGE_DIR="$STAGE_DIR" bash scripts/tests/customer-invoice-reviewed-owner-qa-stage.sh
+          test ! -e /opt/cst-customer-invoice-owner-bundle-dev
+          echo QA_OWNER_TEMP_BUNDLE_AUTOCLEAN_PASS
+      - name: Verify original Accounting and company-scoped payment Admin inbox notifications on disposable PG16
+        run: bash scripts/tests/customer-invoice-modern-role-pg16.qa.sh

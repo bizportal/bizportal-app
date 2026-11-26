@@ -5,6 +5,8 @@ WORK="$(mktemp -d /tmp/cst-original-owner-post.XXXXXXXX)"
 PG_NAME="cst-original-owner-post-$$"
 cleanup() {
   docker rm -f "$PG_NAME" >/dev/null 2>&1 || true
+  rm -f "$ROOT/artifacts/api-server/.qa-billing-handler-bundle.mjs"
+  rm -f "$ROOT/artifacts/api-server/.qa-invoice-issuer-bundle.mjs"
   rm -rf -- "$WORK"
 }
 trap cleanup EXIT
@@ -94,7 +96,7 @@ await build({
   logLevel: 'warning',
 });
 const expected = {
-  'portalInvoiceAdapter.mjs': '8363f9f3d5abd3ba84cf29c839869caa83230f6e755b04bb7ae834fdc8a169ea',
+  'portalInvoiceAdapter.mjs': '7f6568dd838b18698078ed87d4a2c64bc8014ff73f278df405d62fa35628d367',
   'pino-file.mjs': 'bbc4281497fe72cf43c497927570f930aaed27f73481e652ccfef6a5d1e102f2',
   'pino-pretty.mjs': 'db4343e9a60574d43281e8e6731ec71a1317c53737c5cfc11049cd565ceae8ea',
   'pino-worker.mjs': 'b1905ab6d4843945437af840160a682b9d86c3bee9ae7cb96f21032a98652297',
@@ -125,3 +127,25 @@ APP_ENV=development NODE_ENV=development \
  CUSTOMER_INVOICE_DISPOSABLE_OWNER_PATH="$WORK/bundle/portalInvoiceAdapter.mjs" \
  node scripts/tests/customer-invoice-original-owner-disposable.mjs
 echo ORIGINAL_OWNER_DISPOSABLE_JOURNAL_ACCEPTANCE_PASS
+
+# Real Portal handler + original owner with ONE disposable PostgreSQL transaction.
+# Portal source is an exact SHA-pinned separate checkout in CI. Its runtime
+# DB/storage/notifications are substituted ONLY in the QA bundle, never DEV.
+test -f "$ROOT/vendor/customer-portal/server/billing-operations.mjs"
+test -f "$ROOT/vendor/bizportal-otp/artifacts/api-server/src/routes/dev-customer-invoice-attestation.ts"
+(cd "$ROOT/artifacts/api-server" && node "$ROOT/scripts/tests/customer-invoice-bizportal-otp-issuer-disposable-bundle.mjs")
+node "$ROOT/scripts/tests/customer-invoice-portal-handler-disposable-bundle.mjs"
+docker cp "$ROOT/scripts/tests/customer-invoice-portal-handler-disposable-extra.sql" \
+  "$PG_NAME":/tmp/portal-qa.sql
+docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic \
+  -f /tmp/portal-qa.sql > "$WORK/portal-schema.log"
+APP_ENV=development NODE_ENV=development \
+ CUSTOMER_PORTAL_ATOMIC_ACCOUNTING_POST_DEV=true \
+ CUSTOMER_PORTAL_REQUIRE_POSTED_AR_EVIDENCE_DEV=true \
+ CUSTOMER_PORTAL_REQUIRE_BIZPORTAL_ATTEST_DEV=true \
+ CUSTOMER_INVOICE_DISPOSABLE_DB_URL="postgresql://postgres:disposable-only@127.0.0.1:$PORT/invoice_synthetic" \
+ CUSTOMER_INVOICE_DISPOSABLE_OWNER_PATH="$WORK/bundle/portalInvoiceAdapter.mjs" \
+ node "$ROOT/scripts/tests/customer-invoice-portal-handler-disposable.mjs"
+rm -f "$ROOT/artifacts/api-server/.qa-billing-handler-bundle.mjs"
+echo ORIGINAL_PORTAL_HANDLER_DISPOSABLE_E2E_PASS
+
