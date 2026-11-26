@@ -118,7 +118,7 @@ describe("Account18 pending receipt intake HTTP — no journal or approval", () 
   it("inserts only a pending UUID-bound document after exact private byte readback", async () => {
     const response = await post();
     expect(response.status).toBe(201);
-    const result = await response.json();
+    const result = await response.json() as { transactionId: string; status: string; postingAllowed: boolean };
     expect(result).toMatchObject({
       mode: "PENDING_PRIVATE_CASH_EVIDENCE_DEV",
       status: "PENDING_VERIFICATION",
