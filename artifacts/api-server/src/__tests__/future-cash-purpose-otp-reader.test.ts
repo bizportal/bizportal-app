@@ -41,6 +41,7 @@ describe("Account18 purpose-separated OTP approval reader — SELECT only", () =
     expect(sql.startsWith("select")).toBe(true);
     expect(sql).not.toMatch(/\b(insert|update|delete)\b/);
     expect(sql).toContain("verified_at is not null");
+    expect(sql).toContain("select email, verified_at, expires_at, created_at");
     expect(sql).toContain("verified_at <= expires_at");
     expect(sql).toContain("verified_at >= created_at");
     expect(sql).toContain("attempts < 5");
