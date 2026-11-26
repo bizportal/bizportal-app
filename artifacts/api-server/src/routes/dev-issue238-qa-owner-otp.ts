@@ -21,6 +21,13 @@ const TESTS = [
   "issue238-pgcron164-scheduler-crash-qa.sh",
 ] as const;
 const MAX_SESSION_AGE_MS = 10 * 60_000;
+const EXACT_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+// A durable AI Core command and task ID must already exist and be identified
+// before Owner signs. This endpoint does not authenticate their DB existence.
+function validWorkIds(commandId: unknown, jobId: unknown): commandId is string {
+  return typeof commandId === "string" && typeof jobId === "string" &&
+    EXACT_UUID.test(commandId) && EXACT_UUID.test(jobId);
+}
 const MAX_CHALLENGE_AGE_MS = 60_000;
 const HKDF_SALT = "CST_BIZPORTAL_ISSUE238_DEV_V1";
 const KEY_INFO = "ISSUE238_OWNER_ED25519_ATTESTATION_V1";
@@ -67,11 +74,12 @@ function sameOrigin(req: Request): boolean {
   const configured = process.env.BIZPORTAL_ISSUE238_OWNER_ORIGIN_DEV;
   return Boolean(origin && configured && origin === configured && /^https:\/\//.test(configured));
 }
-function makeClaims(test: string, now: number) {
+function makeClaims(test: string, now: number, commandId: string, jobId: string) {
   if (!TESTS.includes(test as typeof TESTS[number])) throw new Error("UNLISTED_TEST");
+  if (!validWorkIds(commandId, jobId)) throw new Error("DURABLE_WORK_IDS_REQUIRED");
   return {
-    command_id:"CMD-"+randomBytes(16).toString("hex"),
-    job_id:"JOB-"+randomBytes(16).toString("hex"),
+    command_id:commandId,
+    job_id:jobId,
     nonce:"NONCE-"+randomBytes(16).toString("hex"),
     worker_id:WORKER, operation:PURPOSE, environment:"dev",
     project_ref:PROJECT, sql_sha256:SQL_SHA, image_sha256:IMAGE_SHA,
@@ -104,7 +112,10 @@ router.get("/auth/dev/issue238-qa/challenge", async(req,res)=>{
     if (!identity) return error(res,401,"Owner OTP session required");
     const requested = typeof req.query.test==="string" ? req.query.test : "";
     if (!TESTS.includes(requested as typeof TESTS[number])) return error(res,400,"Invalid QA test");
-    const claims=makeClaims(requested,Date.now());
+    const commandId=typeof req.query.commandId==="string" ? req.query.commandId : "";
+    const jobId=typeof req.query.jobId==="string" ? req.query.jobId : "";
+    if (!validWorkIds(commandId,jobId)) return error(res,400,"Verified AI Core command and job UUIDs required");
+    const claims=makeClaims(requested,Date.now(),commandId,jobId);
     const expiresAt=Date.now()+MAX_CHALLENGE_AGE_MS;
     const consentProof=challengeMac(claims,identity.actor.id,expiresAt);
     res.status(200).json({claims,expiresAt,consentProof,
@@ -132,15 +143,15 @@ router.post("/auth/dev/issue238-qa/approve", async(req,res)=>{
       return error(res,400,"Invalid challenge");
     if (typeof claims.test!=="string" || !TESTS.includes(claims.test as typeof TESTS[number]))
       return error(res,400,"Unlisted QA test");
-    const expected=makeClaims(String(claims.test),Date.now());
+    if (!validWorkIds(claims.command_id,claims.job_id)) return error(res,400,"Invalid durable work IDs");
+    const expected=makeClaims(String(claims.test),Date.now(),claims.command_id,claims.job_id);
     const fields=Object.keys(expected);
     if (Object.keys(claims).length!==fields.length ||
         fields.some(k=>!(k in claims)) ||
         fields.some(k=>!["command_id","job_id","nonce","issued_at","expires_at"].includes(k) &&
           claims[k] !== (expected as Record<string,unknown>)[k]))
       return error(res,400,"Out-of-scope claims");
-    if (!["command_id","job_id","nonce"].every(k=>
-      typeof claims[k]==="string" && /^(CMD|JOB|NONCE)-[a-f0-9]{32}$/.test(claims[k])) ||
+    if (typeof claims.nonce!=="string" || !/^NONCE-[a-f0-9]{32}$/.test(claims.nonce) ||
       !Number.isSafeInteger(claims.issued_at) || !Number.isSafeInteger(claims.expires_at) ||
       claims.issued_at > Math.floor(Date.now()/1000) ||
       Math.floor(Date.now()/1000)-claims.issued_at>60 ||
