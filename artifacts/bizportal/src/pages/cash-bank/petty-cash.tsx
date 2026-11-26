@@ -117,8 +117,9 @@ export default function CashBankPettyCash() {
         method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
         body: JSON.stringify({ ...form, companyId: activeCompanyId }),
       });
-      if (!response.ok) {
-        setError(`Transaksi belum disimpan (HTTP ${response.status}). Periksa kesiapan layanan Kas Kecil.`);
+      const saveResult = response.ok ? await response.json().catch(() => null) : null;
+      if (!response.ok || !saveResult || saveResult.ok === false || saveResult.error) {
+        setError(`Transaksi belum terkonfirmasi tersimpan (HTTP ${response.status}). Periksa layanan Kas Kecil.`);
         return;
       }
       setShowModal(false);
@@ -137,8 +138,9 @@ export default function CashBankPettyCash() {
       const result = await fetch(`${API}/cash-bank/petty-cash/${id}/${endpoint}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" }, credentials: "include",
       });
-      if (!result.ok) {
-        setError(`Status transaksi tidak diubah (HTTP ${result.status}).`);
+      const actionResult = result.ok ? await result.json().catch(() => null) : null;
+      if (!result.ok || !actionResult || actionResult.ok === false || actionResult.error) {
+        setError(`Perubahan status belum terkonfirmasi (HTTP ${result.status}).`);
         return;
       }
       await load();
