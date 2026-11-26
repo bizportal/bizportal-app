@@ -20,6 +20,7 @@ import driverGeofenceRouter from "./driver-geofence";
 import legacyReadParityRouter from "./legacy-read-parity";
 import aiReviewReadParityRouter from "./ai-review-read-parity";
 import cashBankReadParityRouter from "./cash-bank-read-parity";
+import scFutureCashPreviewRouter from "./sc-future-cash-preview";
 import advanceKasbonReadOnlyRouter from "./advance-kasbon-readonly";
 import accountingSettingsReadParityRouter from "./accounting-settings-read-parity";
 import fleetIntelligenceRouter from "./fleet-intelligence";
@@ -135,6 +136,8 @@ router.use(driverGeofenceRouter);
 router.use(adminRealtimeRouter);
 router.use(legacyReadParityRouter);
 router.use(aiReviewReadParityRouter);
+// Signed Owner read-only cash preview must precede the generic cash-bank auth fallback.
+router.use(scFutureCashPreviewRouter);
 router.use(cashBankReadParityRouter);
 router.use(advanceKasbonReadOnlyRouter);
 router.use(accountingSettingsReadParityRouter);

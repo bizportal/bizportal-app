@@ -148,6 +148,7 @@ const CashBankImportsPage = React.lazy(() => import("@/pages/cash-bank/imports")
 const CashBankTransfersPage = React.lazy(() => import("@/pages/cash-bank/transfers"));
 const CashBankForecastPage = React.lazy(() => import("@/pages/cash-bank/forecast"));
 const CashBankPettyCashPage = React.lazy(() => import("@/pages/cash-bank/petty-cash"));
+const ScNewCashPreviewPage = React.lazy(() => import("@/pages/cash-bank/sc-new"));
 const CashBankSettingsPage = React.lazy(() => import("@/pages/cash-bank/settings"));
 const AccountingSettingsPage = React.lazy(() => import("@/pages/accounting/settings"));
 const WaReportSettingsPage = React.lazy(() => import("@/pages/accounting/wa-report-settings"));
@@ -421,6 +422,7 @@ const NAV_ROUTE_PRELOADERS: Record<string, () => Promise<unknown>> = {
   "/accounting/bank-reconciliation": () => import("@/pages/accounting/bank-reconciliation"),
   "/cash-bank/forecast": () => import("@/pages/cash-bank/forecast"),
   "/cash-bank/petty-cash": () => import("@/pages/cash-bank/petty-cash"),
+  "/cash-bank/sc-new": () => import("@/pages/cash-bank/sc-new"),
   "/cash-bank/settings": () => import("@/pages/cash-bank/settings"),
   "/accounting/hub": () => import("@/pages/accounting/hub/index"),
   "/accounting/wa-report-settings": () => import("@/pages/accounting/wa-report-settings"),
@@ -956,6 +958,7 @@ export function AppRoutes({ rootGuard }: { rootGuard?: React.ComponentType }) {
       <Route path="/cash-bank/reconciliation"><Redirect to="/accounting/bank-reconciliation" /></Route>
       <Route path="/cash-bank/forecast" component={PR(CashBankForecastPage)} />
       <Route path="/cash-bank/petty-cash" component={PR(CashBankPettyCashPage)} />
+      <Route path="/cash-bank/sc-new" component={PR(ScNewCashPreviewPage)} />
       <Route path="/cash-bank/settings" component={PR(CashBankSettingsPage)} />
       <Route path="/cash-bank"><Redirect to="/cash-bank/dashboard" /></Route>
 
