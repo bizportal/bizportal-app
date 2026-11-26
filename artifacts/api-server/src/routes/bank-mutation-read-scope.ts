@@ -11,7 +11,21 @@ export type BankMutationReadFilter = {
 export function scopeBankMutationRead(
   selected: BankMutationReadFilter,
   actorCompanyId: number | null,
+  verifiedSuperAdmin = false,
 ): { where: string; values: unknown[] } {
+  // Only a database-revalidated signed Super Admin can explicitly select
+  // another company. No missing/'all' scope may grant all-company reads.
+  if (verifiedSuperAdmin && selected.companyId !== null) {
+    const selectedId = selected.companyId;
+    if (typeof selectedId !== "number" || !Number.isSafeInteger(selectedId) || selectedId <= 0) {
+      throw new Error("UNVERIFIED_ACTOR_COMPANY");
+    }
+    const values = [...selected.values, selectedId];
+    return {
+      where: `(${selected.where}) and bm.company_id = $${values.length}`,
+      values,
+    };
+  }
   if (
     typeof actorCompanyId !== "number"
     || !Number.isSafeInteger(actorCompanyId)

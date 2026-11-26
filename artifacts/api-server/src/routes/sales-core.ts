@@ -16,7 +16,99 @@ function numeric(value: unknown): number {
   return Number.isFinite(result) ? result : 0;
 }
 
-router.use(authenticateAdmin);
+// Only Sales routes require this guard. Never intercept unrelated API routers.
+router.use("/sales", authenticateAdmin);
+
+// DEV-only read parity for the exact synthetic Order #108.
+// The old UI queries GET /sales/documents/:id, which the canonical DEV router
+// did not expose. No legacy writer or Invoice route is imported here.
+router.get("/sales/documents/:id", async (request, response): Promise<void> => {
+  // Reading an existing QA order is not a write-capability. The explicit
+  // customer-provisioning flag remains mandatory for POST, but not for GET.
+  if (request.params.id !== "108" ||
+      !isDevelopmentEnvironment() || process.env.APP_ENV !== "development" ||
+      !isSignedOtpDevEnabled()) {
+    response.status(404).json({ error: "Not found" });
+    return;
+  }
+  const session = getProductionSession(request);
+  const actor = session ? await getProductionUser(session).catch(() => null) : null;
+  if (!session || !actor || actor.id !== session.id ||
+      actor.email.trim().toLowerCase() !== session.email ||
+      actor.role !== "super_admin" ||
+      (actor.companyId !== null && Number(actor.companyId) !== 1)) {
+    response.status(403).json({ error: "Signed CST Super Admin OTP session required" });
+    return;
+  }
+  try {
+    const order = await pool.query<{
+      id: number; doc_number: string; kind: string; status: string;
+      invoice_status: string; delivery_status: string; payment_status: string;
+      customer_id: number | null; customer_name: string; total_amount: string;
+      tax_rate_id: number | null; tax_amount: string; grand_total: string;
+      origin: string | null; destination: string | null;
+      transport_mode: string | null; etd: Date | null; eta: Date | null;
+      valid_until: Date | null; expected_date: Date | null; notes: string | null;
+      confirmed_at: Date | null; amount_paid: string;
+      created_at: Date; updated_at: Date;
+      ai_generated: boolean; ai_source_wa_phone: string | null;
+      ai_source_correspondence_id: number | null;
+    }>(
+      `SELECT id,doc_number,kind::text,status::text,invoice_status::text,
+              delivery_status::text,payment_status::text,customer_id,customer_name,
+              total_amount,tax_rate_id,tax_amount,grand_total,origin,destination,
+              transport_mode,etd,eta,valid_until,expected_date,notes,confirmed_at,
+              amount_paid,created_at,updated_at,ai_generated,ai_source_wa_phone,
+              ai_source_correspondence_id
+         FROM public.sales_documents
+        WHERE id=$1 AND company_id=$2 AND doc_number=$3
+          AND kind::text='order'`,
+      [108, 1, "QA-CST-DEV-OWNER-20261120-001"],
+    );
+    const doc = order.rows[0];
+    if (!doc) {
+      response.status(404).json({ error: "QA Sales Order #108 not found" });
+      return;
+    }
+    const lines = await pool.query<{
+      id: number; document_id: number; product_id: number | null;
+      name: string; description: string | null;
+      quantity: string; unit_price: string; subtotal: string;
+    }>(
+      `SELECT id,document_id,product_id,name,description,quantity,unit_price,subtotal
+         FROM public.sales_document_lines WHERE document_id=$1 ORDER BY id`,
+      [108],
+    );
+    response.setHeader("Cache-Control", "no-store");
+    response.json({
+      id: doc.id, docNumber: doc.doc_number,
+      kind: doc.kind, status: doc.status, invoiceStatus: doc.invoice_status,
+      deliveryStatus: doc.delivery_status, paymentStatus: doc.payment_status,
+      customerId: doc.customer_id, customerName: doc.customer_name,
+      customerAddress: null, totalAmount: numeric(doc.total_amount),
+      taxRateId: doc.tax_rate_id, taxAmount: numeric(doc.tax_amount),
+      grandTotal: numeric(doc.grand_total), origin: doc.origin,
+      destination: doc.destination, transportMode: doc.transport_mode,
+      etd: isoDate(doc.etd), eta: isoDate(doc.eta),
+      validUntil: isoDate(doc.valid_until), expectedDate: isoDate(doc.expected_date),
+      notes: doc.notes, confirmedAt: isoDate(doc.confirmed_at),
+      amountPaid: numeric(doc.amount_paid),
+      createdAt: isoDate(doc.created_at), updatedAt: isoDate(doc.updated_at),
+      aiGenerated: doc.ai_generated, aiSourceWaPhone: doc.ai_source_wa_phone,
+      aiSourceCorrespondenceId: doc.ai_source_correspondence_id,
+      lines: lines.rows.map(line => ({
+        id: line.id, documentId: line.document_id, productId: line.product_id,
+        name: line.name, description: line.description,
+        quantity: numeric(line.quantity), unitPrice: numeric(line.unit_price),
+        subtotal: numeric(line.subtotal),
+      })),
+    });
+  } catch (error) {
+    request.log?.error?.({ error }, "CST-DEV QA Sales Order #108 read unavailable");
+    response.status(503).json({ error: "QA Sales Order read unavailable" });
+  }
+});
+
 
 router.get("/sales/ai-drafts", async (request, response): Promise<void> => {
   const adminRequest = request as AdminRequest;

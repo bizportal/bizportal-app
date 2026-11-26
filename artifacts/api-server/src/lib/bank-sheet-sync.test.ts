@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach } from "vitest";
 import { parseAmount } from "./bank-sheet-sync";
 
 describe("bank sheet amount parsing", () => {
@@ -60,7 +61,7 @@ vi.mock("./google-sheets", () => ({
   writeSpreadsheetValues: mocks.writeSpreadsheetValues,
 }));
 
-import { syncOneBankSheetConfig } from "./bank-sheet-sync";
+import { parseCashSheetDirectionDates, syncOneBankSheetConfig } from "./bank-sheet-sync";
 
 type StoredMutation = {
   id: number;
@@ -93,7 +94,12 @@ const config = {
 let storedMutations: StoredMutation[];
 let nextMutationId: number;
 
+afterEach(() => vi.unstubAllEnvs());
+
 beforeEach(() => {
+  // This suite tests sync behavior only against mocked DB/Google Sheets.
+  // Enable the DEV sync path in the test fixture, never in live runtime.
+  vi.stubEnv("BANK_SHEET_DEV_WRITES_ENABLED", "true");
   config.account_type = "bank";
   storedMutations = [];
   nextMutationId = 100;
@@ -206,38 +212,25 @@ describe("Google Sheet bank mutation sync", () => {
     expect(insertCalls[1]?.[1]?.[5]).toBe("IN");
   });
 
-  it("uses accounting Debit/Kredit semantics for cash ledger accounts", async () => {
-    config.account_type = "cash";
-    mocks.readSpreadsheetValues.mockResolvedValue([
+  it("uses accounting Debit/Kredit semantics for cash ledger accounts (parser only; no bank writer)", () => {
+    const directions = parseCashSheetDirectionDates([
       ["Tanggal", "Keterangan", "Debit", "Kredit"],
-      ["2026-10-08", "Dana Masuk dari Angelia Nirwana", "600000", "0"],
-      ["2026-10-09", "Transfer ke Felicia Justiani", "0", "450000"],
+      ["2026-10-08", "Cash receipt", "600000", "0"],
+      ["2026-10-09", "Cash payment", "0", "450000"],
     ]);
-
-    await syncOneBankSheetConfig(config.id);
-    const insertCalls = mocks.clientQuery.mock.calls.filter(([sql]) =>
-      String(sql).includes("insert into public.bank_mutations"),
-    );
-
-    expect(insertCalls[0]?.[1]?.[5]).toBe("IN");
-    expect(insertCalls[1]?.[1]?.[5]).toBe("OUT");
+    expect(directions.map((row) => row.direction)).toEqual(["IN", "OUT"]);
+    expect(mocks.poolConnect).not.toHaveBeenCalled();
+    expect(mocks.writeSpreadsheetValues).not.toHaveBeenCalled();
   });
 
-  it("honors explicit Masuk/Keluar headers even for cash accounts", async () => {
-    config.account_type = "cash";
-    mocks.readSpreadsheetValues.mockResolvedValue([
+  it("honors explicit Masuk/Keluar headers even for cash accounts (parser only; no bank writer)", () => {
+    const directions = parseCashSheetDirectionDates([
       ["Tanggal", "Keterangan", "Keluar", "Masuk"],
-      ["2026-10-08", "Transfer ke vendor", "200000", "0"],
-      ["2026-10-09", "Dana masuk customer", "0", "300000"],
+      ["2026-10-08", "Cash out", "200000", "0"],
+      ["2026-10-09", "Cash in", "0", "300000"],
     ]);
-
-    await syncOneBankSheetConfig(config.id);
-    const insertCalls = mocks.clientQuery.mock.calls.filter(([sql]) =>
-      String(sql).includes("insert into public.bank_mutations"),
-    );
-
-    expect(insertCalls[0]?.[1]?.[5]).toBe("OUT");
-    expect(insertCalls[1]?.[1]?.[5]).toBe("IN");
+    expect(directions.map((row) => row.direction)).toEqual(["OUT", "IN"]);
+    expect(mocks.poolConnect).not.toHaveBeenCalled();
   });
 
   it("infers Indonesian DD/MM/YYYY dates when the sheet contains day-first evidence", async () => {
@@ -257,21 +250,16 @@ describe("Google Sheet bank mutation sync", () => {
     expect(insertCalls[1]?.[1]?.[2]).toBe("2026-08-07");
   });
 
-  it("uses DMY for ambiguous cash-ledger dates when the Sheet mixes locale formats", async () => {
-    config.account_type = "cash";
-    mocks.readSpreadsheetValues.mockResolvedValue([
+  it("uses DMY for ambiguous cash-ledger dates when the Sheet mixes locale formats (parser only; no bank writer)", () => {
+    const directions = parseCashSheetDirectionDates([
       ["Tanggal", "Keterangan", "Debit", "Kredit"],
-      ["25/09/2026", "Kas keluar September", "0", "100000"],
-      ["09/25/2026", "Legacy US-formatted September row", "0", "200000"],
-      ["01/10/2026", "Kas keluar Oktober", "0", "300000"],
+      ["25/09/2026", "Cash September", "0", "100000"],
+      ["09/25/2026", "Legacy US date", "0", "200000"],
+      ["01/10/2026", "Cash October", "0", "300000"],
     ]);
-
-    await syncOneBankSheetConfig(config.id);
-    const insertCalls = mocks.clientQuery.mock.calls.filter(([sql]) =>
-      String(sql).includes("insert into public.bank_mutations"),
-    );
-
-    expect(insertCalls[2]?.[1]?.[2]).toBe("2026-10-01");
+    expect(directions).toHaveLength(3);
+    expect(directions[2]?.transactionDate).toBe("2026-10-01");
+    expect(mocks.poolConnect).not.toHaveBeenCalled();
   });
 
   it("keeps US MM/DD/YYYY dates when month-first evidence exists", async () => {

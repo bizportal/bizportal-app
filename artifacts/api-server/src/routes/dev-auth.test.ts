@@ -34,6 +34,7 @@ const originalEnvironment = {
   DEV_LOGIN_EMAILS: process.env.DEV_LOGIN_EMAILS,
   SESSION_SECRET: process.env.SESSION_SECRET,
   BIZPORTAL_SESSION_SECRET: process.env.BIZPORTAL_SESSION_SECRET,
+  BIZPORTAL_SIGNED_OTP_ENABLED_DEV: process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV,
   SUPABASE_DATABASE_URL: process.env.SUPABASE_DATABASE_URL,
   DATABASE_URL: process.env.DATABASE_URL,
 };
@@ -145,6 +146,7 @@ beforeEach(() => {
   process.env.BIZPORTAL_API_ORIGIN_DEV = "https://development.example.test";
   process.env.DEV_LOGIN_EMAILS = allowedEmail;
   process.env.SESSION_SECRET = sessionSecret;
+  delete process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV;
 });
 
 afterEach(() => {
@@ -240,6 +242,74 @@ describe("development login bridge", () => {
     const repeated = await requestApi("GET", "/api/logout?redirect=%2F");
     expect(repeated.status).toBe(302);
     expect(repeated.headers.location).toBe("/");
+  });
+
+
+  it("keeps signed OTP policy disabled for production API deployments", async () => {
+    process.env.APP_ENV = "production";
+    process.env.NODE_ENV = "production";
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
+    const response = await requestApi("GET", "/api/auth/dev-auth-policy");
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ signedOtpRequired: false, signedOtpReady: true });
+    expect(response.headers["cache-control"]).toBe("no-store");
+  });
+
+  it("publishes signed OTP policy without exposing credentials", async () => {
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
+    const response = await requestApi("GET", "/api/auth/dev-auth-policy");
+    expect(response.status).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(JSON.parse(response.body)).toEqual({ signedOtpRequired: true, signedOtpReady: true });
+  });
+
+  it("fails closed when signed OTP is required but its explicit secret is missing", async () => {
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
+    delete process.env.SESSION_SECRET;
+    delete process.env.BIZPORTAL_SESSION_SECRET;
+    const policy = await requestApi("GET", "/api/auth/dev-auth-policy");
+    expect(JSON.parse(policy.body)).toEqual({ signedOtpRequired: true, signedOtpReady: false });
+    const login = await requestApi("POST", "/api/auth/dev-login", { email: allowedEmail });
+    expect(login.status).toBe(404);
+    expect(login.headers["set-cookie"]).toBeUndefined();
+    const user = await requestApi("GET", "/api/auth/user");
+    expect(user.status).toBe(503);
+  });
+
+  it("disables legacy DEV auto-login when signed OTP is enabled", async () => {
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
+
+    const loginResponse = await requestApi("POST", "/api/auth/dev-login", {
+      email: allowedEmail,
+    });
+
+    expect(loginResponse.status).toBe(404);
+    expect(JSON.parse(loginResponse.body)).toEqual({
+      error: "Legacy DEV login is disabled; use verified email OTP.",
+    });
+    expect(loginResponse.headers["set-cookie"]).toBeUndefined();
+  });
+
+  it("never accepts a legacy DEV cookie as a signed OTP session", async () => {
+    const legacyLogin = await requestApi("POST", "/api/auth/dev-login", {
+      email: allowedEmail,
+    });
+    expect(legacyLogin.status).toBe(200);
+    const legacyCookie = legacyLogin.headers["set-cookie"]?.[0]?.split(";", 1)[0];
+    expect(legacyCookie).toMatch(/^bizportal_dev_session=/);
+
+    process.env.BIZPORTAL_SIGNED_OTP_ENABLED_DEV = "true";
+    const authUser = await requestApi("GET", "/api/auth/user", undefined, legacyCookie);
+    expect(authUser.status).toBe(401);
+    expect(JSON.parse(authUser.body)).toEqual({
+      error: "Signed email OTP session required",
+    });
+
+    const profile = await requestApi("GET", "/api/users/me", undefined, legacyCookie);
+    expect(profile.status).toBe(401);
+    expect(JSON.parse(profile.body)).toEqual({
+      error: "Signed email OTP session required",
+    });
   });
 
   it("rejects external redirect targets during logout", async () => {

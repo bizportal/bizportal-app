@@ -28,6 +28,29 @@ describe("bank mutation read authorization", () => {
     }
   });
 
+  it("allows only a verified signed Super Admin to read an explicitly selected company", () => {
+    const original = { where: "bm.company_id = $1 and bm.status = $2", values: [1, "posted"], companyId: 1 };
+    expect(scopeBankMutationRead(original, null, true)).toEqual({
+      where: "(bm.company_id = $1 and bm.status = $2) and bm.company_id = $3",
+      values: [1, "posted", 1],
+    });
+    expect(original.values).toEqual([1, "posted"]);
+    expect(scopeBankMutationRead(original, 3, true)).toEqual({
+      where: "(bm.company_id = $1 and bm.status = $2) and bm.company_id = $3",
+      values: [1, "posted", 1],
+    });
+    for (const invalid of [null, 0, -1, 1.5, NaN]) {
+      expect(() => scopeBankMutationRead({where:"true",values:[],companyId:invalid},null,true))
+        .toThrow("UNVERIFIED_ACTOR_COMPANY");
+    }
+    // Even a Super Admin never gets a consolidated cross-company read.
+    expect(() => scopeBankMutationRead({where:"true",values:[],companyId:null},null,true))
+      .toThrow("UNVERIFIED_ACTOR_COMPANY");
+    expect(() => scopeBankMutationRead(original,null,false)).toThrow("UNVERIFIED_ACTOR_COMPANY");
+    expect(() => scopeBankMutationRead({where:"true",values:[],companyId:3},1,false))
+      .toThrow("COMPANY_SCOPE_FORBIDDEN");
+  });
+
   it("requires session checks before either bank mutation read reaches the database", () => {
     const src = readFileSync(resolve(process.cwd(),"src/routes/bank-reconciliation.ts"),"utf8");
     for (const [route, next] of [

@@ -7,11 +7,22 @@ import {
   hydrateQrisReviewDiagnostics,
   listQrisReviewDiagnostics,
 } from "../lib/reconciliation/qrisReviewDiagnostics";
-import { inspectSpreadsheet } from "../lib/google-sheets";
+import { inspectSpreadsheet, readSpreadsheetValues, readCashMismatchCellEvidence } from "../lib/google-sheets";
+import { bankSheetConfigAccountJoin } from "../lib/bankSheetConfigAccountJoin";
+import { getDevBankSheetReaderFromConfiguredSource } from "../lib/bankSheetScopedReader";
+import { classifyBankSheetReaderFailure } from "../lib/bankSheetReaderDiagnostic";
 import {
   syncAllBankSheetConfigs,
   syncOneBankSheetConfig,
+  previewCashSheetRows,
+  planCashSheetImportDryRun,
+  prepareCashLedgerDraftInputs,
+  auditCashSheetRunningBalances,
+  inspectCashSourceSentinels,
+  explainCashRawBalanceDifferences,
 } from "../lib/bank-sheet-sync";
+import { planCashLedgerDrafts } from "../lib/cash-ledger-draft-planner";
+import { planEvidenceScopedCashDrafts } from "../lib/cash-evidence-draft-bridge";
 import {
   getDevSession,
   getProductionSession,
@@ -70,6 +81,7 @@ interface ApprovalBody {
 interface ApprovalActor {
   email: string;
   companyId: number | null;
+  signedSuperAdmin?: boolean;
 }
 
 type MatchingMode = "new" | "retry_unmatched" | "rematch_non_final";
@@ -364,7 +376,7 @@ async function getApprovalActor(request: Request): Promise<ApprovalActor | null>
   if (signedSession) {
     const user = await getProductionUser(signedSession);
     if (!user || !allowedRoles.has(user.role.toLowerCase())) return null;
-    return { email: user.email, companyId: user.companyId };
+    return { email: user.email, companyId: user.companyId, signedSuperAdmin: user.role.toLowerCase() === "super_admin" };
   }
   if (!isDevelopmentEnvironment()) return null;
   const user = getDevSession(request);
@@ -7820,7 +7832,7 @@ router.get("/bank-reconciliation/mutations", async (req, res): Promise<void> => 
   const actor = await getApprovalActor(req).catch(() => null);
   if (!actor) { res.status(401).json({ error: "Unauthorized" }); return; }
   try {
-    const { where, values } = scopeBankMutationRead(buildMutationFilters(req), actor.companyId);
+    const { where, values } = scopeBankMutationRead(buildMutationFilters(req), actor.companyId, actor.signedSuperAdmin === true);
     const requestedLimit = parsePositiveInt(queryString(req.query.limit));
     const requestedOffset = Number(queryString(req.query.offset) ?? 0);
     const limit = Math.min(requestedLimit ?? 20, 1_000);
@@ -7875,7 +7887,7 @@ router.get("/bank-reconciliation/summary", async (req, res): Promise<void> => {
   const actor = await getApprovalActor(req).catch(() => null);
   if (!actor) { res.status(401).json({ error: "Unauthorized" }); return; }
   try {
-    const { where, values } = scopeBankMutationRead(buildMutationFilters(req), actor.companyId);
+    const { where, values } = scopeBankMutationRead(buildMutationFilters(req), actor.companyId, actor.signedSuperAdmin === true);
     const result = await pool.query(
       `select bm.status, count(*)::text as count, coalesce(sum(bm.amount), 0)::text as total_amount
          from public.bank_mutations bm
@@ -7950,7 +7962,7 @@ const selectSheetConfigs = `
     config.label,
     config.sheet_id,
     config.tab_name,
-    config.bank_account_id,
+    cba.id as bank_account_id,
     config.bank_account_number,
     config.bank_name,
     cba.name as account_name,
@@ -7962,19 +7974,149 @@ const selectSheetConfigs = `
     config.last_sync_error
   from public.bank_sheet_configs config
   left join public.companies company on company.id = config.company_id
-  left join public.company_bank_accounts cba on cba.id = config.bank_account_id
+  ${bankSheetConfigAccountJoin}
   left join public.chart_of_accounts coa on coa.id = cba.coa_id
 `;
 
+// Shared company-scoped auth for Sheet configuration CRUD, test and sync.
+// This guard runs before any database mutation or Google Sheet API call.
+router.use(["/bank-reconciliation/sheet-configs", "/bank-reconciliation/sheet-sync"], async (req, res, next) => {
+  let actor: ApprovalActor | null;
+  try { actor = await getApprovalActor(req); }
+  catch (error) {
+    req.log.error({ error }, "Bank Sheet authorization unavailable");
+    res.status(503).json({ error: "Authorization service unavailable" });
+    return;
+  }
+  if (!actor) { res.status(401).json({ error: "Unauthorized" }); return; }
+
+  // router.use() temporarily strips its mount prefix from req.path.
+  // Use the original path to enforce config ownership for nested routes.
+  const requestPath = req.originalUrl.split("?")[0];
+  const isCreate = req.method === "POST"
+    && /(?:^|\/)bank-reconciliation\/sheet-configs$/.test(requestPath);
+  const requestedCompany = isCreate || req.method === "PUT"
+    ? req.body?.company_id : undefined;
+  if (requestedCompany !== undefined && actor.companyId != null
+      && Number(requestedCompany) !== actor.companyId) {
+    res.status(403).json({ error: "Akses perusahaan ditolak" });
+    return;
+  }
+  const idMatch = requestPath.match(/(?:^|\/)bank-reconciliation\/sheet-configs\/(\d+)(?:\/(?:sync|test))?$/);
+  if (idMatch && actor.companyId != null && !(isDevelopmentEnvironment() && (requestPath.endsWith("/test") || process.env.BANK_SHEET_DEV_WRITES_ENABLED !== "true"))) {
+    try {
+      const owner = await pool.query<{ company_id: number | null }>(
+        "select company_id from public.bank_sheet_configs where id=$1", [Number(idMatch[1])],
+      );
+      if (owner.rows.length !== 1) { res.status(404).json({ error: "Konfigurasi tidak ditemukan" }); return; }
+      if (owner.rows[0].company_id !== actor.companyId) {
+        res.status(403).json({ error: "Akses perusahaan ditolak" });
+        return;
+      }
+    } catch (error) {
+      req.log.error({ error }, "Bank Sheet scope lookup failed");
+      res.status(503).json({ error: "Konfigurasi Google Sheet tidak dapat diverifikasi" });
+      return;
+    }
+  }
+  // Preserve cross-tenant 403 and invalid-company 400 on bulk Sheet sync
+  // even when this DEV candidate refuses all mutation/sync operations.
+  if (req.method === "POST" && requestPath.endsWith("/bank-reconciliation/sheet-sync")) {
+    const rawSyncCompany = req.query.company_id;
+    if (rawSyncCompany !== undefined && rawSyncCompany !== "" && rawSyncCompany !== "all") {
+      const syncCompanyId = parsePositiveInt(rawSyncCompany);
+      if (syncCompanyId === null) {
+        res.status(400).json({ error: "company_id tidak valid" });
+        return;
+      }
+      if (actor.companyId != null && syncCompanyId !== actor.companyId) {
+        res.status(403).json({ error: "Akses perusahaan ditolak" });
+        return;
+      }
+    }
+  }
+  // Source-only DEV candidate retains legacy Sheet rows without DDL.
+  // Until authenticated RLS + historical reconciliation gates pass, fail closed
+  // on all Sheet config writes/imports. A connectivity test is read-only.
+  const sheetConnectivityTest = req.method === "POST"
+    && requestPath.includes("/bank-reconciliation/sheet-configs/")
+    && requestPath.endsWith("/test");
+  // Single DEV-only metadata correction for CST config #3; other writes stay locked.
+  const narrowCstTabEdit = isDevelopmentEnvironment()
+    && process.env.BANK_SHEET_DEV_TAB_EDIT_ENABLED === "true"
+    && req.method === "PUT"
+    && /\/bank-reconciliation\/sheet-configs\/3$/.test(requestPath)
+    && actor.signedSuperAdmin === true;
+  const sheetMutation = req.method !== "GET" && req.method !== "HEAD"
+    && !sheetConnectivityTest && !narrowCstTabEdit;
+  if (isDevelopmentEnvironment()
+      && process.env.BANK_SHEET_DEV_WRITES_ENABLED !== "true"
+      && sheetMutation) {
+    res.status(423).json({
+      code: "BANK_SHEET_DEV_SOURCE_ONLY_READ_ONLY",
+      error: "Konfigurasi dan sinkronisasi Google Sheet dinonaktifkan pada kandidat DEV read-only",
+    });
+    return;
+  }
+  res.locals.sheetActor = actor;
+  next();
+});
+
 router.get("/bank-reconciliation/sheet-configs", async (req, res): Promise<void> => {
-  const companyId =
+  // Do not disclose bank account numbers or Spreadsheet IDs to callers
+  // without an authenticated, company-scoped Finance session.
+  let actor: ApprovalActor | null;
+  try { actor = await getApprovalActor(req); }
+  catch (error) {
+    req.log.error({ error }, "Sheet configuration auth unavailable");
+    res.status(503).json({ error: "Authorization service unavailable" });
+    return;
+  }
+  if (!actor) { res.status(401).json({ error: "Unauthorized" }); return; }
+
+  const requestedCompanyId =
     req.query.company_id === undefined ? null : parsePositiveInt(req.query.company_id);
-  if (req.query.company_id !== undefined && companyId === null) {
+  if (req.query.company_id !== undefined && requestedCompanyId === null) {
     res.status(400).json({ error: "company_id tidak valid" });
     return;
   }
-
+  if (actor.companyId != null && requestedCompanyId != null
+      && requestedCompanyId !== actor.companyId) {
+    res.status(403).json({ error: "Akses perusahaan ditolak" });
+    return;
+  }
+  const companyId = actor.companyId ?? requestedCompanyId;
+  // In DEV never expose all-company finance settings from the shared OTP pool.
+  // Requiring an explicit company also prevents an unscoped Super Admin list.
+  if (isDevelopmentEnvironment() && companyId === null) {
+    res.status(400).json({ error: "company_id wajib dipilih untuk membaca konfigurasi DEV" });
+    return;
+  }
   try {
+    if (isDevelopmentEnvironment()) {
+      // This separate restricted credential can only see its own company
+      // through PostgreSQL RLS; OTP/general app pool is never a fallback.
+      const reader = (await getDevBankSheetReaderFromConfiguredSource(companyId!));
+      const result = await reader.query<SheetConfigRow>(
+        `select config.id, config.company_id,
+                null::text as company_name,
+                config.label, config.sheet_id, config.tab_name,
+                cba.id as bank_account_id,
+                config.bank_account_number, config.bank_name,
+                cba.name as account_name,
+                coa.code as account_coa_code, coa.name as account_coa_name,
+                config.is_active, config.last_synced_at,
+                config.last_sync_status, config.last_sync_error
+           from public.bank_sheet_configs config
+           ${bankSheetConfigAccountJoin}
+           left join public.chart_of_accounts coa on coa.id=cba.coa_id
+          where config.company_id=$1
+          order by config.is_active desc, config.label, config.id`,
+        [companyId],
+      );
+      res.json({ configs: result.rows });
+      return;
+    }
     const result = await pool.query<SheetConfigRow>(
       `${selectSheetConfigs}
        ${companyId === null ? "" : "where config.company_id = $1"}
@@ -7983,8 +8125,16 @@ router.get("/bank-reconciliation/sheet-configs", async (req, res): Promise<void>
     );
     res.json({ configs: result.rows });
   } catch (error) {
-    req.log.error({ error }, "Failed to load sheet configurations");
-    res.status(503).json({ error: "Konfigurasi Google Sheet tidak dapat dimuat" });
+    if (isDevelopmentEnvironment()) {
+      // Log only a finite safe code. Never log raw exceptions: secret and
+      // database connector errors may embed credentials or connection URLs.
+      const code = classifyBankSheetReaderFailure(error);
+      req.log.error({ code, companyId }, "Failed to load sheet configurations");
+      res.status(503).json({ error: "Konfigurasi Google Sheet tidak dapat dimuat", code });
+    } else {
+      req.log.error({ error }, "Failed to load sheet configurations");
+      res.status(503).json({ error: "Konfigurasi Google Sheet tidak dapat dimuat" });
+    }
   }
 });
 
@@ -8065,6 +8215,47 @@ router.put("/bank-reconciliation/sheet-configs/:id", async (req, res): Promise<v
     return;
   }
 
+  // A single company-scoped, metadata-only correction. Never enable generic
+  // BANK_SHEET_DEV_WRITES_ENABLED to repair a tab name.
+  if (isDevelopmentEnvironment() && id === 3 && process.env.BANK_SHEET_DEV_TAB_EDIT_ENABLED === "true") {
+    const actor = res.locals.sheetActor as ApprovalActor | undefined;
+    if (!actor?.signedSuperAdmin) {
+      res.status(403).json({ error: "Signed Super Admin required" }); return;
+    }
+    const body = req.body as Record<string, unknown> | null;
+    const keys = body && typeof body === "object" && !Array.isArray(body) ? Object.keys(body) : [];
+    // The browser sends only the changed metadata, never banking identifiers.
+    if (keys.length !== 1 || keys[0] !== "tab_name"
+        || (actor.companyId !== null && actor.companyId !== 1)
+        || typeof body?.tab_name !== "string" || body.tab_name.trim().length < 1
+        || body.tab_name.trim().length > 100) {
+      res.status(400).json({ error: "Hanya nama tab CST #3 yang dapat disimpan" }); return;
+    }
+    try {
+      const result = await pool.query<SheetConfigRow>(
+        `update public.bank_sheet_configs cfg
+            set tab_name=$1, updated_at=now()
+          where cfg.id=3 and cfg.company_id=1
+            and cfg.label='kas besar'
+            and exists (
+              select 1 from public.company_bank_accounts a
+               where a.id=2 and a.company_id=cfg.company_id
+                 and regexp_replace(coalesce(a.account_number,''), '[^0-9]', '', 'g') =
+                     regexp_replace(coalesce(cfg.bank_account_number,''), '[^0-9]', '', 'g')
+            )
+          returning *`,
+        [body.tab_name.trim()],
+      );
+      if (result.rowCount !== 1) {
+        res.status(409).json({ error: "Konfigurasi berubah atau tidak cocok; muat ulang sebelum menyimpan" }); return;
+      }
+      res.json(result.rows[0]);
+    } catch (error) {
+      req.log.error({ code: (error as { code?: string }).code }, "DEV CST Sheet tab-only update failed");
+      res.status(503).json({ error: "Penyimpanan nama tab belum tersedia" });
+    }
+    return;
+  }
   const input = normalizeInput(req.body);
   try {
     const currentResult = await pool.query<{
@@ -8234,18 +8425,195 @@ router.delete("/bank-reconciliation/sheet-configs/:id", async (req, res): Promis
   }
 });
 
+// DEV-only, read-only and aggregate-only preflight for the separate Kas Besar SC
+// source. Does not invoke syncConfig, bank mutation writes, or Sheets writes.
+router.get("/bank-reconciliation/sheet-configs/5/preview", async (req, res): Promise<void> => {
+  if (!isDevelopmentEnvironment()) { res.status(404).json({ error: "Not found" }); return; }
+  const actor = res.locals.sheetActor as ApprovalActor | undefined;
+  const companyId = req.query.company_id === undefined ? null : parsePositiveInt(req.query.company_id);
+  if (!actor?.signedSuperAdmin || companyId !== 1
+      || (actor.companyId !== null && actor.companyId !== 1)) {
+    res.status(403).json({ error: "Akses pratinjau CST-DEV ditolak" }); return;
+  }
+  try {
+    const reader = await getDevBankSheetReaderFromConfiguredSource(1);
+    const result = await reader.query<{
+      sheet_id: string; tab_name: string; bank_account_id: number | null;
+    }>(
+      "select sheet_id, tab_name, bank_account_id from public.bank_sheet_configs where id=5 and company_id=1 and is_active=false",
+    );
+    const config = result.rows[0];
+    if (!config || config.bank_account_id !== 18 || config.tab_name !== "kas besar sc") {
+      res.status(409).json({ error: "Pemetaan Kas Besar SC tidak memenuhi prasyarat DEV" });
+      return;
+    }
+    const rows = await readSpreadsheetValues(config.sheet_id, config.tab_name);
+    const preview = previewCashSheetRows(rows);
+    const scope = { companyId: 1, configId: 5, accountId: 18 };
+    const initial = planCashSheetImportDryRun(rows, scope);
+    // Input rows are sourced from the already-tested cash parser.
+    // No counter-COA is guessed or approved: every source row stays blocked.
+    const draftInputs = prepareCashLedgerDraftInputs(rows, scope);
+    // In-memory only: simulate replay and a rollback to an empty proposal.
+    // Neither run writes to PostgreSQL or Google Sheets.
+    const transient = new Map(initial.proposed.map(
+      ({ sourceKey, fingerprint }) => [sourceKey, fingerprint] as const,
+    ));
+    const replay = planCashSheetImportDryRun(rows, scope, transient);
+    const afterRollback = planCashSheetImportDryRun(rows, scope);
+    const balanceAudit = auditCashSheetRunningBalances(rows);
+    const cashSourceSentinels = inspectCashSourceSentinels(rows);
+    // Query only the 8 mismatched debit, credit and saldo cells, never names,
+    // narratives, counterparties, or formula source text. If unavailable, the
+    // existing verified preview remains usable and the gate stays closed.
+    let mismatchCellEvidence: { status: "UNAVAILABLE" | "READY"; rows: Awaited<ReturnType<typeof readCashMismatchCellEvidence>> } = {
+      status: "UNAVAILABLE", rows: [],
+    };
+    let rawBalanceReconciliation: ReturnType<typeof explainCashRawBalanceDifferences> = [];
+    if (balanceAudit.balanceMismatchRowNumbers.length > 0) {
+      const h = (rows[0] ?? []).map((x) => String(x ?? "").trim().toLowerCase());
+      const columns = { debit: h.indexOf("debit"), credit: h.indexOf("kredit"), saldo: h.indexOf("saldo") };
+      if (Object.values(columns).every((n) => n >= 0)) {
+        try {
+          const mismatchRows = balanceAudit.balanceMismatchRowNumbers;
+          const evidenceRows = await readCashMismatchCellEvidence(
+            config.sheet_id, config.tab_name, columns,
+            [...mismatchRows, ...mismatchRows.map((n) => n - 1)],
+          );
+          // Keep existing API disclosure limited to the 8 flagged rows;
+          // adjacent raw numeric cells are used only inside the server audit.
+          mismatchCellEvidence = {
+            status: "READY",
+            rows: evidenceRows.filter((e) => mismatchRows.includes(e.rowNumber)),
+          };
+          rawBalanceReconciliation = explainCashRawBalanceDifferences(
+            balanceAudit.mismatchDetails, evidenceRows,
+          );
+        } catch {
+          // Never expose provider credentials, formulas, or response bodies.
+        }
+      }
+    }
+    // Dedicated company-scoped DEV reader: no bank_mutations SELECT/write grants.
+    const baseline = await reader.query<{ opening_balance: string | number | null; coa_id: number | null }>(
+      "select opening_balance, coa_id from public.company_bank_accounts where id=$1 and company_id=$2 and account_type='cash' and is_active=true",
+      [18, 1],
+    );
+    if (baseline.rows.length !== 1) {
+      res.status(409).json({ ok: false, error: "Akun Kas Besar SC tidak dapat diverifikasi" });
+      return;
+    }
+    const rawBaseline = baseline.rows[0].opening_balance;
+    const accountOpeningBalance = rawBaseline === null ? null : Number(rawBaseline);
+    const validAccountOpeningBalance = accountOpeningBalance !== null
+      && Number.isFinite(accountOpeningBalance) ? accountOpeningBalance : null;
+    const openingBalanceMatchesAccount = balanceAudit.openingBalanceAmount === null
+      || validAccountOpeningBalance === null ? null
+      : Math.round(balanceAudit.openingBalanceAmount * 100)
+        === Math.round(validAccountOpeningBalance * 100);
+    // Fail closed if the account has lost its previously verified cash COA.
+    if (Number(baseline.rows[0].coa_id) !== 75839) {
+      res.status(409).json({ ok: false, error: "COA Kas Besar SC tidak sesuai baseline DEV" });
+      return;
+    }
+    const draftPlan = planCashLedgerDrafts(
+      { ...scope, cashCoaId: 75839 }, draftInputs,
+    );
+    // PR #227 evidence bridge: explicit empty trusted-source set until
+    // a separately verified, company-scoped document reader is available.
+    // Do not treat a client-supplied reference or sheet narrative as proof.
+    const evidenceDraftPlan = planEvidenceScopedCashDrafts(
+      { ...scope, cashCoaId: 75839 },
+      draftInputs,
+      [], // No independently verified counter-COA evidence exists yet.
+      [], // No account may be selected without valid upstream evidence.
+    );
+    const cashEvidenceReadiness = {
+      sourceRows: draftInputs.length,
+      evidenceEligibleRows: evidenceDraftPlan.evidence.eligibleRows,
+      evidenceBlockedRows: evidenceDraftPlan.evidence.blockedRows,
+      draftRows: evidenceDraftPlan.draft.proposals.length,
+      missingEvidence: evidenceDraftPlan.evidence.reasonCounts.EVIDENCE_MISSING ?? 0,
+      mode: "read_only_no_verified_counter_coa_source",
+      readyForCommit: false,
+    };
+    const cashDraftReadiness = {
+      parsedRows: draftInputs.length,
+      mappedRows: draftPlan.proposals.length,
+      blockedRows: draftPlan.blocked.length,
+      blockedMissingCounterCoa: draftPlan.blocked.filter(
+        (row) => row.reason === "MISSING_COUNTER_COA",
+      ).length,
+      blockedInvalidSource: draftPlan.blocked.filter(
+        (row) => row.reason === "INVALID_SOURCE",
+      ).length,
+      mappedCoa: "1-1011-CST",
+      counterCoaAssignment: "UNMAPPED_REQUIRES_VERIFIED_ACCOUNTING_SOURCE",
+      mode: "read_only_draft_no_posting",
+      readyForCommit: false,
+    };
+    res.json({
+      ok: false, configId: 5, accountId: 18, ...preview, safeToImport: false,
+      cashDryRun: {
+        balanceAudit,
+        cashSourceSentinels,
+        cashDraftReadiness,
+        cashEvidenceReadiness,
+        mismatchCellEvidence,
+        rawBalanceReconciliation,
+        accountOpeningBalance: validAccountOpeningBalance,
+        openingBalanceMatchesAccount,
+        databaseDuplicateCheck: "NOT_RUN_NO_MUTATIONS_READER_PRIVILEGE",
+        proposedRows: initial.totalParsedRows,
+        freshCandidates: initial.newRows,
+        repeatedPayloadRows: initial.repeatedPayloadRows,
+        replayAlreadySeen: replay.replayedRows,
+        replayWouldReinsert: replay.newRows,
+        rollbackRestoresCandidates: afterRollback.newRows,
+        mode: "simulated_only_no_database_changes",
+        readyForCommit: false,
+      },
+      mode: "read_only_no_sync",
+    });
+  } catch {
+    // Do not reveal keys, spreadsheet contents, or provider diagnostics.
+    res.status(502).json({ ok: false, error: "Pratinjau baca-saja Kas Besar SC gagal" });
+  }
+});
+
 router.post("/bank-reconciliation/sheet-configs/:id/test", async (req, res): Promise<void> => {
+  const actor = await getApprovalActor(req).catch(() => null);
+  if (!actor) { res.status(401).json({ error: "Unauthorized" }); return; }
   const id = parsePositiveInt(req.params.id);
   if (id === null) {
     res.status(400).json({ ok: false, error: "ID konfigurasi tidak valid" });
     return;
   }
 
+  // DEV connectivity inspection must use the same company-scoped reader
+  // as the list endpoint; never query Sheet config via the OTP app pool.
+  const requestedCompany = req.query.company_id === undefined
+    ? null : parsePositiveInt(req.query.company_id);
+  if (isDevelopmentEnvironment() && req.query.company_id !== undefined && requestedCompany === null) {
+    res.status(400).json({ ok: false, error: "company_id tidak valid" }); return;
+  }
+  if (actor.companyId != null && requestedCompany != null && actor.companyId !== requestedCompany) {
+    res.status(403).json({ ok: false, error: "Akses perusahaan ditolak" }); return;
+  }
+  const companyId = actor.companyId ?? requestedCompany;
+  if (isDevelopmentEnvironment() && companyId === null) {
+    res.status(400).json({ ok: false, error: "company_id wajib dipilih" }); return;
+  }
   try {
-    const config = await pool.query<{ sheet_id: string; tab_name: string }>(
-      "select sheet_id, tab_name from public.bank_sheet_configs where id = $1",
-      [id],
-    );
+    const config = isDevelopmentEnvironment()
+      ? await (await getDevBankSheetReaderFromConfiguredSource(companyId!)).query<{ sheet_id: string; tab_name: string }>(
+        "select sheet_id, tab_name from public.bank_sheet_configs where id=$1 and company_id=$2",
+        [id, companyId],
+      )
+      : await pool.query<{ sheet_id: string; tab_name: string }>(
+        "select sheet_id, tab_name from public.bank_sheet_configs where id=$1 and ($2::int is null or company_id=$2)",
+        [id, actor.companyId],
+      );
     if (config.rowCount === 0) {
       res.status(404).json({ ok: false, error: "Konfigurasi tidak ditemukan" });
       return;
@@ -8295,6 +8663,7 @@ router.post("/bank-reconciliation/sheet-configs/:id/sync", async (req, res): Pro
 });
 
 router.post("/bank-reconciliation/sheet-sync", async (req, res): Promise<void> => {
+  const actor = res.locals.sheetActor as ApprovalActor;
   const rawCompanyId = req.query.company_id;
   const companyId =
     rawCompanyId === undefined || rawCompanyId === "" || rawCompanyId === "all"
@@ -8304,8 +8673,12 @@ router.post("/bank-reconciliation/sheet-sync", async (req, res): Promise<void> =
     res.status(400).json({ error: "company_id tidak valid" });
     return;
   }
+  if (actor.companyId != null && companyId != null && actor.companyId !== companyId) {
+    res.status(403).json({ error: "Akses perusahaan ditolak" });
+    return;
+  }
   try {
-    const summaries = await syncAllBankSheetConfigs(companyId ?? undefined);
+    const summaries = await syncAllBankSheetConfigs(actor.companyId ?? companyId ?? undefined);
     const imported = summaries.reduce((sum, item) => sum + Number(item.imported ?? 0), 0);
     const failedConfigs = summaries.filter((item) => item.ok === false);
     const qrisAutoCandidates = await runQrisAutoCandidateSweep();

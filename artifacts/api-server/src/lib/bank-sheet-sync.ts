@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { bankSheetConfigAccountJoin } from "./bankSheetConfigAccountJoin";
 import { pool } from "@workspace/db";
 import {
   readSpreadsheetValues,
@@ -442,6 +443,361 @@ function parseRows(rows: string[][], accountType: string | null = null): {
   };
 }
 
+/**
+ * Read-only admission check for the CST cash-ledger source.
+ * No database access, Sheets updates, or side effects.
+ * Never return actual transaction values to the caller.
+ */
+export function previewCashSheetRows(rows: string[][]): {
+  headerValid: boolean;
+  nonemptyRows: number;
+  importableRows: number;
+  rejectedRows: number;
+  rejectedRowNumbers: number[];
+  openingBalanceRows: number;
+  openingBalanceRowNumbers: number[];
+  firstRejectedRowShape: {
+    rowNumber: number;
+    dateValid: boolean;
+    debitNumeric: boolean;
+    creditNumeric: boolean;
+    debitHasSaldoAwal: boolean;
+    anyCellHasSaldoAwal: boolean;
+    saldoHeaderPresent: boolean;
+    saldoNumeric: boolean;
+  } | null;
+  ambiguousBothSides: number;
+  incomingRows: number;
+  outgoingRows: number;
+  safeToImport: boolean;
+} {
+  const headers = (rows[0] ?? []).map((cell) => String(cell ?? "").trim().toLowerCase());
+  const headerValid =
+    headers.some((h) => h === "tanggal")
+    && headers.some((h) => h.startsWith("keterangan"))
+    && headers.some((h) => h === "debit")
+    && headers.some((h) => h === "kredit");
+  const candidateRows = rows.slice(1).filter((row) =>
+    row?.some((cell) => String(cell ?? "").trim()));
+  if (!headerValid) {
+    return {
+      headerValid: false, nonemptyRows: candidateRows.length,
+      importableRows: 0, rejectedRows: candidateRows.length,
+      rejectedRowNumbers: rows.slice(1).flatMap((row, index) =>
+        row?.some((cell) => String(cell ?? "").trim()) ? [index + 2] : []).slice(0, 20),
+      openingBalanceRows: 0, openingBalanceRowNumbers: [],
+      firstRejectedRowShape: null,
+      ambiguousBothSides: 0, incomingRows: 0, outgoingRows: 0,
+      safeToImport: false,
+    };
+  }
+  const parsed = parseRows(rows, "cash");
+  const ambiguousBothSides = candidateRows.filter((row) => {
+    const debit = parseAmount(String(row[headers.indexOf("debit")] ?? ""));
+    const credit = parseAmount(String(row[headers.indexOf("kredit")] ?? ""));
+    return debit > 0 && credit > 0;
+  }).length;
+  const importableRows = parsed.mutations.length;
+  const acceptedRowNumbers = new Set(parsed.mutations.map((mutation) => mutation.rowNumber));
+  // Opening balance is an accounting baseline, not a cash movement. Recognize it
+  // without adding to parsed mutations, opening balances, or any database ledger.
+  const saldoIndex = headers.indexOf("saldo");
+  const debitIndex = headers.indexOf("debit");
+  const creditIndex = headers.indexOf("kredit");
+  const dateIndex = headers.indexOf("tanggal");
+  const openingBalanceRowNumbers = rows.slice(1).flatMap((row, index) => {
+    if (!row?.some((cell) => String(cell ?? "").trim())) return [];
+    if (acceptedRowNumbers.has(index + 2)) return [];
+    const hasOpeningMarker = row.some((cell) =>
+      /\bSALDO\s+AWAL\b/i.test(String(cell ?? "")));
+    const debit = parseAmount(String(row[debitIndex] ?? ""));
+    const credit = parseAmount(String(row[creditIndex] ?? ""));
+    const saldo = saldoIndex < 0 ? 0 : parseAmount(String(row[saldoIndex] ?? ""));
+    // Opening balance is a baseline, not a cash movement; it may have no valid
+    // transaction date and its marker can appear in a note/description field.
+    // Only the first data row is recognized, and the import gate stays closed.
+    return index === 0 && hasOpeningMarker && debit <= 0 && credit <= 0 && saldo > 0
+      ? [index + 2] : [];
+  });
+  const openingBalanceRowSet = new Set(openingBalanceRowNumbers);
+  const rejectedRows = Math.max(0, candidateRows.length - importableRows - openingBalanceRowNumbers.length);
+  const rejectedRowNumbers = rows.slice(1).flatMap((row, index) =>
+    row?.some((cell) => String(cell ?? "").trim())
+      && !acceptedRowNumbers.has(index + 2)
+      && !openingBalanceRowSet.has(index + 2)
+      ? [index + 2] : []).slice(0, 20);
+  const firstRejectedRowNumber = rejectedRowNumbers[0];
+  const firstRejectedRow = firstRejectedRowNumber === undefined
+    ? null : rows[firstRejectedRowNumber - 1] ?? null;
+  const firstRejectedRowShape = firstRejectedRow === null || firstRejectedRowNumber === undefined
+    ? null
+    : {
+        rowNumber: firstRejectedRowNumber,
+        dateValid: parseDate(String(firstRejectedRow[dateIndex] ?? ""), "DMY") !== null,
+        debitNumeric: parseAmount(String(firstRejectedRow[debitIndex] ?? "")) > 0,
+        creditNumeric: parseAmount(String(firstRejectedRow[creditIndex] ?? "")) > 0,
+        debitHasSaldoAwal: String(firstRejectedRow[debitIndex] ?? "").toUpperCase().includes("SALDO AWAL"),
+        anyCellHasSaldoAwal: firstRejectedRow.some((cell) =>
+          String(cell ?? "").toUpperCase().includes("SALDO AWAL")),
+        saldoHeaderPresent: saldoIndex >= 0,
+        saldoNumeric: saldoIndex >= 0
+          && parseAmount(String(firstRejectedRow[saldoIndex] ?? "")) > 0,
+      };
+  return {
+    headerValid, nonemptyRows: candidateRows.length, importableRows,
+    rejectedRows, rejectedRowNumbers, firstRejectedRowShape,
+    openingBalanceRows: openingBalanceRowNumbers.length,
+    openingBalanceRowNumbers: openingBalanceRowNumbers.slice(0, 20),
+    ambiguousBothSides,
+    incomingRows: parsed.mutations.filter((row) => row.direction === "IN").length,
+    outgoingRows: parsed.mutations.filter((row) => row.direction === "OUT").length,
+    // Even an identified opening balance needs separate approved reconciliation.
+    safeToImport: importableRows > 0 && rejectedRows === 0
+      && ambiguousBothSides === 0 && openingBalanceRowNumbers.length === 0,
+  };
+}
+
+/**
+ * Pure, no-write proposal for an eventual dedicated cash source importer.
+ * Identity is scoped to company/config/account + physical source row.
+ * Fingerprint detects edits to an existing row; never overwrite silently.
+ * Identical transaction payload on two different rows is flagged for review,
+ * not silently deduplicated (legitimate repeated cash payments may exist).
+ * Returned records are SHA-256 identifiers only. No amounts or descriptions.
+ */
+export function planCashSheetImportDryRun(
+  rows: string[][],
+  scope: { companyId: number; configId: number; accountId: number },
+  existing: ReadonlyMap<string, string> = new Map(),
+): {
+  proposed: Array<{ sourceKey: string; fingerprint: string }>;
+  newRows: number;
+  replayedRows: number;
+  changedRows: number;
+  repeatedPayloadRows: number;
+  totalParsedRows: number;
+  openingBalanceRows: number;
+  rejectedRows: number;
+  readyForCommit: false;
+} {
+  const preflight = previewCashSheetRows(rows);
+  const mutations = preflight.headerValid ? parseRows(rows, "cash").mutations : [];
+  const proposed: Array<{ sourceKey: string; fingerprint: string }> = [];
+  const seenPayloads = new Set<string>();
+  let repeatedPayloadRows = 0;
+  let newRows = 0;
+  let replayedRows = 0;
+  let changedRows = 0;
+  for (const row of mutations) {
+    const sourceKey = crypto.createHash("sha256").update(JSON.stringify([
+      "cst-cash-sheet-row-v1", scope.companyId, scope.configId,
+      scope.accountId, row.rowNumber,
+    ])).digest("hex");
+    const fingerprint = crypto.createHash("sha256").update(JSON.stringify([
+      "cst-cash-sheet-content-v1", row.transactionDate, row.direction,
+      row.description, row.debit, row.credit,
+    ])).digest("hex");
+    if (seenPayloads.has(fingerprint)) repeatedPayloadRows++;
+    seenPayloads.add(fingerprint);
+    proposed.push({ sourceKey, fingerprint });
+    const old = existing.get(sourceKey);
+    if (old === undefined) newRows++;
+    else if (old === fingerprint) replayedRows++;
+    else changedRows++;
+  }
+  return {
+    proposed, newRows, replayedRows, changedRows,
+    repeatedPayloadRows, totalParsedRows: mutations.length,
+    openingBalanceRows: preflight.openingBalanceRows,
+    rejectedRows: preflight.rejectedRows,
+    // A pure plan is never permission to commit any accounting rows.
+    readyForCommit: false,
+  };
+}
+
+/**
+ * Owner-only Config #5 read-only sentinels. The first gives a scoped summary
+ * of the last parsed transaction; the second locates the single historical
+ * 19-Aug cashback marker without exposing its narrative or source reference.
+ * These facts are source observations, never authorization to change direction
+ * or book cash entries.
+ */
+export function inspectCashSourceSentinels(rows: string[][]): {
+  lastTransaction: {
+    rowNumber: number; date: string; direction: "IN" | "OUT";
+    debit: number; credit: number;
+    previousBalance: number | null; statedBalance: number | null;
+  } | null;
+  cashback19Aug: {
+    matches: number;
+    rows: Array<{
+      rowNumber: number; date: string; direction: "IN" | "OUT";
+      debit: number; credit: number;
+      sourceFlowLabel: "IN" | "OUT" | "UNKNOWN";
+      previousBalance: number | null; statedBalance: number | null;
+      balanceMovement: number | null;
+    }>;
+  };
+} {
+  const parsed = parseRows(rows, "cash");
+  const header = (rows[0] ?? []).map((value) => String(value ?? "").trim().toLowerCase());
+  const saldoIndex = header.indexOf("saldo");
+  const flowIndex = header.findIndex((value) =>
+    value === "pp" || value === "pemasukan/pengeluaran" || value === "arus kas");
+  const balance = (rowNumber: number): number | null => {
+    const cell = saldoIndex < 0 ? "" : String(rows[rowNumber - 1]?.[saldoIndex] ?? "").trim();
+    return cell ? parseAmount(cell) : null;
+  };
+  const last = parsed.mutations.at(-1);
+  const lastTransaction = last
+    ? {
+        rowNumber: last.rowNumber, date: last.transactionDate,
+        direction: last.direction, debit: last.debit, credit: last.credit,
+        previousBalance: balance(last.rowNumber - 1),
+        statedBalance: balance(last.rowNumber),
+      }
+    : null;
+  const cashbackRows = parsed.mutations.filter((item) =>
+    item.transactionDate === "2026-08-19"
+    && /cashback/i.test(item.description)
+    && /QRISCPMID26/i.test(item.description));
+  return {
+    lastTransaction,
+    cashback19Aug: {
+      matches: cashbackRows.length,
+      rows: cashbackRows.slice(0, 2).map((item) => {
+        const rawLabel = flowIndex < 0
+          ? "" : String(rows[item.rowNumber - 1]?.[flowIndex] ?? "").trim().toLowerCase();
+        const sourceFlowLabel = rawLabel === "pemasukan" ? "IN" as const
+          : rawLabel === "pengeluaran" ? "OUT" as const : "UNKNOWN" as const;
+        const previousBalance = balance(item.rowNumber - 1);
+        const statedBalance = balance(item.rowNumber);
+        return {
+          rowNumber: item.rowNumber, date: item.transactionDate,
+          direction: item.direction, debit: item.debit, credit: item.credit,
+          sourceFlowLabel, previousBalance, statedBalance,
+          balanceMovement: previousBalance === null || statedBalance === null
+            ? null : Math.round((statedBalance - previousBalance) * 100) / 100,
+        };
+      }),
+    },
+  };
+}
+
+/**
+ * Aggregate only: verify a cash ledger's stated running balance against the
+ * preceding balance and each parsed IN/OUT movement. This is a read-only
+ * diagnostic, not an opening balance booking or bank reconciliation.
+ */
+export function auditCashSheetRunningBalances(rows: string[][]): {
+  openingBalancePresent: boolean;
+  openingBalanceAmount: number | null;
+  checkedTransactions: number;
+  balanceMismatchRows: number;
+  balanceMismatchRowNumbers: number[];
+  mismatchDetails: Array<{ rowNumber: number; previousBalance: number; direction: "IN" | "OUT"; movementAmount: number; expectedBalance: number; statedBalance: number; difference: number }>;
+  missingBalanceRows: number;
+} {
+  const preflight = previewCashSheetRows(rows);
+  const headers = (rows[0] ?? []).map((cell) => String(cell ?? "").trim().toLowerCase());
+  const saldoIndex = headers.indexOf("saldo");
+  const openingRow = preflight.openingBalanceRowNumbers[0];
+  if (saldoIndex < 0 || openingRow === undefined) {
+    return {
+      openingBalancePresent: false, openingBalanceAmount: null, checkedTransactions: 0,
+      balanceMismatchRows: 0, balanceMismatchRowNumbers: [], mismatchDetails: [],
+      missingBalanceRows: 0,
+    };
+  }
+  let previous = parseAmount(String(rows[openingRow - 1]?.[saldoIndex] ?? ""));
+  const openingBalanceAmount = previous;
+  const mutations = parseRows(rows, "cash").mutations;
+  let checkedTransactions = 0;
+  let missingBalanceRows = 0;
+  const mismatch: number[] = [];
+  const mismatchDetails: Array<{ rowNumber: number; previousBalance: number; direction: "IN" | "OUT"; movementAmount: number; expectedBalance: number; statedBalance: number; difference: number }> = [];
+  for (const mutation of mutations) {
+    const value = String(rows[mutation.rowNumber - 1]?.[saldoIndex] ?? "").trim();
+    if (!value) {
+      missingBalanceRows++;
+      // Do not fabricate a balance in the source or chain an unverified sum.
+      continue;
+    }
+    const actual = parseAmount(value);
+    const expected = previous + (mutation.direction === "IN" ? mutation.amount : -mutation.amount);
+    checkedTransactions++;
+    if (!Number.isFinite(actual) || Math.abs(actual - expected) > 0.01) {
+      mismatch.push(mutation.rowNumber);
+      // Owner-only DEV diagnostics: no description, counterparty, or raw row payload.
+      if (mismatchDetails.length < 20) mismatchDetails.push({
+        rowNumber: mutation.rowNumber,
+        previousBalance: Math.round(previous * 100) / 100,
+        direction: mutation.direction,
+        movementAmount: Math.round(mutation.amount * 100) / 100,
+        expectedBalance: Math.round(expected * 100) / 100,
+        statedBalance: Math.round(actual * 100) / 100,
+        difference: Math.round((actual - expected) * 100) / 100,
+      });
+    }
+    previous = actual;
+  }
+  return {
+    openingBalancePresent: true, openingBalanceAmount,
+    checkedTransactions, balanceMismatchRows: mismatch.length,
+    balanceMismatchRowNumbers: mismatch.slice(0, 20), mismatchDetails,
+    missingBalanceRows,
+  };
+}
+
+/**
+ * Compare only exact Google Sheets UNFORMATTED_VALUE numbers for a mismatched
+ * cash row and its immediately preceding source row. Nulls are indeterminate:
+ * never coerce text/formulas to an accounting number or auto-adjust entries.
+ * This is a pure DEV diagnostic, not a posting or import decision.
+ */
+export function explainCashRawBalanceDifferences(
+  mismatches: ReadonlyArray<{ rowNumber: number; direction: "IN" | "OUT"; previousBalance: number }>,
+  numericEvidence: ReadonlyArray<{
+    rowNumber: number;
+    debitRaw: number | null;
+    creditRaw: number | null;
+    saldoRaw: number | null;
+  }>,
+): Array<{
+  rowNumber: number;
+  rawDifference: number | null;
+  category: "DISPLAY_PRECISION_ONLY" | "RAW_SOURCE_MISMATCH" | "SOURCE_NUMERIC_UNAVAILABLE" | "SOURCE_REFERENCE_UNVERIFIED";
+}> {
+  const byRow = new Map(numericEvidence.map((r) => [r.rowNumber, r]));
+  return mismatches.map((m) => {
+    const current = byRow.get(m.rowNumber);
+    const previous = byRow.get(m.rowNumber - 1);
+    const movement = m.direction === "IN" ? current?.debitRaw : current?.creditRaw;
+    if (current?.saldoRaw == null || previous?.saldoRaw == null || movement == null
+        || ![current.saldoRaw, previous.saldoRaw, movement].every(Number.isFinite)) {
+      return { rowNumber: m.rowNumber, rawDifference: null, category: "SOURCE_NUMERIC_UNAVAILABLE" as const };
+    }
+    // The preceding physical Sheet row must agree with the baseline used in
+    // the formatted cash audit. A huge mismatch suggests a misplaced/typed
+    // source cell or a row reference issue: do not fabricate a cash difference.
+    if (!Number.isFinite(m.previousBalance)
+        || Math.abs(previous.saldoRaw - m.previousBalance) > 1.01) {
+      return {
+        rowNumber: m.rowNumber, rawDifference: null,
+        category: "SOURCE_REFERENCE_UNVERIFIED" as const,
+      };
+    }
+    const expected = previous.saldoRaw + (m.direction === "IN" ? movement : -movement);
+    const delta = Math.round((current.saldoRaw - expected) * 100) / 100;
+    return {
+      rowNumber: m.rowNumber,
+      rawDifference: delta,
+      category: Math.abs(delta) <= 0.01
+        ? "DISPLAY_PRECISION_ONLY" as const : "RAW_SOURCE_MISMATCH" as const,
+    };
+  });
+}
+
 function addSheetStatusUpdates(
   config: SheetConfig,
   parsed: ReturnType<typeof parseRows>,
@@ -552,6 +908,65 @@ async function markConfigSync(
   );
 }
 
+/**
+ * Adapt the existing canonical cash parser and its scoped content fingerprints
+ * into strict integer-cent, unmapped draft inputs. No counter COA is inferred.
+ * Pure operation: not connected to an accounting or Google Sheets writer.
+ */
+export function prepareCashLedgerDraftInputs(
+  rows: string[][],
+  scope: { companyId: number; configId: number; accountId: number },
+): Array<{
+  rowNumber: number;
+  transactionDate: string;
+  direction: "IN" | "OUT";
+  amountCents: number;
+  sourceFingerprint: string;
+  counterCoaId: null;
+}> {
+  if (scope.companyId !== 1 || scope.configId !== 5 || scope.accountId !== 18) {
+    throw new Error("CASH_DRAFT_SCOPE_NOT_AUTHORIZED");
+  }
+  if (!previewCashSheetRows(rows).headerValid) return [];
+  const parsed = parseRows(rows, "cash").mutations;
+  const plan = planCashSheetImportDryRun(rows, scope);
+  const hashes = new Map(parsed.map((row, i) => [
+    row.rowNumber, plan.proposed[i]?.fingerprint,
+  ]));
+  return parsed.map((row) => {
+    const value = row.direction === "IN" ? row.debit : row.credit;
+    const cents = Math.round(value * 100);
+    return {
+      rowNumber: row.rowNumber,
+      transactionDate: row.transactionDate,
+      direction: row.direction,
+      // Invalid precision will be blocked by the downstream draft planner.
+      amountCents: Number.isSafeInteger(cents)
+        && Math.abs(value * 100 - cents) <= 0.00001 ? cents : Number.NaN,
+      sourceFingerprint: hashes.get(row.rowNumber) ?? "",
+      counterCoaId: null,
+    };
+  });
+}
+
+// Pure parser-only probe for test and staging validation. It does not call
+// the Google Sheets API or write to bank_mutations; the writer is cash-blocked.
+export function parseCashSheetDirectionDates(rows: string[][]): Array<{
+  transactionDate: string;
+  direction: "IN" | "OUT";
+}> {
+  return parseRows(rows, "cash").mutations.map(({ transactionDate, direction }) => ({
+    transactionDate,
+    direction,
+  }));
+}
+
+export function assertBankMutationWriterAccountType(accountType: string | null): void {
+  if (accountType?.trim().toLowerCase() === "cash") {
+    throw new Error("CASH_SHEET_REQUIRES_CASH_LEDGER_IMPORT_PATH");
+  }
+}
+
 async function syncConfig(config: SheetConfig): Promise<{
   imported: number;
   total: number;
@@ -559,6 +974,10 @@ async function syncConfig(config: SheetConfig): Promise<{
   sheetUpdates: number;
 }> {
   assertProductionSheetSourceAllowed(config);
+  // Bank mutation writer is not an accounting cash-ledger writer.
+  // Fail before a DB connection, Google Sheets API call, or any write if the
+  // source is cash. Cash import needs an independently tested canonical path.
+  assertBankMutationWriterAccountType(config.account_type);
   const client = await pool.connect();
   try {
     const rows = await readSpreadsheetValues(config.sheet_id, config.tab_name);
@@ -1003,13 +1422,26 @@ async function syncConfig(config: SheetConfig): Promise<{
   }
 }
 
+/**
+ * Second safety boundary for DEV source-only deployments. HTTP protects
+ * authorized route calls; this protects any internal caller or future job.
+ * Never invoke Google Sheets or DB while the legacy schema is read-only.
+ */
+function assertDevBankSheetSyncAllowed(): void {
+  if (process.env.APP_ENV?.trim().toLowerCase() === "development"
+    && process.env.BANK_SHEET_DEV_WRITES_ENABLED !== "true") {
+    throw new Error("BANK_SHEET_DEV_SOURCE_ONLY_READ_ONLY");
+  }
+}
+
 export async function syncOneBankSheetConfig(configId: number) {
+  assertDevBankSheetSyncAllowed();
   const result = await pool.query<SheetConfig>(
     `select config.id, config.company_id, config.sheet_id, config.tab_name, config.label,
-            config.bank_account_id, config.bank_account_number,
+            cba.id as bank_account_id, config.bank_account_number,
             cba.account_type
        from public.bank_sheet_configs config
-       left join public.company_bank_accounts cba on cba.id = config.bank_account_id
+       ${bankSheetConfigAccountJoin}
       where config.id = $1 and config.is_active = true`,
     [configId],
   );
@@ -1024,12 +1456,13 @@ export async function syncOneBankSheetConfig(configId: number) {
 }
 
 export async function syncAllBankSheetConfigs(companyId?: number) {
+  assertDevBankSheetSyncAllowed();
   const result = await pool.query<SheetConfig>(
     `select config.id, config.company_id, config.sheet_id, config.tab_name, config.label,
-            config.bank_account_id, config.bank_account_number,
+            cba.id as bank_account_id, config.bank_account_number,
             cba.account_type
        from public.bank_sheet_configs config
-       left join public.company_bank_accounts cba on cba.id = config.bank_account_id
+       ${bankSheetConfigAccountJoin}
       where config.is_active = true
         and ($1::int is null or config.company_id = $1)
       order by config.id`,

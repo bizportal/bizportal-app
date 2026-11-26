@@ -794,6 +794,17 @@ export default function SalesDocumentDetailPage() {
       toast({ title: "Customer ID wajib diisi", description: "Pilih customer terdaftar melalui Edit Dokumen sebelum konfirmasi Sales Order.", variant: "destructive" });
       return;
     }
+    // The canonical DEV Sales router supports confirm only; the Portal's
+    // mark_invoiced action can notify recipients without a posted AR/GL
+    // receipt. Never issue synthetic QA #108 through that legacy action.
+    if (action === "mark_invoiced" && canShowQa108) {
+      toast({
+        title: "Invoice QA #108 belum dapat diterbitkan",
+        description: "Menunggu penghubung PostingEngine kanonis dan bukti jurnal/AR atomik. Tidak ada invoice atau notifikasi yang dikirim.",
+        variant: "destructive",
+      });
+      return;
+    }
     if (!confirm(`${label}?`)) return;
     setActionLoading(action);
     try {
@@ -877,17 +888,30 @@ export default function SalesDocumentDetailPage() {
   }
 
   if (error || !doc || Number.isNaN(docId)) {
+    // A failed API call is not proof that the underlying Sales document was
+    // deleted. Make its HTTP status visible without leaking response contents.
+    const requestStatus = error && typeof error === "object" && "status" in error &&
+      typeof error.status === "number" ? error.status : null;
     return (
       <AppShell>
         <div className="max-w-5xl mx-auto py-16 text-center">
           <FileText className="w-14 h-14 mx-auto mb-4 text-muted-foreground/40" />
-          <h2 className="text-lg font-semibold mb-1">Dokumen tidak ditemukan</h2>
+          <h2 className="text-lg font-semibold mb-1">
+            {error ? "Dokumen belum dapat dimuat" : "Dokumen tidak ditemukan"}
+          </h2>
           <p className="text-sm text-muted-foreground mb-6">
-            Dokumen dengan ID <span className="font-mono font-medium">{id}</span> tidak ada atau kamu tidak punya akses.
+            {error
+              ? `Permintaan detail dokumen ID ${docId} gagal${requestStatus ? ` (HTTP ${requestStatus})` : ""}. Data belum dinyatakan hilang.`
+              : <>Dokumen dengan ID <span className="font-mono font-medium">{id}</span> tidak ditemukan.</>}
           </p>
-          <Button variant="outline" onClick={() => navigate("/sales/documents")}>
-            <ArrowLeft className="mr-2 h-4 w-4" /> Kembali ke Daftar
-          </Button>
+          <div className="flex justify-center gap-2">
+            {error && <Button variant="outline" onClick={() => queryClient.invalidateQueries({ queryKey: getGetSalesDocumentQueryKey(docId) })}>
+              <RefreshCw className="mr-2 h-4 w-4" /> Coba Muat Ulang
+            </Button>}
+            <Button variant="outline" onClick={() => navigate("/sales/documents")}>
+              <ArrowLeft className="mr-2 h-4 w-4" /> Kembali ke Daftar
+            </Button>
+          </div>
         </div>
       </AppShell>
     );
@@ -996,10 +1020,11 @@ export default function SalesDocumentDetailPage() {
             {isOrder && (isConfirmed || isDone) && doc.invoiceStatus !== "invoiced" && (
               <Button size="sm" variant="outline" className="gap-2 text-orange-600 border-orange-200 hover:bg-orange-50"
                 onClick={() => handleAction("mark_invoiced", "Buat invoice untuk dokumen ini")}
-                disabled={actionLoading === "mark_invoiced"}
+                disabled={actionLoading === "mark_invoiced" || canShowQa108}
+                title={canShowQa108 ? "QA #108: PostingEngine kanonis dan bukti jurnal/AR belum tersedia" : undefined}
               >
                 {actionLoading === "mark_invoiced" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Receipt className="h-3.5 w-3.5" />}
-                Buat Invoice
+                {canShowQa108 ? "Invoice QA menunggu PostingEngine" : "Buat Invoice"}
               </Button>
             )}
 

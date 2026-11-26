@@ -22,6 +22,7 @@ const KEYS=[
   "BIZPORTAL_CUSTOMER_INVOICE_ATTEST_DEV","BIZPORTAL_CUSTOMER_PORTAL_ORIGIN_DEV",
   "BIZPORTAL_CUSTOMER_INVOICE_HANDOFF_DEV",
   "BIZPORTAL_CUSTOMER_INVOICE_SIGNED_REVIEW_SNAPSHOT_DEV",
+  "BIZPORTAL_COMPANY_SELF_APPROVAL_DEV",
 ];
 const originals=Object.fromEntries(KEYS.map(k=>[k,process.env[k]]));
 const email="qa-bizportal-super@example.invalid", id="qa-signed-bizportal-actor";
@@ -66,6 +67,7 @@ describe("existing signed OTP BizPortal Super Admin -> Customer Invoice attestat
   beforeAll(async()=>{
     const app=express();
     app.use((req,_res,next)=>{(req as any).log={error:vi.fn()};next();});
+    app.use(express.json());
     app.use("/api",route);
     app.get("/api/portal/dev/invoice-owner-handoff/:ticket/review",
       (_req,res)=>res.json(reviewResult));
@@ -82,17 +84,65 @@ describe("existing signed OTP BizPortal Super Admin -> Customer Invoice attestat
     process.env.SESSION_SECRET="qa-original-bizportal-session-secret-32-plus-character-string";
     delete process.env.BIZPORTAL_SESSION_SECRET;
     process.env.BIZPORTAL_CUSTOMER_INVOICE_ATTEST_DEV="true";
+    process.env.BIZPORTAL_COMPANY_SELF_APPROVAL_DEV="true";
     process.env.BIZPORTAL_CUSTOMER_PORTAL_ORIGIN_DEV="https://portal-qa.example.invalid";
     m.signedAuthEnabled.mockReturnValue(true);
+    // Mirror a real signed cookie: issuedAt is immutable across HTTP requests.
+    const signedIssuedAt=Date.now()-1000;
+    const signedExpiresAt=Date.now()+10_000;
     m.getProductionSession.mockImplementation(req=>
       req.headers.cookie==="bizportal_supabase_session=SIGNED_QA"
-        ? {id,email,issuedAt:Date.now()-1000,expiresAt:Date.now()+10_000}
+        ? {id,email,issuedAt:signedIssuedAt,expiresAt:signedExpiresAt}
         : null);
     m.getProductionUser.mockResolvedValue({id,email,role:"super_admin",companyId:null});
   });
   afterEach(()=>{
     for(const k of KEYS){if(originals[k]===undefined)delete process.env[k];
     else process.env[k]=originals[k];}
+  });
+  it("returns existing PUBLIC Ed25519 verifier to signed CST Super Admin before attestation enabled", async () => {
+    const originalVerifier = getCustomerInvoiceAttestationPublicKeyDev();
+    delete process.env.BIZPORTAL_CUSTOMER_INVOICE_ATTEST_DEV;
+    const res = await fetch(base + "/api/auth/dev/customer-invoice-attestation/public-key", {
+      headers: {Cookie:"bizportal_supabase_session=SIGNED_QA"},
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json() as Record<string,unknown>;
+    expect(data).toMatchObject({
+      purpose:"customer-invoice-public-verifier-setup",
+      algorithm:"Ed25519", attestationEnabled:false,
+      publicKeySpkiDerBase64:originalVerifier,
+    });
+    const spki = Buffer.from(String(data.publicKeySpkiDerBase64),"base64");
+    expect(createPublicKey({key:spki,format:"der",type:"spki"}).asymmetricKeyType).toBe("ed25519");
+    expect(data.fingerprintSha256).toBe(createHash("sha256").update(spki).digest("hex"));
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(res.headers.get("vary")).toContain("Cookie");
+    expect(JSON.stringify(data)).not.toContain(process.env.SESSION_SECRET);
+    expect(JSON.stringify(data)).not.toContain(email);
+    expect(JSON.stringify(data)).not.toContain("SIGNED_QA");
+  });
+  it("never publishes public verifier to unsigned or wrong-tenant sessions", async () => {
+    const url=base + "/api/auth/dev/customer-invoice-attestation/public-key";
+    let res=await fetch(url);
+    expect(res.status).toBe(401);
+    m.getProductionUser.mockResolvedValue({id,email,role:"admin",companyId:1});
+    res=await fetch(url,{headers:{Cookie:"bizportal_supabase_session=SIGNED_QA"}});
+    expect(res.status).toBe(401);
+    m.getProductionUser.mockResolvedValue({id,email,role:"super_admin",companyId:3});
+    res=await fetch(url,{headers:{Cookie:"bizportal_supabase_session=SIGNED_QA"}});
+    expect(res.status).toBe(401);
+  });
+  it("refuses verifier setup in PROD or without signed OTP DEV configuration",async()=>{
+    const url=base + "/api/auth/dev/customer-invoice-attestation/public-key";
+    process.env.APP_ENV="production";
+    let res=await fetch(url,{headers:{Cookie:"bizportal_supabase_session=SIGNED_QA"}});
+    expect(res.status).toBe(404);
+    process.env.APP_ENV="development";
+    m.signedAuthEnabled.mockReturnValue(false);
+    res=await fetch(url,{headers:{Cookie:"bizportal_supabase_session=SIGNED_QA"}});
+    expect(res.status).toBe(404);
   });
   it("strictly disabled unless DEV signed OTP + dedicated flag",async()=>{
     delete process.env.BIZPORTAL_CUSTOMER_INVOICE_ATTEST_DEV;
@@ -247,4 +297,118 @@ describe("existing signed OTP BizPortal Super Admin -> Customer Invoice attestat
     const r=await get(issuedChallenge(),{accept:"application/json"});
     expect(r.res.status).toBe(404);
   });
+  const selfChallenge=(changes:Record<string,unknown>={})=>{
+    const now=Date.now();
+    const c={
+      v:1,purpose:"cst-portal-company-self-approval",requestId:17,companyId:1,
+      applicantId:9,portalUserId:9,portalEmail:email,
+      iat:now,exp:now+90000,nonce:"b".repeat(32),...changes,
+    };
+    return Buffer.from(JSON.stringify(c)).toString("base64url")+"."+"a".repeat(43);
+  };
+  const selfGet=async(challenge:string,signed=true)=>{
+    const res=await fetch(base+"/api/auth/dev/customer-company-self-approval?challenge="+
+      encodeURIComponent(challenge),{headers:signed?{Cookie:"bizportal_supabase_session=SIGNED_QA"}:{}});
+    return {res,html:await res.text()};
+  };
+  const extractConsent=(html:string)=>{
+    const found=html.match(/const consentToken="([A-Za-z0-9_-]{43})"/);
+    expect(found).not.toBeNull();
+    return found![1];
+  };
+  const consentPost=async(challenge:string,consentToken:string,options:{
+    origin?:string;site?:string;cookie?:string;
+  }={})=>{
+    return fetch(base+"/api/auth/dev/customer-company-self-approval",{
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json",
+        "Sec-Fetch-Site":options.site??"same-origin",
+        Origin:options.origin??base,
+        Cookie:options.cookie??"bizportal_supabase_session=SIGNED_QA",
+      },
+      body:JSON.stringify({challenge,consentToken}),
+    });
+  };
+  it("GET shows consent only, POST issues one purpose-separated proof after click",async()=>{
+    const challenge=selfChallenge();
+    const {res,html}=await selfGet(challenge);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
+    expect(html).toContain("Persetujuan afiliasi CST");
+    expect(html).toContain("Nomor permohonan: 17");
+    expect(html).toContain("Verifikasi dan setujui satu kali");
+    expect(html).toContain("addEventListener('click'");
+    expect(html).not.toContain('"proof":');
+    // The message TYPE is static client code; signed proof itself is absent on GET.
+    expect(html).not.toMatch(/"proof":"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"/);
+    expect(html).not.toContain(process.env.SESSION_SECRET);
+    const consentToken=extractConsent(html);
+    const post=await consentPost(challenge,consentToken);
+    expect(post.status).toBe(200);
+    const {proof,expiresInSeconds}=await post.json() as {proof:string;expiresInSeconds:number};
+    expect(expiresInSeconds).toBe(60);
+    const [part,sig]=proof.split(".");
+    const claims=JSON.parse(Buffer.from(part,"base64url").toString());
+    expect(claims).toMatchObject({
+      purpose:"cst-company-affiliation-self-approval",aud:"CST_CUSTOMER_PORTAL_DEV",
+      requestId:17,companyId:1,applicantId:9,portalUserId:9,
+      actorId:id,email,challengeDigest:createHash("sha256").update(challenge).digest("hex"),
+    });
+    const pub=createPublicKey({
+      key:Buffer.from(getCustomerInvoiceAttestationPublicKeyDev(),"base64"),
+      format:"der",type:"spki",
+    });
+    expect(verify(null,Buffer.from("CST_BIZPORTAL_COMPANY_SELF_APPROVAL_DEV_V1\n"+part),
+      pub,Buffer.from(sig,"base64url"))).toBe(true);
+    expect(verify(null,Buffer.from(PROOF_DOMAIN+part),
+      pub,Buffer.from(sig,"base64url"))).toBe(false);
+    // The same one-time nonce is not reusable.
+    expect((await consentPost(challenge,consentToken)).status).toBe(403);
+  });
+  it("POST rejects cross-origin, cross-site, tampered or sessionless consent",async()=>{
+    const challenge=selfChallenge();
+    const consentToken=extractConsent((await selfGet(challenge)).html);
+    expect((await consentPost(challenge,consentToken,{site:"cross-site"})).status).toBe(403);
+    expect((await consentPost(challenge,consentToken,{origin:"https://attacker.invalid"})).status).toBe(403);
+    expect((await consentPost(challenge,consentToken,{cookie:""})).status).toBe(401);
+    // A denied consent consumes its nonce; a fresh GET is required.
+    expect((await consentPost(challenge,consentToken)).status).toBe(403);
+    const second=extractConsent((await selfGet(challenge)).html);
+    expect((await consentPost(selfChallenge({requestId:18}),second)).status).toBe(403);
+  });
+  it("self-affiliation requires fresh signed Super Admin session for the same applicant email",async()=>{
+    let result=await selfGet(selfChallenge(),false);
+    expect(result.res.status).toBe(401);
+    m.getProductionSession.mockReturnValueOnce({
+      id,email,issuedAt:Date.now()-301000,expiresAt:Date.now()+20000,
+    });
+    result=await selfGet(selfChallenge());
+    expect(result.res.status).toBe(401);
+    m.getProductionUser.mockResolvedValueOnce({id,email,role:"admin",companyId:1});
+    result=await selfGet(selfChallenge());
+    expect(result.res.status).toBe(401);
+    m.getProductionUser.mockResolvedValueOnce({id,email,role:"super_admin",companyId:3});
+    result=await selfGet(selfChallenge());
+    expect(result.res.status).toBe(401);
+    result=await selfGet(selfChallenge({portalEmail:"another@example.invalid"}));
+    expect(result.res.status).toBe(401);
+  });
+  it("self-affiliation rejects malformed requests and remains disabled on PROD",async()=>{
+    let r=await selfGet(selfChallenge({companyId:3}));
+    expect(r.res.status).toBe(400);
+    r=await selfGet(selfChallenge({applicantId:999}));
+    expect(r.res.status).toBe(400);
+    r=await selfGet(selfChallenge({exp:Date.now()-1}));
+    expect(r.res.status).toBe(400);
+    delete process.env.BIZPORTAL_COMPANY_SELF_APPROVAL_DEV;
+    r=await selfGet(selfChallenge());
+    expect(r.res.status).toBe(404);
+    process.env.BIZPORTAL_COMPANY_SELF_APPROVAL_DEV="true";
+    process.env.APP_ENV="production";
+    r=await selfGet(selfChallenge());
+    expect(r.res.status).toBe(404);
+  });
+
 });
