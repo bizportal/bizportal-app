@@ -616,6 +616,75 @@ export function planCashSheetImportDryRun(
 }
 
 /**
+ * Owner-only Config #5 read-only sentinels. The first gives a scoped summary
+ * of the last parsed transaction; the second locates the single historical
+ * 19-Aug cashback marker without exposing its narrative or source reference.
+ * These facts are source observations, never authorization to change direction
+ * or book cash entries.
+ */
+export function inspectCashSourceSentinels(rows: string[][]): {
+  lastTransaction: {
+    rowNumber: number; date: string; direction: "IN" | "OUT";
+    debit: number; credit: number;
+    previousBalance: number | null; statedBalance: number | null;
+  } | null;
+  cashback19Aug: {
+    matches: number;
+    rows: Array<{
+      rowNumber: number; date: string; direction: "IN" | "OUT";
+      debit: number; credit: number;
+      sourceFlowLabel: "IN" | "OUT" | "UNKNOWN";
+      previousBalance: number | null; statedBalance: number | null;
+      balanceMovement: number | null;
+    }>;
+  };
+} {
+  const parsed = parseRows(rows, "cash");
+  const header = (rows[0] ?? []).map((value) => String(value ?? "").trim().toLowerCase());
+  const saldoIndex = header.indexOf("saldo");
+  const flowIndex = header.findIndex((value) =>
+    value === "pp" || value === "pemasukan/pengeluaran" || value === "arus kas");
+  const balance = (rowNumber: number): number | null => {
+    const cell = saldoIndex < 0 ? "" : String(rows[rowNumber - 1]?.[saldoIndex] ?? "").trim();
+    return cell ? parseAmount(cell) : null;
+  };
+  const last = parsed.mutations.at(-1);
+  const lastTransaction = last
+    ? {
+        rowNumber: last.rowNumber, date: last.transactionDate,
+        direction: last.direction, debit: last.debit, credit: last.credit,
+        previousBalance: balance(last.rowNumber - 1),
+        statedBalance: balance(last.rowNumber),
+      }
+    : null;
+  const cashbackRows = parsed.mutations.filter((item) =>
+    item.transactionDate === "2026-08-19"
+    && /cashback/i.test(item.description)
+    && /QRISCPMID26/i.test(item.description));
+  return {
+    lastTransaction,
+    cashback19Aug: {
+      matches: cashbackRows.length,
+      rows: cashbackRows.slice(0, 2).map((item) => {
+        const rawLabel = flowIndex < 0
+          ? "" : String(rows[item.rowNumber - 1]?.[flowIndex] ?? "").trim().toLowerCase();
+        const sourceFlowLabel = rawLabel === "pemasukan" ? "IN" as const
+          : rawLabel === "pengeluaran" ? "OUT" as const : "UNKNOWN" as const;
+        const previousBalance = balance(item.rowNumber - 1);
+        const statedBalance = balance(item.rowNumber);
+        return {
+          rowNumber: item.rowNumber, date: item.transactionDate,
+          direction: item.direction, debit: item.debit, credit: item.credit,
+          sourceFlowLabel, previousBalance, statedBalance,
+          balanceMovement: previousBalance === null || statedBalance === null
+            ? null : Math.round((statedBalance - previousBalance) * 100) / 100,
+        };
+      }),
+    },
+  };
+}
+
+/**
  * Aggregate only: verify a cash ledger's stated running balance against the
  * preceding balance and each parsed IN/OUT movement. This is a read-only
  * diagnostic, not an opening balance booking or bank reconciliation.

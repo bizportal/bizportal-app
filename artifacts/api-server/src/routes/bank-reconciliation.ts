@@ -17,6 +17,7 @@ import {
   previewCashSheetRows,
   planCashSheetImportDryRun,
   auditCashSheetRunningBalances,
+  inspectCashSourceSentinels,
   explainCashRawBalanceDifferences,
 } from "../lib/bank-sheet-sync";
 import {
@@ -8455,6 +8456,7 @@ router.get("/bank-reconciliation/sheet-configs/5/preview", async (req, res): Pro
     const replay = planCashSheetImportDryRun(rows, scope, transient);
     const afterRollback = planCashSheetImportDryRun(rows, scope);
     const balanceAudit = auditCashSheetRunningBalances(rows);
+    const cashSourceSentinels = inspectCashSourceSentinels(rows);
     // Query only the 8 mismatched debit, credit and saldo cells, never names,
     // narratives, counterparties, or formula source text. If unavailable, the
     // existing verified preview remains usable and the gate stays closed.
@@ -8507,6 +8509,7 @@ router.get("/bank-reconciliation/sheet-configs/5/preview", async (req, res): Pro
       ok: false, configId: 5, accountId: 18, ...preview, safeToImport: false,
       cashDryRun: {
         balanceAudit,
+        cashSourceSentinels,
         mismatchCellEvidence,
         rawBalanceReconciliation,
         accountOpeningBalance: validAccountOpeningBalance,

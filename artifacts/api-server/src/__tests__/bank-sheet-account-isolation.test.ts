@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { assertBankMutationWriterAccountType, auditCashSheetRunningBalances, explainCashRawBalanceDifferences, planCashSheetImportDryRun, previewCashSheetRows } from "../lib/bank-sheet-sync";
+import { assertBankMutationWriterAccountType, auditCashSheetRunningBalances, explainCashRawBalanceDifferences, inspectCashSourceSentinels, planCashSheetImportDryRun, previewCashSheetRows } from "../lib/bank-sheet-sync";
 
 const routeSource = readFileSync(
   resolve(process.cwd(), "src/routes/bank-reconciliation.ts"),
@@ -267,6 +267,40 @@ describe("Read-only exact raw cash running balance audit", () => {
     expect(routeSource).toContain("mismatchRows.map((n) => n - 1)");
     expect(routeSource).toContain("rawBalanceReconciliation");
     expect(routeSource).toContain("balanceAudit.mismatchDetails");
+  });
+});
+
+describe("CST-DEV archived cash source sentinels", () => {
+  it("exposes only transaction date and aggregates for the last movement and Aug cashback", () => {
+    const rows = [
+      ["Tanggal", "Keterangan COA", "Debit", "Kredit", "Saldo", "Pemasukan/Pengeluaran"],
+      ["", "SALDO AWAL", "", "", "2726594", ""],
+      ["18/08/2026", "another cash payment", "", "100", "2726594", "Pengeluaran"],
+      ["19/08/2026", "Cashback | QRISCPMID26", "", "2000", "2724594", "Pemasukan"],
+      ["30/10/2026", "private merchant detail", "112,78", "", "2724706,78", "Pemasukan"],
+    ];
+    const result = inspectCashSourceSentinels(rows);
+    expect(result.cashback19Aug).toMatchObject({
+      matches: 1,
+      rows: [{
+        rowNumber: 4, date: "2026-08-19", direction: "OUT",
+        debit: 0, credit: 2000, sourceFlowLabel: "IN",
+        previousBalance: 2726594, statedBalance: 2724594, balanceMovement: -2000,
+      }],
+    });
+    expect(result.lastTransaction).toMatchObject({
+      rowNumber: 5, date: "2026-10-30",
+      direction: "IN", debit: 112.78, credit: 0,
+      previousBalance: 2724594, statedBalance: 2724706.78,
+    });
+    expect(JSON.stringify(result)).not.toContain("private merchant detail");
+    expect(JSON.stringify(result)).not.toContain("QRISCPMID26");
+  });
+  it("preserves no-write, scoped and blocked preview endpoints", () => {
+    expect(routeSource).toContain("const cashSourceSentinels = inspectCashSourceSentinels(rows)");
+    expect(routeSource).toContain("cashSourceSentinels,");
+    expect(routeSource).toContain('router.get("/bank-reconciliation/sheet-configs/5/preview"');
+    expect(routeSource).toContain("safeToImport: false");
   });
 });
 
