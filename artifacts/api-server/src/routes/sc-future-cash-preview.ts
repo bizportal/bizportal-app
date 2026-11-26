@@ -144,8 +144,13 @@ router.post(PATH + "/preview", async (req, res): Promise<void> => {
     res.status(403).json({ code: "SC_CASH_COMPANY1_ACCOUNT18_ONLY" });
     return;
   }
-  // Never treat browser-supplied hashes or approval claims as trusted proof.
-  if (["sourceDocumentSha256", "approvalSha256", "ownerApproved", "voucherId", "posting"].some(k => k in body)) {
+  // This endpoint is a mathematical preview, never a source/approval intake.
+  // Fail closed on ALL unrecognized fields, including nested or renamed
+  // browser-supplied document and posting claims.
+  const allowed = new Set([
+    "companyId", "accountId", "date", "direction", "amount", "counterCoaId",
+  ]);
+  if (Object.keys(body).some(key => !allowed.has(key))) {
     res.status(400).json({ code: "SC_CASH_SERVER_VERIFIED_PROOFS_ONLY" });
     return;
   }
