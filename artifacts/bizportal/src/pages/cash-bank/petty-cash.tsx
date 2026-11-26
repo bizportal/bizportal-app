@@ -1,5 +1,5 @@
 import { DatePicker } from "@/components/ui/date-picker";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -41,9 +41,20 @@ export default function CashBankPettyCash() {
   const [saving, setSaving] = useState(false);
   const [actionLoading, setActionLoading] = useState<number | null>(null);
   const [typeFilter, setTypeFilter] = useState("all");
+  const latestLoadId = useRef(0);
 
   const load = useCallback(async (): Promise<void> => {
-    if (!activeCompanyId) return;
+    const loadId = ++latestLoadId.current;
+    if (!activeCompanyId) {
+      setServiceAvailable(false);
+      setTxs([]);
+      setSummary({});
+      setAccounts([]);
+      setError(null);
+      setShowModal(false);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
     setServiceAvailable(false);
@@ -52,6 +63,7 @@ export default function CashBankPettyCash() {
         fetch(`${API}/cash-bank/petty-cash?companyId=${activeCompanyId}&limit=100`, { credentials: "include" }),
         fetch(`${API}/cash-bank/accounts?companyId=${activeCompanyId}`, { credentials: "include" }),
       ]);
+      if (loadId !== latestLoadId.current) return;
       if (!txR.ok) {
         setError(pettyCashReadError(txR.status));
         setTxs([]);
@@ -65,6 +77,7 @@ export default function CashBankPettyCash() {
         return;
       }
       const [txData, accData] = await Promise.all([txR.json(), accR.json()]);
+      if (loadId !== latestLoadId.current) return;
       if (!Array.isArray(txData?.data) || !Array.isArray(accData?.data)) {
         setError("Respons layanan Kas Kecil tidak valid; pembuatan transaksi dinonaktifkan.");
         return;
@@ -74,12 +87,13 @@ export default function CashBankPettyCash() {
       setAccounts(accData.data.filter((account: any) => isPettyCashChoice(account, activeCompanyId)));
       setServiceAvailable(true);
     } catch {
+      if (loadId !== latestLoadId.current) return;
       setError("Layanan Kas Kecil tidak dapat dihubungi. Tidak ada transaksi yang disimpan.");
       setAccounts([]);
       setTxs([]);
       setSummary({});
     } finally {
-      setLoading(false);
+      if (loadId === latestLoadId.current) setLoading(false);
     }
   }, [activeCompanyId]);
 
