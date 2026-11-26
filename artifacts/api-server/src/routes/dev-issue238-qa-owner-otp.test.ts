@@ -49,14 +49,18 @@ describe("issue238 purpose-separated signed Owner OTP QA consent",()=>{
     for(const k of KEYS){if(original[k]===undefined)delete process.env[k];else process.env[k]=original[k];}
   });
   const test="issue238-pg17-lock-expiry-concurrency-qa.sh";
+  const commandId="11111111-1111-4111-8111-111111111111";
+  const jobId="22222222-2222-4222-8222-222222222222";
+  const challenge=()=>path+"/challenge?test="+encodeURIComponent(test)+
+    "&commandId="+commandId+"&jobId="+jobId;
   it("disabled by default",async()=>{
     delete process.env.BIZPORTAL_ISSUE238_OWNER_OTP_DEV;
-    expect((await get(path+"/challenge?test="+test)).status).toBe(404);
+    expect((await get(challenge())).status).toBe(404);
     expect((await get(path+"/public-key")).status).toBe(404);
   });
   it("no owner session and non-owner denied",async()=>{
     auth.session.mockReturnValue(null);
-    expect((await get(path+"/challenge?test="+test)).status).toBe(401);
+    expect((await get(challenge())).status).toBe(401);
     auth.session.mockReturnValue({id:identity.id,email:identity.email,issuedAt:Date.now(),expiresAt:Date.now()+1000});
     auth.user.mockResolvedValue({...identity,role:"admin"});
     expect((await get(path+"/public-key")).status).toBe(401);
@@ -64,13 +68,33 @@ describe("issue238 purpose-separated signed Owner OTP QA consent",()=>{
   it("expired OTP session denied",async()=>{
     auth.session.mockReturnValue({id:identity.id,email:identity.email,
       issuedAt:Date.now()-11*60000,expiresAt:Date.now()+1000});
-    expect((await get(path+"/challenge?test="+test)).status).toBe(401);
+    expect((await get(challenge())).status).toBe(401);
   });
   it("rejects unlisted tests",async()=>{
     expect((await get(path+"/challenge?test=production.sql")).status).toBe(400);
   });
+  it("denies unbound or malformed command/job IDs rather than inventing claims",async()=>{
+    expect((await get(path+"/challenge?test="+test)).status).toBe(400);
+    expect((await get(path+"/challenge?test="+test+"&commandId=CMD-fake&jobId=JOB-fake")).status).toBe(400);
+    expect((await get(path+"/challenge?test="+test+"&commandId="+commandId)).status).toBe(400);
+    const good=await get(challenge());
+    expect(good.status).toBe(200);
+    expect(good.body.claims.command_id).toBe(commandId);
+    expect(good.body.claims.job_id).toBe(jobId);
+  });
+  it("rejects tampered command or job even when the nonce is unchanged",async()=>{
+    const good=await get(challenge());
+    expect(good.status).toBe(200);
+    for(const field of ["command_id","job_id"]){
+      const wrong={...good.body,claims:{...good.body.claims,
+        [field]:"33333333-3333-4333-8333-333333333333"},
+        approvalText:"SETUJUI QA #238 DEV"};
+      const result=await post(wrong,process.env.BIZPORTAL_ISSUE238_OWNER_ORIGIN_DEV);
+      expect(result.status).toBe(403);
+    }
+  });
   it("requires explicit same-origin POST and valid challenge",async()=>{
-    const response=await get(path+"/challenge?test="+test);
+    const response=await get(challenge());
     expect(response.status).toBe(200);
     const {claims,expiresAt,consentProof}=response.body;
     const input={claims,expiresAt,consentProof,approvalText:"SETUJUI QA #238 DEV"};
@@ -80,7 +104,7 @@ describe("issue238 purpose-separated signed Owner OTP QA consent",()=>{
     expect((await post({...input,claims:{...claims,nonce:"NONCE-"+ "b".repeat(32)}},process.env.BIZPORTAL_ISSUE238_OWNER_ORIGIN_DEV)).status).toBe(403);
   });
   it("valid consent signs claims using separate Ed25519 public verifier",async()=>{
-    const issued=await get(path+"/challenge?test="+test);
+    const issued=await get(challenge());
     expect(issued.status).toBe(200);
     const approve=await post({...issued.body,approvalText:"SETUJUI QA #238 DEV"},
       process.env.BIZPORTAL_ISSUE238_OWNER_ORIGIN_DEV);
