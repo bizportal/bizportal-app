@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const page = readFileSync(fileURLToPath(new URL("../pages/cash-bank/sc-new.tsx", import.meta.url)), "utf8");
-const route = readFileSync(fileURLToPath(new URL("../../../../api-server/src/routes/sc-future-cash-preview.ts", import.meta.url)), "utf8");
+const route = readFileSync(fileURLToPath(new URL("../../../api-server/src/routes/sc-future-cash-preview.ts", import.meta.url)), "utf8");
 
 describe("Kas Besar SC pending evidence upload resilience", () => {
   it("accepts the six valid multipart fields/file without reaching parts ceiling", () => {
