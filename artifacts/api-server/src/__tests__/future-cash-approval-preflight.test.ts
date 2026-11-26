@@ -56,6 +56,21 @@ describe("future Account18 cash draft approval preflight — pure QA only", () =
       }
     }
   });
+  it("rejects approvals issued before the trusted receipt was verified", () => {
+    for (const changed of [
+      { ...approval, approvedAt: "2026-11-26T23:59:59Z" },
+      { ...approval, approvedAt: "2026-11-26T00:00:00Z" },
+    ]) {
+      expect(assessFutureCashDraft(source, receipt, changed, coa)).toMatchObject({
+        eligibleForReadOnlyDraft: false,
+        readyForCommit: false,
+        reason: "APPROVAL_NOT_VERIFIED",
+      });
+    }
+    expect(assessFutureCashDraft(source, receipt, approval, coa)).toMatchObject({
+      eligibleForReadOnlyDraft: true, readyForCommit: false,
+    });
+  });
   it("rejects wrong-company, self-counter, inactive or header COAs", () => {
     for (const changed of [null, { ...coa, companyId: 2 }, { ...coa, id: 75839 },
       { ...coa, isActive: false }, { ...coa, isPostable: false },
