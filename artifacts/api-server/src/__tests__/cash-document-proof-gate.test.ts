@@ -49,7 +49,24 @@ describe("read-only primary-document-to-cash-row matching contract",()=>{
   it("does not accept duplicate document identity or duplicate row candidates",()=>{
     expect(validateCashDocumentProofs(scope,[row],[doc,doc]).verified).toBe(0);
     expect(validateCashDocumentProofs(scope,[row,{...row,rowNumber:4}],[doc,{...doc,physicalRow:4}]).verified).toBe(0);
-    expect(validateCashDocumentProofs(scope,[row,row],[doc]).verified).toBe(1);
+    const duplicated=validateCashDocumentProofs(scope,[row,row],[doc]);
+    expect(duplicated).toMatchObject({
+      verified:0,blocked:2,reasonCounts:{INVALID_SOURCE_ROW:2},readyForCommit:false,
+    });
+    expect(duplicated.verifiedEvidence).toHaveLength(0);
+    // Conflicting source data for the same physical row cannot give either
+    // copy a valid accounting mapping, regardless of input ordering.
+    const conflicting={...row,sourceFingerprint:"a".repeat(64),amountCents:11279};
+    for (const rows of [[row,conflicting],[conflicting,row]]) {
+      const result=validateCashDocumentProofs(scope,rows,[doc]);
+      expect(result).toMatchObject({
+        verified:0,blocked:2,reasonCounts:{INVALID_SOURCE_ROW:2},readyForCommit:false,
+      });
+      expect(result.verifiedEvidence).toHaveLength(0);
+    }
+    expect(validateCashDocumentProofs(
+      scope,[row,{...row,rowNumber:4}],[doc,{...doc,documentId:"synthetic-voucher-002",physicalRow:4}],
+    ).verified).toBe(2);
   });
   it("fails closed on unauthorized cash scope",()=>{
     expect(()=>validateCashDocumentProofs({...scope,accountId:17},[row],[doc]))
