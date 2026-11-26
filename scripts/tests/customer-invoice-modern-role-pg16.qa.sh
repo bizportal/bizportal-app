@@ -141,10 +141,80 @@ echo ORIGINAL_DIVA_SYNTHETIC_11_PERCENT_DEFAULT_RESET_PASS
 # company-scoped RLS-only smoke fixture. No HTTP or real identity.
 docker cp "$ROOT/scripts/tests/customer-invoice-portal-handler-disposable-extra.sql" "$PG_NAME":/tmp/portal-extra.sql
 docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic -f /tmp/portal-extra.sql > "$WORK/portal-extra.log"
+docker cp "$ROOT/scripts/tests/customer-invoice-modern-hosted-portal-tables.sql" "$PG_NAME":/tmp/qa-hosted-portal.sql
+docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic -f /tmp/qa-hosted-portal.sql > "$WORK/hosted-portal.log"
+echo ORIGINAL_PORTAL_SCHEMA_MISSING_TABLES_QA_PARITY_PASS
 docker cp "$ROOT/scripts/tests/customer-invoice-modern-otp-synthetic-rls.sql" "$PG_NAME":/tmp/modern-rls.sql
 docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic -f /tmp/modern-rls.sql > "$WORK/modern-rls.log"
-docker cp "$ROOT/vendor/customer-portal/scripts/dev-invoice-tax-source-lock-20261119.sql" "$PG_NAME":/tmp/tax-lock.sql
+# Reset earlier broad synthetic grants to the actual hosted CST-DEV
+# table/column/sequence grants (read-only introspection snapshot).
+docker cp "$ROOT/scripts/tests/customer-invoice-hosted-20261119-grant-parity.sql" "$PG_NAME":/tmp/hosted-qa-acl.sql
+docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic -f /tmp/hosted-qa-acl.sql > "$WORK/acl-parity.log"
+echo HOSTED_CSTDEV_WRITER_COLUMN_GRANT_SNAPSHOT_LOADED_PASS
+# Replace synthetic per-company policies with the exact 122 real CST-DEV
+# per-writer RLS definitions captured via read-only pg_policies. This runs
+# ONLY inside the disposable invoice_synthetic PG16 container.
+docker cp "$ROOT/scripts/tests/customer-invoice-hosted-rls-source-snapshot-20261119.sql" "$PG_NAME":/tmp/real-hosted-rls.sql
+docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic -f /tmp/real-hosted-rls.sql > "$WORK/rls-parity.log"
+echo HOSTED_CSTDEV_EXACT_122_RLS_POLICIES_INSTALLED_ON_DISPOSABLE_PASS
+for company in cst diva; do
+  role="$(printf 'bizportal_customer_invoice_%s_writer_dev' "$company")"
+  denied="$(docker exec "$PG_NAME" psql -U postgres -d invoice_synthetic -Atc "select has_column_privilege('$role','public.audit_accounting_events','after_state','INSERT')::text || ':' || has_column_privilege('$role','public.audit_accounting_events','change_reason','INSERT')::text")"
+  test "$denied" = "false:false" || { echo "HOSTED_AUDIT_GRANT_SNAPSHOT_NOT_STRICT:$denied";exit 1; }
+done
+echo HOSTED_CSTDEV_AUDIT_MISSING_COLUMNS_PROVEN_PASS
+for company in cst diva; do
+  role="$(printf 'bizportal_customer_invoice_%s_writer_dev' "$company")"
+  if [ "$company" = cst ]; then tax_id=1;company_id=1;else tax_id=3;company_id=3;fi
+  if docker exec "$PG_NAME" psql -U "$role" -d invoice_synthetic -v ON_ERROR_STOP=1 -Atc "select id from public.accounting_taxes where id=$tax_id and company_id=$company_id for share" >/dev/null 2>&1;then
+    echo "HOSTED_TAX_SOURCE_FOR_SHARE_UNEXPECTEDLY_ALLOWED_$company";exit 1
+  fi
+  echo "HOSTED_CSTDEV_TAX_ROWLOCK_MISSING_PRIVILEGE_PROVEN_$company"_PASS
+done
+
+# Opt in exact B6 source policy and two missing audit columns ONLY on the
+# throwaway database, never hosted CST-DEV.
+# Reproduce the original B6 source-only failure by applying only its
+# four RESTRICTIVE policies, then use the exact four corrected source
+# PERMISSIVE policies from the pinned Customer Portal PR #233.
+SOURCE_B6="$ROOT/vendor/customer-portal/scripts/dev-invoice-tax-source-lock-20261119.sql"
+grep -Fq 'create policy cst_invoice_b6_settings_readlock_cst' "$SOURCE_B6"
+sed '/^-- The real hosted B1 settings\/taxes RLS/,$d' "$SOURCE_B6" > "$WORK/b6-original.sql"
+docker cp "$WORK/b6-original.sql" "$PG_NAME":/tmp/tax-lock.sql
 docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic -f /tmp/tax-lock.sql > "$WORK/taxlock.log"
+# With REAL B1 policies, B6 RESTRICTIVE-only UPDATE has no matching
+# PERMISSIVE UPDATE policy. FOR SHARE silently hides the row.
+for company in cst diva; do
+  role="bizportal_customer_invoice_${company}_writer_dev"
+  if [ "$company" = cst ]; then c_id=1;t_id=1;else c_id=3;t_id=3;fi
+  settings="$(docker exec "$PG_NAME" psql -U "$role" -d invoice_synthetic -Atc "select company_id from public.accounting_settings where company_id=$c_id for share")"
+  tax="$(docker exec "$PG_NAME" psql -U "$role" -d invoice_synthetic -Atc "select id from public.accounting_taxes where id=$t_id for share")"
+  test -z "$settings" && test -z "$tax" || { echo "RESTRICTIVE_ONLY_B6_EXPECTED_DENIAL_$company";exit 1; }
+  echo REAL_RLS_B6_RESTRICTIVE_ONLY_LOCK_DENIED_${company}_PASS
+done
+# Apply the four NEW PERMISSIVE UPDATE policies from exact pinned PR233.
+# No bespoke temporary replacement logic in this modern original-engine QA.
+sed -n '/^create policy cst_invoice_b6_settings_readlock_cst/,$p' "$SOURCE_B6" > "$WORK/b6-new.sql"
+test "$(grep -c '^create policy cst_invoice_b6_.*readlock_' "$WORK/b6-new.sql")" -eq 4
+docker cp "$WORK/b6-new.sql" "$PG_NAME":/tmp/b6-new.sql
+docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic -f /tmp/b6-new.sql > "$WORK/b6-permissive.log"
+echo PINNED_PORTAL_PR233_B6_POLICY_SOURCE_PASS
+for company in cst diva; do
+ role="bizportal_customer_invoice_${company}_writer_dev"
+ if [ "$company" = cst ]; then c_id=1;t_id=1;else c_id=3;t_id=3;fi
+ settings="$(docker exec "$PG_NAME" psql -U "$role" -d invoice_synthetic -Atc "select company_id from public.accounting_settings where company_id=$c_id for share")"
+ tax="$(docker exec "$PG_NAME" psql -U "$role" -d invoice_synthetic -Atc "select id from public.accounting_taxes where id=$t_id for share")"
+ test "$settings" = "$c_id" && test "$tax" = "$t_id" || { echo "B6_ROW_LOCK_STILL_DENIED_$company";exit 1;}
+ echo REAL_RLS_B6_PERMISSIVE_ROW_LOCK_${company}_PASS
+ if docker exec "$PG_NAME" psql -U "$role" -d invoice_synthetic -v ON_ERROR_STOP=1 -Atc "update public.accounting_taxes set created_at=now()+interval '1 day' where id=$t_id returning id" 2>/dev/null | grep -qx "$t_id";then echo "TAX_WRITE_UNSAFE_$company";exit 1;fi
+ echo REAL_RLS_B6_PERMISSIVE_TAX_WRITE_DENIED_${company}_PASS
+done
+grep -Fq 'GRANT INSERT(change_reason,after_state)' "$ROOT/scripts/dev-customer-invoice-audit-columns-20261119.sql"
+sed -n '/^GRANT INSERT(change_reason,after_state)/,+2p' "$ROOT/scripts/dev-customer-invoice-audit-columns-20261119.sql" > "$WORK/audit-cols-only.sql"
+test "$(wc -l < "$WORK/audit-cols-only.sql")" -eq 3
+docker cp "$WORK/audit-cols-only.sql" "$PG_NAME":/tmp/audit-cols-only.sql
+docker exec "$PG_NAME" psql -v ON_ERROR_STOP=1 -U postgres -d invoice_synthetic -f /tmp/audit-cols-only.sql > "$WORK/audit-grant.log"
+echo HOSTED_CSTDEV_ONLY_REVIEWED_B6_AND_TWO_AUDIT_COLUMNS_OPTIN_PASS
 echo MODERN_DISPOSABLE_COMPANY_SCOPED_ROLES_READY
 
 for company in cst diva; do
@@ -155,6 +225,15 @@ for company in cst diva; do
  echo MODERN_WRITER_DIRECT_SESSION_RLS_"$company"_PASS
  docker exec "$PG_NAME" psql -U "$role" -d invoice_synthetic -v ON_ERROR_STOP=1 -Atc "begin; select id from public.accounting_taxes where id=$tax_id and company_id=$company_id for share; select company_id from public.accounting_settings where company_id=$company_id for share; commit;" >/dev/null
  echo MODERN_INVOICE_TAX_SOURCE_LOCK_"$company"_PASS
+ # The *real* B2 restrictive user policy authorizes a canonical global
+ # Owner, but intentionally hides a separate delegated staff Admin until
+ # an approved staff-scoped B5 policy exists. Do not silently widen access.
+ owner="$(docker exec "$PG_NAME" psql -U "$role" -d invoice_synthetic -Atc "select id from public.users where id='synthetic-owner' for share")"
+ test "$owner" = synthetic-owner || { echo "CANONICAL_OWNER_RLS_MISSING_$company";exit 1;}
+ staff_id="synthetic-staff-$company"
+ staff="$(docker exec "$PG_NAME" psql -U "$role" -d invoice_synthetic -Atc "select id from public.users where id='$staff_id' for share")"
+ test -z "$staff" || { echo "UNAPPROVED_STAFF_ADMIN_VISIBLE_$company";exit 1;}
+ echo "EXACT_HOSTED_B2_RLS_OWNER_VISIBLE_STAFF_DENIED_${company}_PASS"
 done
 echo MODERN_ORIGINAL_ACCOUNTING_SYNTHETIC_ROLE_SMOKE_PASS
 
