@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { assertBankMutationWriterAccountType, auditCashSheetRunningBalances, explainCashRawBalanceDifferences, inspectCashSourceSentinels, planCashSheetImportDryRun, previewCashSheetRows } from "../lib/bank-sheet-sync";
+import { assertBankMutationWriterAccountType, auditCashSheetRunningBalances, explainCashRawBalanceDifferences, inspectCashSourceSentinels, planCashSheetImportDryRun, prepareCashLedgerDraftInputs, previewCashSheetRows } from "../lib/bank-sheet-sync";
 
 const routeSource = readFileSync(
   resolve(process.cwd(), "src/routes/bank-reconciliation.ts"),
@@ -302,6 +302,47 @@ describe("Read-only exact raw cash running balance audit", () => {
     expect(routeSource).toContain("mismatchRows.map((n) => n - 1)");
     expect(routeSource).toContain("rawBalanceReconciliation");
     expect(routeSource).toContain("balanceAudit.mismatchDetails");
+  });
+});
+
+describe("CST-DEV cash draft preflight integration", () => {
+  const scope = { companyId: 1, configId: 5, accountId: 18 };
+  it("maps canonical parsed cash source rows to unmapped draft inputs, never opening balance", () => {
+    const rows = [
+      ["Tanggal", "Keterangan COA", "Debit", "Kredit", "Saldo"],
+      ["", "SALDO AWAL", "", "", "13793"],
+      ["2026-10-30", "Cash test A", "123.45", "", "13916.45"],
+      ["2026-10-31", "Cash test B", "", "12.34", "13904.11"],
+    ];
+    const source = prepareCashLedgerDraftInputs(rows, scope);
+    expect(source).toHaveLength(2);
+    expect(source).toMatchObject([
+      { rowNumber: 3, transactionDate: "2026-10-30", direction: "IN", amountCents: 12345, counterCoaId: null },
+      { rowNumber: 4, transactionDate: "2026-10-31", direction: "OUT", amountCents: 1234, counterCoaId: null },
+    ]);
+    expect(source[0]?.sourceFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(source)).not.toContain("Cash test A");
+    expect(rows[2]?.[2]).toBe("123.45");
+  });
+  it("keeps the existing DEV GET signed owner gate and forces missing COA block", () => {
+    expect(routeSource).toContain("const draftInputs = prepareCashLedgerDraftInputs(rows, scope)");
+    expect(routeSource).toContain("const draftPlan = planCashLedgerDrafts(");
+    expect(routeSource).toContain("blockedMissingCounterCoa:");
+    expect(routeSource).toContain("counterCoaAssignment: \"UNMAPPED_REQUIRES_VERIFIED_ACCOUNTING_SOURCE\"");
+    expect(routeSource).toContain("readyForCommit: false");
+    expect(routeSource).toContain('router.get("/bank-reconciliation/sheet-configs/5/preview"');
+    expect(routeSource).toContain("actor?.signedSuperAdmin");
+    expect(routeSource).toContain("safeToImport: false");
+  });
+  it("fails closed for other cash account scope and preserves fingerprints across retries", () => {
+    const rows = [
+      ["Tanggal", "Keterangan", "Debit", "Kredit"],
+      ["2026-11-26", "private", "112,78", ""],
+    ];
+    expect(() => prepareCashLedgerDraftInputs(rows, { ...scope, accountId: 17 }))
+      .toThrow("CASH_DRAFT_SCOPE_NOT_AUTHORIZED");
+    expect(prepareCashLedgerDraftInputs(rows, scope))
+      .toEqual(prepareCashLedgerDraftInputs(rows, scope));
   });
 });
 
