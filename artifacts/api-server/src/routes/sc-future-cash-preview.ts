@@ -5,6 +5,7 @@ import { rateLimit } from "express-rate-limit";
 import { makeFileFilter, IMAGE_OR_PDF_ALLOWED_MIME } from "../lib/uploadMiddleware";
 import { ObjectStorageService } from "../lib/objectStorage";
 import { prepareFutureCashSource } from "../lib/future-cash-source-identity";
+import { auditPendingFutureCashBytes } from "../lib/future-cash-pending-integrity";
 import type { PendingPrivateCashEvidence } from "../lib/future-cash-private-upload";
 import { pool } from "@workspace/db";
 import {
@@ -342,5 +343,23 @@ router.post(PATH + "/documents/pending", cashDocumentRateLimit, (req, res, next)
     res.status(503).json({ code: "SC_CASH_DOCUMENT_INTAKE_UNAVAILABLE" });
   }
 });
+
+/**
+ * Signed Owner/Super Admin, CST-DEV-only, read-only integrity audit.
+ * It NEVER marks a document VERIFIED or creates a posting approval.
+ */
+router.get(PATH + "/documents/:transactionId/integrity", cashDocumentRateLimit,
+  async (req, res): Promise<void> => {
+    const id = String(req.params.transactionId ?? "");
+    const result = await auditPendingFutureCashBytes(id, pool, pendingEvidenceStorage);
+    if (result !== "MATCH") {
+      res.status(404).json({ code: "SC_CASH_PENDING_INTEGRITY_UNAVAILABLE",
+        postingAllowed: false });
+      return;
+    }
+    res.json({ transactionId: id, status: "PENDING_VERIFICATION",
+      storageIntegrity: "MATCH", documentApproval: "NOT_VERIFIED",
+      postingAllowed: false, historicalSheetConfig5: "NOT_USED_NONMIGRATION" });
+  });
 
 export default router;
