@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS public.audit_accounting_events(
  actor_type text,
  correlation_id text,
  change_reason text,
- after_state jsonb
+ after_state jsonb,
+ created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS public.activity_logs(
  id bigserial PRIMARY KEY,
