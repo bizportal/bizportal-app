@@ -249,6 +249,25 @@ export default function ScNewCashPreview() {
     return ()=>controller.abort();
   },[activeCompanyId]);
 
+  useEffect(()=>{
+    if(activeCompanyId!==1 || !verifiedId || revokedId===verifiedId)return;
+    const controller=new AbortController();
+    void(async()=>{
+      try{
+        const response=await fetch(ENDPOINT+"/documents/"+encodeURIComponent(verifiedId)+"/review-status",{
+          credentials:"include",cache:"no-store",signal:controller.signal,
+        });
+        const status=await response.json().catch(()=>null);
+        if(controller.signal.aborted)return;
+        if(response.ok && status?.transactionId===verifiedId && status?.postingAllowed===false &&
+          status?.status==="EVIDENCE_REVIEWED" && Number.isSafeInteger(status?.counterCoaId)){
+          setVoucherCoa(String(status.counterCoaId));setEvidenceReviewed(true);
+        }
+      }catch{/* Remain fail-closed; review can be retried only after server status is available. */}
+    })();
+    return()=>controller.abort();
+  },[activeCompanyId,verifiedId,revokedId]);
+
   const calculate=async()=>{
     if(activeCompanyId!==1 || !readiness || busy || evidenceBusy || !!pendingEvidence) return;
     const choice=readiness.contraCandidates.find(c=>String(c.id)===counterCoaId);
