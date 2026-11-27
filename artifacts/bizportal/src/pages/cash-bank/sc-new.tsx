@@ -201,6 +201,38 @@ export default function ScNewCashPreview() {
           if(!controller.signal.aborted && version===companyRequestVersion.current)
             setVerifiedListError(true);
         }
+        try{
+          const approvedResponse=await fetch(ENDPOINT+"/documents/approved",{
+            credentials:"include",cache:"no-store",signal:controller.signal,
+          });
+          const list=await approvedResponse.json().catch(()=>null) as ({
+            mode?:string;companyId?:number;accountId?:number;postingAllowed?:boolean;
+            documents?:ServerApprovedDocument[];
+          })|null;
+          if(!approvedResponse.ok || list?.mode!=="ACCOUNT18_APPROVED_UNPOSTED_EVIDENCE_AUDIT" ||
+             list.companyId!==1 || list.accountId!==18 || list.postingAllowed!==false ||
+             !Array.isArray(list.documents))throw Error("APPROVED_LIST_UNAVAILABLE");
+          if(!controller.signal.aborted && version===companyRequestVersion.current)
+            setServerApprovedDocuments(list.documents.filter(d=>
+              d.status==="APPROVED_PENDING_POSTING" && typeof d.transactionId==="string" &&
+              Number.isSafeInteger(d.counterCoaId) && d.counterCoaId>0).slice(0,20));
+        }catch{
+          if(!controller.signal.aborted && version===companyRequestVersion.current)setApprovedListError(true);
+        }
+        try{
+          const revokedResponse=await fetch(ENDPOINT+"/documents/revoked",{
+            credentials:"include",cache:"no-store",signal:controller.signal,
+          });
+          const list=await revokedResponse.json().catch(()=>null) as ({
+            mode?:string;companyId?:number;accountId?:number;postingAllowed?:boolean;
+            documents?:ServerRevokedDocument[];
+          })|null;
+          if(revokedResponse.ok && list?.mode==="ACCOUNT18_REVOKED_EVIDENCE_AUDIT" &&
+             list.companyId===1 && list.accountId===18 && list.postingAllowed===false &&
+             Array.isArray(list.documents) && !controller.signal.aborted &&
+             version===companyRequestVersion.current)
+            setServerRevokedDocuments(list.documents.filter(d=>d.status==="REVOKED").slice(0,20));
+        }catch{/* Owner may still revoke via the approved list if the read fails. */}
       }catch(err){
         if(!controller.signal.aborted && version===companyRequestVersion.current)
           setError(err instanceof Error?err.message:"Layanan pratinjau tidak tersedia.");
