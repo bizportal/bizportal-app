@@ -637,7 +637,14 @@ export function VendorInvoicesListPage() {
                           )}
                         </td>
                         <td className="py-2 px-3 text-right font-mono text-muted-foreground">{idr(canonicalAmountPaid(vi))}</td>
-                        <td className="py-2 px-3 text-right font-mono text-red-600">{idr(outstandingNetPayment(vi))}</td>
+                        <td className="py-2 px-3 text-right font-mono text-red-600">
+                          {idr(outstandingNetPayment(vi))}
+                          {Number(vi.postedDisbursementAmount ?? 0) > 0 && (
+                            <div className="mt-0.5 text-[10px] font-medium text-amber-700">
+                              Disbursement tercatat {idr(Number(vi.postedDisbursementAmount))} · menunggu rekonsiliasi bank
+                            </div>
+                          )}
+                        </td>
                         <td className="py-2 px-3">
                           <div className="flex items-center justify-end gap-1">
                             {vi.status === "draft" && (
@@ -665,7 +672,7 @@ export function VendorInvoicesListPage() {
                                 {recoveringId === Number(vi.id) ? "..." : "Pulihkan Jurnal"}
                               </Button>
                             )}
-                            {(vi.status === "posted" || vi.status === "matched") && outstandingNetPayment(vi) > 0.01 && (
+                            {(vi.status === "posted" || vi.status === "matched") && outstandingNetPayment(vi) > 0.01 && Number(vi.postedDisbursementAmount ?? 0) <= 0 && (
                               <Link href={`/accounting/bank-disbursements?mode=vendor_invoice&invoiceIds=${vi.id}`}>
                                 <Button size="sm" variant="outline" className="h-7 px-2 text-xs gap-1 text-orange-600 border-orange-300 hover:bg-orange-50">
                                   <Banknote className="h-3 w-3" />Bayar
