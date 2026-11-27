@@ -779,6 +779,41 @@ export default function ScNewCashPreview() {
                       COA terpilih: {readiness.contraCandidates.find(c=>String(c.id)===voucherCoa)?.code} — {readiness.contraCandidates.find(c=>String(c.id)===voucherCoa)?.name}
                     </p>}
                     <p className="text-xs text-slate-400">Gulir daftar di atas dengan roda mouse, touchpad, atau tombol panah. Ketik kode/nama untuk mencari.</p>
+                    <div className="space-y-2 rounded-md border border-amber-500/50 p-3">
+                      <p className="text-sm font-semibold text-amber-200">Wajib: review isi bukti transaksi sebelum OTP</p>
+                      <p className="text-xs text-slate-200">Status VERIFIED hanya mengesahkan integritas byte. Bukti NPWP/KTP bukan bukti kas. Buka PDF asli dan baca tanggal, nominal, referensi transaksi serta COA.</p>
+                      <Label htmlFor="sc-cash-evidence-kind">Jenis dokumen keuangan pada PDF</Label>
+                      <select id="sc-cash-evidence-kind" aria-label="Jenis bukti keuangan"
+                        value={evidenceKind} disabled={voucherBusy||reviewBusy||evidenceReviewed}
+                        onChange={e=>setEvidenceKind(e.target.value)}
+                        className="w-full rounded border border-slate-500 bg-slate-900 px-2 py-2 text-white">
+                        <option value="">Pilih jenis bukti (NPWP/KTP tidak diterima)</option>
+                        <option value="BANK_TRANSFER_RECEIPT">Bukti transfer bank</option>
+                        <option value="CASH_DEPOSIT_SLIP">Slip setoran kas</option>
+                        <option value="SIGNED_CASH_RECEIPT">Tanda terima kas bertanda tangan</option>
+                      </select>
+                      <Label htmlFor="sc-cash-evidence-date">Tanggal yang tertulis dalam bukti</Label>
+                      <Input id="sc-cash-evidence-date" type="date" value={evidenceDate}
+                        disabled={reviewBusy||evidenceReviewed} onChange={e=>setEvidenceDate(e.target.value)}/>
+                      <Label htmlFor="sc-cash-evidence-amount">Nominal bukti Rp (contoh 10000.00)</Label>
+                      <Input id="sc-cash-evidence-amount" value={evidenceAmount} inputMode="decimal"
+                        placeholder="Masukkan nominal yang terbaca dari PDF" disabled={reviewBusy||evidenceReviewed}
+                        onChange={e=>setEvidenceAmount(e.target.value)}/>
+                      <Label htmlFor="sc-cash-evidence-reference">Nomor referensi / kuitansi pada bukti</Label>
+                      <Input id="sc-cash-evidence-reference" value={evidenceReference}
+                        placeholder="Nomor transaksi yang benar-benar tertera pada bukti"
+                        disabled={reviewBusy||evidenceReviewed} onChange={e=>setEvidenceReference(e.target.value)}/>
+                      <label className="flex items-start gap-2 text-sm">
+                        <input type="checkbox" checked={evidenceAttested} disabled={reviewBusy||evidenceReviewed}
+                          onChange={e=>setEvidenceAttested(e.target.checked)}/>
+                        Saya sudah membaca bukti asli dan mencocokkan jenis dokumen, nominal, tanggal, referensi serta COA lawan di atas.
+                      </label>
+                      <Button type="button" variant="outline" onClick={()=>void saveContentReview()}
+                        disabled={reviewBusy||voucherBusy||evidenceReviewed||!evidenceAttested||!evidenceKind||!voucherCoa||!evidenceDate||!evidenceAmount||evidenceReference.trim().length<6}>
+                        {reviewBusy?"Mencatat review...":"Catat review isi bukti (tanpa OTP/posting)"}
+                      </Button>
+                      {evidenceReviewed && <p role="status" className="text-sm text-green-200">Review isi bukti telah dicatat pada server untuk COA terpilih. OTP dapat diminta.</p>}
+                    </div>
                     <Button type="button" disabled={voucherBusy||reviewBusy||!voucherCoa||!evidenceReviewed} onClick={()=>void requestVoucherOtp()}>
                       {voucherBusy?"Memproses...":voucherChallenge?"Kirim ulang OTP":"Setujui Transaksi — Kirim OTP"}
                     </Button>
