@@ -386,6 +386,7 @@ async function _postEntryCore(
   input: PostingInput,
   journalCode: string,
   initialStatus: "posted" | "draft" | "pending_approval" = "posted",
+  atomicRootAudit = false,
 ): Promise<typeof accountingEntriesTable.$inferSelect> {
   if (input.lines.length === 0) {
     throw new Error("Journal entry must have at least one line");
@@ -507,6 +508,7 @@ async function _postEntryCore(
       return active;
     }
 
+    if (atomicRootAudit) await persistAtomicPostingAudit(client, input, existing);
     const [promoted] = await client
       .update(accountingEntriesTable)
       .set({ status: "posted" })
@@ -722,6 +724,12 @@ async function _postEntryCore(
     })),
   );
 
+  // Root engine owns this transaction: persist audit data before immutable status.
+  // Explicit transaction callers retain their existing audit contract.
+  if (atomicRootAudit && initialStatus === "posted") {
+    await persistAtomicPostingAudit(client, input, entry);
+  }
+
   // Promote entry from 'draft' to target status now that lines are safely inserted.
   // trg_block_posted_entry_update allows draft→posted/pending_approval transitions.
   if (initialStatus !== "draft") {
@@ -810,13 +818,48 @@ async function _postEntryCore(
  * `postEntry()` / `createDraftEntry()` / `postIntercompanyPair()` are
  * unaffected; this is a pure additive export around the same core logic.
  */
+/** Durable audit for engine-owned transactions. No DDL, no global pool,
+ * no asynchronous publication. Failure must abort the enclosing transaction.
+ * Existing posted replays return before this function is called.
+ */
+async function persistAtomicPostingAudit(client:DbClient,input:PostingInput,entry:typeof accountingEntriesTable.$inferSelect):Promise<void>{
+  const companyId=requireAccountingCompanyId(input.companyId);
+  const source=input.source??"manual";
+  const sourceId=input.sourceId??null;
+  const date=input.date.toISOString().slice(0,10);
+  const totalDebit=Number(entry.totalDebit),totalCredit=Number(entry.totalCredit);
+  const checksumHash=createHash("sha256").update(JSON.stringify({
+    entryNumber:entry.entryNumber,source,sourceId,totalDebit,totalCredit,companyId,date,
+  })).digest("hex");
+  const previousEntryId=source==="reversal" && typeof sourceId==="number"?sourceId:null;
+  const updated=await client.execute(sql`
+    UPDATE accounting_entries SET checksum_hash=${checksumHash},previous_entry_id=${previousEntryId}
+    WHERE id=${entry.id} AND company_id=${companyId} AND status='draft'
+    RETURNING id
+  `);
+  if(updated.rows.length!==1)throw Error("ATOMIC_JOURNAL_CHECKSUM_FAILED");
+  const payload={entryNumber:entry.entryNumber,source,sourceId,totalDebit,totalCredit};
+  await client.execute(sql`
+    INSERT INTO ledger_events(company_id,event_type,period,entry_id,actor,payload)
+    VALUES(${companyId},${source==="reversal"?"REVERSE":"POST"},${date.slice(0,7)},${entry.id},${input.createdById??null},${JSON.stringify(payload)}::jsonb)
+  `);
+  const eventType=source==="reversal"?"JOURNAL_VOIDED":"JOURNAL_CREATED";
+  const event={eventType,entryId:entry.id,sourceType:source,sourceId:sourceId==null?null:String(sourceId),amount:totalDebit,actor:input.createdById??null,companyId};
+  await client.execute(sql`
+    INSERT INTO financial_outbox_events(event_type,payload,entry_id,company_id)
+    VALUES(${eventType},${JSON.stringify(event)}::jsonb,${entry.id},${companyId})
+  `);
+}
+
 export async function postEntryWithClient(
   client: DbClient,
   input: PostingInput,
   journalCode: string,
   initialStatus: "posted" | "draft" | "pending_approval" = "posted",
+  atomicRootAudit = false,
 ): Promise<typeof accountingEntriesTable.$inferSelect> {
-  return _postEntryCore(client, input, journalCode, initialStatus);
+  if (atomicRootAudit && client === db) throw Error("ATOMIC_AUDIT_REQUIRES_TRANSACTION");
+  return _postEntryCore(client, input, journalCode, initialStatus, atomicRootAudit);
 }
 
 /**
