@@ -65,6 +65,18 @@ export async function readPurposeBoundFutureCashApproval(
               o.expires_at::text as otp_expires_at,
               o.created_at::text as otp_created_at
          from public.approval_requests a
+         -- Defense in depth: historical OTP approval is NOT permission to use
+         -- a document whose current server-owned status is REVOKED/PENDING.
+         join public.sc_future_cash_documents d
+           on d.transaction_id=$2::uuid
+          and d.company_id=$1 and d.account_id=18 and d.cash_coa_id=75839
+          and d.document_sha256=$5 and d.source_fingerprint=$3
+         join lateral (
+           select e.event_type
+             from public.sc_future_cash_document_events e
+            where e.transaction_id=d.transaction_id
+            order by e.event_id desc limit 1
+         ) current_document on current_document.event_type='VERIFIED'
          left join lateral (
            select email, verified_at, expires_at, created_at
              from public.bizportal_email_otp_codes
@@ -84,8 +96,13 @@ export async function readPurposeBoundFutureCashApproval(
           and a.doc_type='sc_future_cash_voucher'
           and a.metadata->>'transactionId'=$2
           and a.metadata->>'sourceFingerprint'=$3
+          and not exists (
+            select 1 from public.sc_future_cash_document_events revoked
+             where revoked.transaction_id=d.transaction_id
+               and revoked.event_type='REVOKED'
+          )
         order by a.updated_at desc, a.id desc limit 2`,
-      [1, source.transactionId, sourceFingerprint, purposePrefix],
+      [1, source.transactionId, sourceFingerprint, purposePrefix, source.sourceDocumentSha256],
     );
     // Reject ambiguous/multiple approvals rather than guess which one wins.
     if (result.rows.length !== 1) return null;
