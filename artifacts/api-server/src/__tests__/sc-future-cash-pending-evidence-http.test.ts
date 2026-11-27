@@ -187,6 +187,17 @@ describe("Account18 pending receipt intake HTTP — no journal or approval", () 
     expect(response.status).toBe(201);
     expect(mock.storageWrites).toBe(1);
   });
+  it("denies private pending proof download to unsigned, finance and foreign-company callers", async () => {
+    const url=base+"/api/cash-bank/sc-new/documents/25088529-6fa1-4ddb-80bf-390c157e64d4/download";
+    mock.signed=false;
+    expect((await fetch(url)).status).toBe(401);
+    mock.signed=true;mock.actorRole="finance";
+    expect((await fetch(url)).status).toBe(403);
+    mock.actorRole="owner";mock.actorCompany=2;
+    expect((await fetch(url)).status).toBe(403);
+    expect(mock.storageWrites).toBe(0);
+    expect(mock.queries).toHaveLength(0);
+  });
   it("blocks wrong origin, PROD, missing signed session and non-owner before any write", async () => {
     expect((await post({}, "https://malicious.invalid")).status).toBe(403);
     vi.stubEnv("APP_ENV", "production");
