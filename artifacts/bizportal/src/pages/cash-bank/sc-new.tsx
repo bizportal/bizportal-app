@@ -109,6 +109,11 @@ export default function ScNewCashPreview() {
     setReceiptFile(null);
     setBusy(false);
   };
+  const resetEvidenceReview=()=>{
+    setEvidenceReviewed(false);setRevokedId(null);setEvidenceKind("");setEvidenceDate("");
+    setEvidenceAmount("");setEvidenceReference("");setEvidenceAttested(false);
+    setRevokeReasonCode("WRONG_DOCUMENT_TYPE");setRevokeReason("");
+  };
 
   useEffect(()=>{
     const controller=new AbortController();
@@ -379,6 +384,60 @@ export default function ScNewCashPreview() {
       if(version===companyRequestVersion.current)
         setError(err instanceof Error?err.message:"Verifikasi belum tersedia.");
     }finally{setEvidenceBusy(false);}
+  };
+
+  const saveContentReview=async()=>{
+    if(activeCompanyId!==1 || !readiness || !pendingEvidence ||
+       verifiedId!==pendingEvidence.transactionId || reviewBusy || voucherBusy ||
+       !evidenceAttested || !evidenceKind || !evidenceDate || !evidenceAmount ||
+       evidenceReference.trim().length<6 || !voucherCoa || evidenceReviewed || revokedId)return;
+    const id=pendingEvidence.transactionId;
+    const coa=readiness.contraCandidates.find(c=>String(c.id)===voucherCoa);
+    if(!coa)return;
+    if(!window.confirm("Pastikan isi PDF asli benar-benar bukti transaksi keuangan (bukan NPWP/KTP), tanggal, nominal, referensi dan COA lawan sudah cocok. Catatan pemeriksaan akan mengikat OTP ke COA ini."))return;
+    const version=companyRequestVersion.current;
+    setReviewBusy(true);setVoucherError(null);
+    try{
+      const response=await fetch(ENDPOINT+"/documents/review",{
+        method:"POST",credentials:"include",cache:"no-store",headers:{"content-type":"application/json"},
+        body:JSON.stringify({companyId:1,accountId:18,transactionId:id,
+          counterCoaId:coa.id,evidenceKind,evidenceDate,evidenceAmount,
+          reference:evidenceReference.trim(),attested:true}),
+      });
+      const payload=await response.json().catch(()=>null);
+      if(response.status!==201 || payload?.status!=="EVIDENCE_REVIEWED" ||
+         payload?.transactionId!==id || payload?.counterCoaId!==coa.id || payload?.postingAllowed!==false)
+        throw Error("Review isi bukti ditolak (HTTP "+response.status+"). Tidak ada OTP atau jurnal.");
+      setEvidenceReviewed(true);
+    }catch(err){
+      if(version===companyRequestVersion.current)setVoucherError(err instanceof Error?err.message:"Review belum tersedia.");
+    }finally{setReviewBusy(false);}
+  };
+
+  const revokeInvalidEvidence=async()=>{
+    if(activeCompanyId!==1 || !pendingEvidence || verifiedId!==pendingEvidence.transactionId ||
+       revokeBusy || voucherBusy || reviewBusy || revokeReason.trim().length<12 ||
+       revokedId===pendingEvidence.transactionId)return;
+    const id=pendingEvidence.transactionId;
+    if(!window.confirm("CABUT kelayakan bukti UUID "+id+"? Persetujuan OTP asli tetap disimpan untuk audit. Tindakan ini tidak memposting/menghapus jurnal."))return;
+    const version=companyRequestVersion.current;
+    setRevokeBusy(true);setVoucherError(null);
+    try{
+      const response=await fetch(ENDPOINT+"/documents/revoke",{
+        method:"POST",credentials:"include",cache:"no-store",headers:{"content-type":"application/json"},
+        body:JSON.stringify({companyId:1,accountId:18,transactionId:id,reasonCode:revokeReasonCode,
+          reason:revokeReason.trim()}),
+      });
+      const payload=await response.json().catch(()=>null);
+      if(![200,201].includes(response.status) || payload?.status!=="REVOKED" ||
+         payload?.transactionId!==id || payload?.postingAllowed!==false)
+        throw Error("Pencabutan bukti ditolak (HTTP "+response.status+"). Jangan posting.");
+      setRevokedId(id);setEvidenceReviewed(false);setVoucherApproved(null);setVoucherChallenge(null);setVoucherCode("");
+      setServerApprovedDocuments(old=>old.filter(d=>d.transactionId!==id));
+      setServerVerifiedDocuments(old=>old.filter(d=>d.transactionId!==id));
+    }catch(err){
+      if(version===companyRequestVersion.current)setVoucherError(err instanceof Error?err.message:"Pencabutan belum berhasil.");
+    }finally{setRevokeBusy(false);}
   };
 
   const requestVoucherOtp=async()=>{
