@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { prepareFutureCashSource } from "../lib/future-cash-source-identity";
-import { auditPendingFutureCashBytes, type PendingCashIntegritySqlReader } from "../lib/future-cash-pending-integrity";
+import { auditPendingFutureCashBytes, readPendingFutureCashVerifiedBytes, type PendingCashIntegritySqlReader } from "../lib/future-cash-pending-integrity";
 import type { PrivateCashFileReader } from "../lib/future-cash-private-receipt";
 
 const id = "25088529-6fa1-4ddb-80bf-390c157e64d4";
@@ -37,6 +37,14 @@ const storage = (actual:Buffer, size=bytes.length):PrivateCashFileReader => ({
 describe("Account18 server-only pending evidence integrity audit (no posting)",()=>{
   it("re-downloads private bytes, validates source fingerprint and SHA-256",async()=>{
     expect(await auditPendingFutureCashBytes(id,reader([row]),storage(bytes))).toBe("MATCH");
+  });
+  it("returns only genuinely validated private bytes to the authenticated download route",async()=>{
+    const valid=await readPendingFutureCashVerifiedBytes(id,reader([row]),storage(bytes));
+    expect(valid?.extension).toBe("pdf");
+    expect(valid?.bytes.equals(bytes)).toBe(true);
+    const changed=Buffer.from(bytes);changed[changed.length-1]^=1;
+    expect(await readPendingFutureCashVerifiedBytes(id,reader([row]),storage(changed))).toBeNull();
+    expect(await readPendingFutureCashVerifiedBytes(id,reader([{...row,event_count:"1"}]),storage(bytes))).toBeNull();
   });
   it("rejects tampered storage bytes and size mismatch",async()=>{
     const tampered=Buffer.from(bytes);tampered[tampered.length-1]^=1;
