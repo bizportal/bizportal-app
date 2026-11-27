@@ -21,7 +21,7 @@ describe("Account18 Owner voucher OTP UI — no posting",()=>{
     expect(confirm).toContain('payload?.status!=="APPROVED"');
     expect(confirm).toContain("payload?.postingAllowed!==false");
     expect(confirm).toContain('finally{setVoucherCode("")');
-    expect(page).toContain("disabled={voucherBusy||!!voucherChallenge}");
+    expect(page).toContain("disabled={voucherBusy||!!voucherChallenge||evidenceReviewed}");
     expect(page).not.toContain('"/journal/post"');
   });
   it("accepts exactly six numeric OTP digits in both actual confirmation guards",()=>{
