@@ -10,7 +10,8 @@
  * See docs/canonical-posting-engine/02-design.md for the full design.
  */
 
-import { db, type accountingEntriesTable } from "@workspace/db";
+import { db, pool, type accountingEntriesTable } from "@workspace/db";
+import { drizzle } from "drizzle-orm/node-postgres";
 import { postEntryWithClient, type DbClient, type PostingInput } from "../accounting.js";
 import { logger } from "../logger.js";
 import type { PostingRequest, PostingResult, PostingValidator } from "./types.js";
@@ -74,7 +75,15 @@ export class CanonicalPostingEngine {
       // The caller owns the transaction boundary. postEntryWithClient inserts
       // the entry as draft, inserts lines, then promotes it to posted.
       const entry: JournalEntryRow = client === db
-        ? await db.transaction(tx => postEntryWithClient(tx as unknown as DbClient, input, request.journalCode, request.initialStatus ?? "posted", true))
+        ? await (async () => {
+            const connection = await pool.connect();
+            try {
+              return await drizzle(connection).transaction(tx =>
+                postEntryWithClient(tx as unknown as DbClient, input, request.journalCode, request.initialStatus ?? "posted", true));
+            } finally {
+              connection.release();
+            }
+          })()
         : await postEntryWithClient(client, input, request.journalCode, request.initialStatus ?? "posted");
 
       // These hooks are only safe for the root-client path. A transaction
