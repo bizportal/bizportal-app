@@ -445,14 +445,14 @@ router.get(PATH + "/documents/:transactionId/integrity", cashDocumentRateLimit,
 
 /**
  * Private evidence delivery to a reauthenticated signed Owner/Super Admin only.
- * Each request re-reads the server-owned pending record, downloads the object,
+ * Each request re-reads the server-owned pending or verified record, downloads the object,
  * checks bytes, size, source fingerprint and SHA-256 before returning a file.
  * Always an attachment (not inline HTML/PDF); never public URL or signed token.
  */
 router.get(PATH + "/documents/:transactionId/download", cashDocumentRateLimit,
   async (req, res): Promise<void> => {
     const id=String(req.params.transactionId ?? "");
-    const proof=await readPendingFutureCashVerifiedBytes(id,pool,pendingEvidenceStorage);
+    const proof=await readPendingFutureCashVerifiedBytes(id,pool,pendingEvidenceStorage,true);
     if(!proof){
       res.status(404).json({code:"SC_CASH_PRIVATE_EVIDENCE_UNAVAILABLE",postingAllowed:false});
       return;
