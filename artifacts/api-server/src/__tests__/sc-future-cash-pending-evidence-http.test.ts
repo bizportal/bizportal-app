@@ -11,6 +11,7 @@ const mock = vi.hoisted(() => ({
   smtpFail: false, recentOtpCount: 0, contraValid: true, approved: false,
   otpConsumed: false, otpAttempts: 0, otpExpired: false, otpDisabled: false,
   approvalFail: false, approvalRows: [] as unknown[][],
+  contentReviewMetadata: null as Record<string,unknown>|null,
   verifiedEvents: 0, pendingDoc: null as Record<string, unknown> | null,
   storageWrites: 0, storageDeletes: [] as string[],
   storageBytes: null as Buffer | null,
@@ -75,6 +76,8 @@ vi.mock("@workspace/db", () => {
       id: args[0], company_id: 1, code: "5-1000", name: "Expense",
       is_active: mock.contraValid, is_postable: true, is_header: false,
     }] };
+    if (sql.includes("select metadata from public.approval_requests") && sql.includes("sc_future_cash_evidence_review"))
+      return {rowCount:mock.contentReviewMetadata?1:0,rows:mock.contentReviewMetadata?[{metadata:mock.contentReviewMetadata}]:[]};
     if (sql.includes("from public.approval_requests")) return { rowCount: mock.approved ? 1 : 0, rows: [] };
     if (sql.includes("select count(*)::text as count from public.bizportal_email_otp_codes"))
       return { rows: [{ count: String(mock.recentOtpCount) }] };
@@ -191,7 +194,7 @@ describe("Account18 pending receipt intake HTTP — no journal or approval", () 
     mock.otpRows.length=0; mock.otpInvalidations.length=0; mock.smtpCalls.length=0;
     mock.smtpFail=false; mock.recentOtpCount=0; mock.contraValid=true; mock.approved=false;
     mock.otpConsumed=false;mock.otpAttempts=0;mock.otpExpired=false;mock.otpDisabled=false;
-    mock.approvalFail=false;mock.approvalRows.length=0;
+    mock.approvalFail=false;mock.approvalRows.length=0;mock.contentReviewMetadata=null;
     mock.wrongStoredBytes = false; mock.dbInsertFailure = false;
     mock.storageDeletes.length = 0; mock.queries.length = 0;
   });
@@ -401,9 +404,16 @@ describe("Account18 pending receipt intake HTTP — no journal or approval", () 
       method: "POST", headers: { Origin: from, "Content-Type": "application/json" },
       body: JSON.stringify({ companyId: 1, accountId: 18, transactionId, counterCoaId: 902, ...updates }),
     });
+  const setValidContentReview=(id:string)=>{
+    mock.contentReviewMetadata={transactionId:id,sourceFingerprint:mock.pendingDoc?.source_fingerprint,
+      documentSha256:mock.pendingDoc?.document_sha256,counterCoaId:902,
+      evidenceKind:"SIGNED_CASH_RECEIPT",evidenceDate:"2026-11-27",
+      evidenceAmountCents:"5000000",reference:"RCPT-20261127-12345",contentAttestedByOwner:true};
+  };
   const verifiedDoc = async () => {
     const { transactionId } = await (await post()).json() as {transactionId:string};
     expect((await verify(transactionId)).status).toBe(201);
+    setValidContentReview(transactionId);
     return transactionId;
   };
   it("issues hashed scoped OTP to signed Owner only after document verification", async () => {
@@ -411,6 +421,8 @@ describe("Account18 pending receipt intake HTTP — no journal or approval", () 
     expect((await sendOtp(transactionId)).status).toBe(409);
     expect(mock.smtpCalls).toHaveLength(0);
     expect((await verify(transactionId)).status).toBe(201);
+    expect((await sendOtp(transactionId)).status).toBe(409); // Hash VERIFIED is not content review.
+    setValidContentReview(transactionId);
     const response = await sendOtp(transactionId);
     expect(response.status).toBe(202);
     expect(await response.json()).toEqual({transactionId,counterCoaId:902,status:"OTP_SENT",expiresInSeconds:300,postingAllowed:false});
@@ -423,6 +435,21 @@ describe("Account18 pending receipt intake HTTP — no journal or approval", () 
     expect(mock.otpRows[0]![3]).not.toBe(mock.smtpCalls[0]![1]);
     expect(mock.otpInvalidations.every(q=>!q.includes("set verified_at"))).toBe(true);
     expect(mock.queries.some(q=>/insert into public\.(approval_requests|accounting_entries|bank_mutations)/.test(q))).toBe(false);
+  });
+  it("rejects content review missing, wrong COA and REVOKED documents",async()=>{
+    const id=await verifiedDoc();
+    mock.contentReviewMetadata=null;
+    expect((await sendOtp(id)).status).toBe(409);
+    setValidContentReview(id);
+    if(!mock.contentReviewMetadata)throw Error("MISSING_REVIEW");
+    mock.contentReviewMetadata={...mock.contentReviewMetadata,counterCoaId:903};
+    expect((await sendOtp(id)).status).toBe(409);
+    setValidContentReview(id);
+    if(!mock.pendingDoc)throw Error("MISSING_DOCUMENT");
+    mock.pendingDoc.event_type="REVOKED";
+    expect((await sendOtp(id)).status).toBe(409);
+    expect(mock.smtpCalls).toHaveLength(0);
+    expect(mock.otpRows).toHaveLength(0);
   });
   it("rejects unauthorized or forged voucher scope", async () => {
     const id=await verifiedDoc();
