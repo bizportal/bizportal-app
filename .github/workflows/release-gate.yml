@@ -84,8 +84,25 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Finance real-PG suites require dedicated localhost Docker databases.
+      # Run general API coverage without those seven files, then test them
+      # against fresh disposable containers in the next step (never Supabase).
       - name: API tests
-        run: pnpm --filter @workspace/api-server test
+        shell: bash
+        run: |
+          pnpm --filter @workspace/api-server exec vitest run \
+            --exclude '**/dev-finance-approval-qa.test.ts' \
+            --exclude '**/dev-finance-po14-e2e-qa.test.ts' \
+            --exclude '**/marketplaceBankIngestionRealPg.test.ts' \
+            --exclude '**/marketplaceInvoiceApRealPg.test.ts' \
+            --exclude '**/marketplacePaymentApproval.test.ts' \
+            --exclude '**/marketplaceInvoiceBankStatusAdapter.test.ts' \
+            --exclude '**/marketplacePaymentFinalization.test.ts'
+
+      - name: Finance canonical SQL on disposable localhost PostgreSQL
+        if: ${{ hashFiles('scripts/qa/run-po14-isolated-marketplace-e2e.sh') != '' }}
+        shell: bash
+        run: bash scripts/qa/run-po14-isolated-marketplace-e2e.sh
 
       - name: Required disposable PostgreSQL cash ledger QA
         env:

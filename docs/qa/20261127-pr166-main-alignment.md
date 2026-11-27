@@ -31,3 +31,11 @@ Database-based tests use synthetic fixture records and local PostgreSQL; no CST-
 ## Release boundary
 
 This branch is a proposed integration into official `main`, not a deployed release. All Finance writes remain behind the existing DEV-only feature gates. Do not enable bank sync, do not generate PO14 business Invoice/AP/GL, do not deploy PROD, and do not regard the 2026-11-26 isolated QA receipt as business payment authorization.
+
+## Release Gate CI isolation follow-up
+
+Initial PR #284 Release Gate run `45970653021` failed only because seven Finance SQL test suites tried to connect to absent dedicated localhost PostgreSQL ports 55493, 55494, 55495, and 55497. Its general API suite reported **1,043 passing tests**; the seven file-level connection refusals occurred before their SQL tests ran. The PR's other workflows (OTP, QRIS, Reconciliation, Bank Sheet Orphan Guard) passed.
+
+The pre-existing `release-gate.yml` now keeps those database-dependent files out of the general API step and invokes the existing `run-po14-isolated-marketplace-e2e.sh` as the next mandatory Finance step. That runner provisions disposable PostgreSQL containers for all required ports, seeds a separate approval-only fixture on 55495, runs the Finance SQL tests serially to avoid concurrent fixture resets, and stops all test containers on exit. Nothing targets the long-lived QA service or Supabase. The VPS preflight correctly **refused** to bind port 55495 because it is in use by the existing QA instance; GitHub Actions provides a separate fresh VM for the new CI run.
+
+This workflow correction does not repeat the authenticated Owner browser test and does not touch a live finance database. A new Release Gate result must be observed before any merge to `main`.
