@@ -2,7 +2,7 @@ import { Router, type IRouter } from "express";
 import { createHash, randomUUID, randomInt } from "node:crypto";
 import { compare, hash } from "bcryptjs";
 import { sendFutureCashVoucherOtpEmail } from "../lib/smtp";
-import { futureCashOtpPurpose } from "../lib/future-cash-purpose-otp-reader";
+import { futureCashOtpPurpose, readPurposeBoundFutureCashApproval } from "../lib/future-cash-purpose-otp-reader";
 import { readVerifiedFutureCashDocument } from "../lib/future-cash-document-registry-read";
 import { verifyPrivateFutureCashReceipt } from "../lib/future-cash-private-receipt";
 import multer from "multer";
@@ -231,6 +231,48 @@ router.get(PATH + "/documents/verified", cashDocumentRateLimit, async (_req, res
     });
   } catch {
     res.status(503).json({code:"SC_CASH_VERIFIED_LIST_UNAVAILABLE",postingAllowed:false});
+  }
+});
+
+/** Read-only recovery: only server-verified, purpose-bound approved vouchers. */
+router.get(PATH + "/documents/approved", cashDocumentRateLimit, async (_req,res): Promise<void> => {
+  try {
+    const result=await pool.query<{
+      transaction_id:string; direction:"IN"|"OUT"; transaction_date:string;
+      amount_cents:string; document_sha256:string; source_fingerprint:string;
+    }>([
+      "select d.transaction_id::text,d.direction,d.transaction_date::text,d.amount_cents::text,",
+      " d.document_sha256,d.source_fingerprint from public.sc_future_cash_documents d",
+      " join lateral (select e.event_type from public.sc_future_cash_document_events e",
+      " where e.transaction_id=d.transaction_id order by e.event_id desc limit 1) ev on true",
+      " where d.company_id=1 and d.account_id=18 and d.cash_coa_id=75839",
+      " and ev.event_type='VERIFIED' and exists (select 1 from public.approval_requests a",
+      " where a.company_id=1 and a.module='cash_bank' and a.doc_type='sc_future_cash_voucher'",
+      " and a.metadata->>'transactionId'=d.transaction_id::text and lower(a.status)='approved')",
+      " order by d.uploaded_at desc,d.transaction_id desc limit 20",
+    ].join("\n"));
+    const documents=[];
+    // Sequential reads avoid exhausting the small existing connection pool.
+    for(const d of result.rows){
+      const source={
+        companyId:1,accountId:18,cashCoaId:75839,transactionId:d.transaction_id,
+        sourceDocumentSha256:d.document_sha256,direction:d.direction,
+        date:d.transaction_date,amount:decimal(BigInt(d.amount_cents)),
+      };
+      if(prepareFutureCashSource(source).sourceFingerprint!==d.source_fingerprint)continue;
+      const receipt=await readVerifiedFutureCashDocument(source,pool);
+      if(!receipt || !receipt.verifiedAt)continue;
+      const approval=await readPurposeBoundFutureCashApproval(source,pool);
+      if(!approval || !approval.approvedAt ||
+        Date.parse(approval.approvedAt)<Date.parse(receipt.verifiedAt))continue;
+      documents.push({transactionId:source.transactionId,date:source.date,
+        direction:source.direction,amount:source.amount,status:"APPROVED",
+        counterCoaId:approval.counterCoaId,approvedAt:approval.approvedAt});
+    }
+    res.json({mode:"ACCOUNT18_APPROVED_SERVER_RECORDS",companyId:1,accountId:18,
+      documents,postingAllowed:false,historicalSheetConfig5:"NOT_USED_NONMIGRATION"});
+  }catch{
+    res.status(503).json({code:"SC_CASH_APPROVED_LIST_UNAVAILABLE",postingAllowed:false});
   }
 });
 
