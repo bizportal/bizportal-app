@@ -68,6 +68,7 @@ export default function ScNewCashPreview() {
   const [integrityResult,setIntegrityResult]=useState<"MATCH"|"UNAVAILABLE"|null>(null);
   const [reviewedUpload,setReviewedUpload]=useState<{transactionId:string;file:File}|null>(null);
   const [verifiedId,setVerifiedId]=useState<string|null>(null);
+  const [ownerReviewConfirmed,setOwnerReviewConfirmed]=useState(false);
   const companyRequestVersion=useRef(0);
   const draftRequestVersion=useRef(0);
   const invalidateDraft=()=>{
@@ -86,6 +87,7 @@ export default function ScNewCashPreview() {
     setServerPendingDocuments([]);
     setPendingListError(false);
     setIntegrityResult(null);
+    setOwnerReviewConfirmed(false);
     if(activeCompanyId!==1){
       setError("Khusus PT Cahaya Sejati Teknologi (Company #1), Account #18.");
       return ()=>controller.abort();
@@ -214,6 +216,7 @@ export default function ScNewCashPreview() {
       catch{/* Keep the successful receipt visible in component state. */}
       setPendingEvidence(ack);
       setReviewedUpload({transactionId:ack.transactionId,file:receiptFile});
+      setOwnerReviewConfirmed(false);
       setIntegrityResult(null);
       if(version===companyRequestVersion.current)setReceiptFile(null);
     }catch(err){
@@ -228,6 +231,7 @@ export default function ScNewCashPreview() {
     const version=companyRequestVersion.current;
     setIntegrityBusy(true);
     setIntegrityResult(null);
+    setOwnerReviewConfirmed(false);
     try{
       const response=await fetch(ENDPOINT+"/documents/"+encodeURIComponent(id)+"/integrity",{
         method:"GET",credentials:"include",cache:"no-store",
@@ -254,10 +258,10 @@ export default function ScNewCashPreview() {
   };
 
   const verifyEvidence=async()=>{
-    if(activeCompanyId!==1 || !readiness || !pendingEvidence || evidenceBusy || integrityBusy || integrityResult!=="MATCH" ||
-       reviewedUpload?.transactionId!==pendingEvidence.transactionId ||
+    if(activeCompanyId!==1 || !readiness || !pendingEvidence || evidenceBusy || integrityBusy ||
+       integrityResult!=="MATCH" || !ownerReviewConfirmed ||
        verifiedId===pendingEvidence.transactionId)return;
-    if(!window.confirm("Konfirmasi bahwa Anda telah memeriksa bukti asli yang baru diunggah, nominal dan tanggalnya. Verifikasi ini bukan persetujuan posting."))return;
+    if(!window.confirm("Konfirmasi bahwa Anda telah membaca bukti asli untuk UUID ini, memeriksa nominal, arah kas, tanggal dan relevansi dokumennya. Verifikasi ini bukan persetujuan posting."))return;
     const id=pendingEvidence.transactionId;
     const version=companyRequestVersion.current;
     setEvidenceBusy(true);setError(null);
@@ -271,7 +275,7 @@ export default function ScNewCashPreview() {
       if(response.status!==201 || payload?.transactionId!==id ||
          payload?.status!=="VERIFIED" || payload?.postingAllowed!==false)
         throw Error("Verifikasi belum berhasil (HTTP "+response.status+").");
-      setVerifiedId(id);setIntegrityResult(null);
+      setVerifiedId(id);setIntegrityResult(null);setOwnerReviewConfirmed(false);
     }catch(err){
       if(version===companyRequestVersion.current)
         setError(err instanceof Error?err.message:"Verifikasi belum tersedia.");
@@ -376,6 +380,7 @@ export default function ScNewCashPreview() {
                 onClick={()=>{
                   setPendingEvidence({transactionId:doc.transactionId,status:"PENDING_VERIFICATION"});
                   setIntegrityResult(null);setReviewedUpload(null);setVerifiedId(null);
+                  setOwnerReviewConfirmed(false);
                   setPreview(null);
                 }}>Buka audit dokumen</Button>
             </div>)}
@@ -411,16 +416,31 @@ export default function ScNewCashPreview() {
               Integritas belum dapat dikonfirmasi. Periksa sesi Owner, file privat,
               dan catatan server. Tidak ada perubahan pada status dokumen atau jurnal.
             </p>}
-            {reviewedUpload?.transactionId===pendingEvidence.transactionId && verifiedId!==pendingEvidence.transactionId && (
+            {verifiedId!==pendingEvidence.transactionId && (
               <div className="space-y-2">
-                <p className="text-sm">Bukti asli: {reviewedUpload.file.name}. Periksa dokumen asli, nominal dan tanggal sebelum konfirmasi.</p>
-                <Button type="button" disabled={evidenceBusy||integrityBusy||integrityResult!=="MATCH"} onClick={()=>void verifyEvidence()}>Verifikasi Bukti (tanpa posting)</Button>
+                <p className="text-sm">
+                  {reviewedUpload?.transactionId===pendingEvidence.transactionId
+                    ? "Periksa bukti asli yang baru diunggah."
+                    : "Dokumen dipulihkan dari server. Unduh bukti asli untuk diperiksa, tanpa mengunggah ulang."}
+                  {" "}Cocokkan nominal, tanggal, arah kas dan isi PDF sebelum melakukan verifikasi.
+                </p>
+                <label className="flex items-start gap-2 text-sm text-slate-100">
+                  <input type="checkbox" checked={ownerReviewConfirmed}
+                    disabled={evidenceBusy||integrityBusy||integrityResult!=="MATCH"}
+                    onChange={e=>setOwnerReviewConfirmed(e.target.checked)} />
+                  Saya sebagai Owner/Super Admin telah membaca dokumen asli dan memastikan
+                  isi bukti sesuai dengan transaksi ini.
+                </label>
+                <Button type="button"
+                  disabled={evidenceBusy||integrityBusy||integrityResult!=="MATCH"||!ownerReviewConfirmed}
+                  onClick={()=>void verifyEvidence()}>Verifikasi Bukti (tanpa posting)</Button>
               </div>
             )}
             <Button type="button" variant="outline" disabled={evidenceBusy||integrityBusy} onClick={()=>{
               try{window.sessionStorage.removeItem(COMPANY1_PENDING_ACK_KEY);}
               catch{/* Storage may be disabled. */}
               setPendingEvidence(null);setReviewedUpload(null);setVerifiedId(null);
+              setOwnerReviewConfirmed(false);
               setIntegrityResult(null);
               draftRequestVersion.current++;
               setPreview(null);setReceiptFile(null);
