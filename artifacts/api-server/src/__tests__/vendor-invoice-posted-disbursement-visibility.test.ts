@@ -21,7 +21,7 @@ describe("posted supplier disbursement visibility before final bank reconciliati
   });
 
   it("hides Pay and marks posted disbursement as pending bank reconciliation", () => {
-    expect(uiSource).toContain("Number(vi.postedDisbursementAmount ?? 0) <= 0");
+    expect(uiSource).toContain("canOfferVendorInvoicePayShortcut(vi.status, outstandingNetPayment(vi), vi.postedDisbursementAmount)");
     expect(uiSource).toContain("menunggu rekonsiliasi bank");
   });
 });
