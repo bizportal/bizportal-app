@@ -5,7 +5,7 @@ import { rateLimit } from "express-rate-limit";
 import { makeFileFilter, IMAGE_OR_PDF_ALLOWED_MIME } from "../lib/uploadMiddleware";
 import { ObjectStorageService } from "../lib/objectStorage";
 import { prepareFutureCashSource } from "../lib/future-cash-source-identity";
-import { auditPendingFutureCashBytes } from "../lib/future-cash-pending-integrity";
+import { auditPendingFutureCashBytes, readPendingFutureCashVerifiedBytes } from "../lib/future-cash-pending-integrity";
 import type { PendingPrivateCashEvidence } from "../lib/future-cash-private-upload";
 import { pool } from "@workspace/db";
 import {
@@ -151,6 +151,45 @@ router.get(PATH + "/readiness", async (req, res): Promise<void> => {
     });
   } catch {
     res.status(503).json({ code: "SC_CASH_READINESS_UNAVAILABLE" });
+  }
+});
+
+/**
+ * Server-owned PENDING receipt discovery for a signed Owner/Super Admin.
+ * No browser-supplied UUID is trusted; list is limited and read-only.
+ * Exposes no private storage path, hash, uploader, or approval capability.
+ */
+router.get(PATH + "/documents/pending", cashDocumentRateLimit, async (_req, res): Promise<void> => {
+  try {
+    const result = await pool.query<{
+      transaction_id: string; direction: "IN" | "OUT";
+      transaction_date: string; amount_cents: string;
+    }>([
+      "select d.transaction_id::text, d.direction,",
+      " d.transaction_date::text, d.amount_cents::text",
+      " from public.sc_future_cash_documents d",
+      " where d.company_id=1 and d.account_id=18 and d.cash_coa_id=75839",
+      " and not exists (select 1 from public.sc_future_cash_document_events e",
+      " where e.transaction_id=d.transaction_id)",
+      " order by d.uploaded_at desc, d.transaction_id desc limit 20",
+    ].join("\n"));
+    const documents = result.rows.map(row => ({
+      transactionId: row.transaction_id,
+      status: "PENDING_VERIFICATION" as const,
+      date: row.transaction_date,
+      direction: row.direction,
+      amount: decimal(BigInt(row.amount_cents)),
+    }));
+    res.json({
+      mode: "ACCOUNT18_PENDING_SERVER_RECORDS",
+      accountId: 18, companyId: 1,
+      documents, postingAllowed: false,
+      historicalSheetConfig5: "NOT_USED_NONMIGRATION",
+    });
+  } catch {
+    res.status(503).json({
+      code: "SC_CASH_PENDING_LIST_UNAVAILABLE", postingAllowed: false,
+    });
   }
 });
 
@@ -361,6 +400,38 @@ router.get(PATH + "/documents/:transactionId/integrity", cashDocumentRateLimit,
     res.json({ transactionId: id, status: "PENDING_VERIFICATION",
       storageIntegrity: "MATCH", documentApproval: "NOT_VERIFIED",
       postingAllowed: false, historicalSheetConfig5: "NOT_USED_NONMIGRATION" });
+  });
+
+/**
+ * Private evidence delivery to a reauthenticated signed Owner/Super Admin only.
+ * Each request re-reads the server-owned pending record, downloads the object,
+ * checks bytes, size, source fingerprint and SHA-256 before returning a file.
+ * Always an attachment (not inline HTML/PDF); never public URL or signed token.
+ */
+router.get(PATH + "/documents/:transactionId/download", cashDocumentRateLimit,
+  async (req, res): Promise<void> => {
+    const id=String(req.params.transactionId ?? "");
+    const proof=await readPendingFutureCashVerifiedBytes(id,pool,pendingEvidenceStorage);
+    if(!proof){
+      res.status(404).json({code:"SC_CASH_PRIVATE_EVIDENCE_UNAVAILABLE",postingAllowed:false});
+      return;
+    }
+    const mime:Record<string,string>={
+      pdf:"application/pdf",png:"image/png",jpg:"image/jpeg",
+      jpeg:"image/jpeg",webp:"image/webp",
+    };
+    const type=mime[proof.extension];
+    if(!type){
+      res.status(404).json({code:"SC_CASH_PRIVATE_EVIDENCE_UNAVAILABLE",postingAllowed:false});
+      return;
+    }
+    res.setHeader("Cache-Control","private, no-store, max-age=0");
+    res.setHeader("Content-Type",type);
+    res.setHeader("X-Content-Type-Options","nosniff");
+    res.setHeader("Content-Security-Policy","sandbox");
+    res.setHeader("Content-Disposition",
+      `attachment; filename="kas-besar-sc-bukti-${id}.${proof.extension}"`);
+    res.status(200).send(proof.bytes);
   });
 
 /** Explicit Owner review of a server-owned pending document; no financial write. */

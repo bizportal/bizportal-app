@@ -42,6 +42,14 @@ vi.mock("@workspace/db", () => ({
       mock.pendingDoc = { transaction_id: args[0], object_bucket: "private-uploads", object_path: args[1], document_sha256: args[2], source_fingerprint: args[3], direction: args[4], transaction_date: args[5], amount_cents: args[6], byte_length: args[7], event_type: null };
       return { rowCount: 1, rows: [] };
     }
+    if (sql.includes("from public.sc_future_cash_documents d") &&
+        sql.includes("and not exists") && sql.includes("order by d.uploaded_at")) {
+      const doc = mock.pendingDoc;
+      return {rows: doc && doc.event_type === null ? [{
+        transaction_id: doc.transaction_id, direction: doc.direction,
+        transaction_date: doc.transaction_date, amount_cents: doc.amount_cents,
+      }] : []};
+    }
     if (sql.includes("from public.sc_future_cash_documents d") && sql.startsWith("select")) return { rows: mock.pendingDoc && mock.pendingDoc.transaction_id === args[0] ? [mock.pendingDoc] : [] };
     if (sql.includes("insert into public.sc_future_cash_document_events")) {
       if (!mock.pendingDoc || mock.pendingDoc.event_type !== null) return { rowCount: 0, rows: [] };
@@ -146,12 +154,49 @@ describe("Account18 pending receipt intake HTTP — no journal or approval", () 
     expect(mock.queries.some(q => /accounting_entries|bank_mutations|approval_requests|bank_sheet_configs/.test(q)))
       .toBe(false);
   });
+  it("discovers signed Owner pending UUID from server even without browser storage", async () => {
+    const uploaded=await (await post()).json() as {transactionId:string};
+    const response=await fetch(base+endpoint);
+    expect(response.status).toBe(200);
+    const result=await response.json() as {
+      mode:string;companyId:number;accountId:number;postingAllowed:boolean;
+      documents:Array<{transactionId:string;status:string;date:string;direction:string;amount:string}>;
+    };
+    expect(result.mode).toBe("ACCOUNT18_PENDING_SERVER_RECORDS");
+    expect(result).toMatchObject({companyId:1,accountId:18,postingAllowed:false});
+    expect(result.documents).toEqual([{
+      transactionId:uploaded.transactionId,status:"PENDING_VERIFICATION",
+      date:"2026-11-27",direction:"OUT",amount:"50000.00",
+    }]);
+    expect(JSON.stringify(result)).not.toMatch(/object_path|sha256|uploaded_by|source_fingerprint/);
+    expect(mock.queries.some(q=>q.includes("insert into public.sc_future_cash_document_events"))).toBe(false);
+  });
+  it("rejects unsigned, foreign-company and finance pending document discovery", async () => {
+    mock.signed=false;
+    expect((await fetch(base+endpoint)).status).toBe(401);
+    mock.signed=true;mock.actorRole="finance";
+    expect((await fetch(base+endpoint)).status).toBe(403);
+    mock.actorRole="owner";mock.actorCompany=3;
+    expect((await fetch(base+endpoint)).status).toBe(403);
+    expect(mock.queries).toHaveLength(0);
+  });
   it("accepts exactly five fields plus one file at multipart boundary", async () => {
     // There are six legitimate parts; Busboy may emit LIMIT_PART_COUNT when
     // parts equals the configured ceiling, so retain one spare slot.
     const response = await post();
     expect(response.status).toBe(201);
     expect(mock.storageWrites).toBe(1);
+  });
+  it("denies private pending proof download to unsigned, finance and foreign-company callers", async () => {
+    const url=base+"/api/cash-bank/sc-new/documents/25088529-6fa1-4ddb-80bf-390c157e64d4/download";
+    mock.signed=false;
+    expect((await fetch(url)).status).toBe(401);
+    mock.signed=true;mock.actorRole="finance";
+    expect((await fetch(url)).status).toBe(403);
+    mock.actorRole="owner";mock.actorCompany=2;
+    expect((await fetch(url)).status).toBe(403);
+    expect(mock.storageWrites).toBe(0);
+    expect(mock.queries).toHaveLength(0);
   });
   it("blocks wrong origin, PROD, missing signed session and non-owner before any write", async () => {
     expect((await post({}, "https://malicious.invalid")).status).toBe(403);

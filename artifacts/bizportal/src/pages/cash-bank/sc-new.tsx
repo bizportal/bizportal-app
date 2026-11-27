@@ -23,6 +23,9 @@ type Preview = {
 };
 
 type PendingCashAcknowledgement = { transactionId:string;status:"PENDING_VERIFICATION" };
+type ServerPendingDocument = PendingCashAcknowledgement & {
+  date:string;direction:"IN"|"OUT";amount:string;
+};
 const COMPANY1_PENDING_ACK_KEY="cst.account18.pending.evidence.ack.v1";
 function loadCompany1PendingAcknowledgement():PendingCashAcknowledgement|null{
   if(typeof window==="undefined")return null;
@@ -59,6 +62,10 @@ export default function ScNewCashPreview() {
   const [receiptFile,setReceiptFile]=useState<File|null>(null);
   const [evidenceBusy,setEvidenceBusy]=useState(false);
   const [pendingEvidence,setPendingEvidence]=useState<PendingCashAcknowledgement|null>(loadCompany1PendingAcknowledgement);
+  const [serverPendingDocuments,setServerPendingDocuments]=useState<ServerPendingDocument[]>([]);
+  const [pendingListError,setPendingListError]=useState(false);
+  const [integrityBusy,setIntegrityBusy]=useState(false);
+  const [integrityResult,setIntegrityResult]=useState<"MATCH"|"UNAVAILABLE"|null>(null);
   const [reviewedUpload,setReviewedUpload]=useState<{transactionId:string;file:File}|null>(null);
   const [verifiedId,setVerifiedId]=useState<string|null>(null);
   const companyRequestVersion=useRef(0);
@@ -76,6 +83,9 @@ export default function ScNewCashPreview() {
     draftRequestVersion.current++;
     setPreview(null);setReadiness(null);setError(null);setBusy(false);
     setReceiptFile(null); // Preserve Company #1 acknowledgement across company changes.
+    setServerPendingDocuments([]);
+    setPendingListError(false);
+    setIntegrityResult(null);
     if(activeCompanyId!==1){
       setError("Khusus PT Cahaya Sejati Teknologi (Company #1), Account #18.");
       return ()=>controller.abort();
@@ -96,6 +106,34 @@ export default function ScNewCashPreview() {
           throw Error("Respons keamanan pratinjau kas tidak sesuai.");
         if(!controller.signal.aborted && version===companyRequestVersion.current)
           setReadiness(payload as Readiness);
+        // Read the server-owned registry after the signed Owner readiness check.
+        // Local sessionStorage UUID alone is never an authorization source.
+        try{
+          const recordsResponse=await fetch(ENDPOINT+"/documents/pending",{
+            credentials:"include",cache:"no-store",signal:controller.signal,
+          });
+          const records=await recordsResponse.json().catch(()=>null) as ({
+            mode?:string;companyId?:number;accountId?:number;postingAllowed?:boolean;
+            historicalSheetConfig5?:string;documents?:ServerPendingDocument[];
+          })|null;
+          if(!recordsResponse.ok || records?.mode!=="ACCOUNT18_PENDING_SERVER_RECORDS" ||
+              records.companyId!==1 || records.accountId!==18 ||
+              records.postingAllowed!==false ||
+              records.historicalSheetConfig5!=="NOT_USED_NONMIGRATION" ||
+              !Array.isArray(records.documents))throw Error("PENDING_LIST_UNAVAILABLE");
+          const valid=records.documents.filter(d=>
+            d?.status==="PENDING_VERIFICATION" &&
+            /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(d.transactionId) &&
+            /^\d{4}-\d{2}-\d{2}$/.test(d.date) &&
+            (d.direction==="IN"||d.direction==="OUT") &&
+            /^\d+\.\d{2}$/.test(d.amount)
+          ).slice(0,20);
+          if(!controller.signal.aborted && version===companyRequestVersion.current)
+            setServerPendingDocuments(valid);
+        }catch{
+          if(!controller.signal.aborted && version===companyRequestVersion.current)
+            setPendingListError(true);
+        }
       }catch(err){
         if(!controller.signal.aborted && version===companyRequestVersion.current)
           setError(err instanceof Error?err.message:"Layanan pratinjau tidak tersedia.");
@@ -176,6 +214,7 @@ export default function ScNewCashPreview() {
       catch{/* Keep the successful receipt visible in component state. */}
       setPendingEvidence(ack);
       setReviewedUpload({transactionId:ack.transactionId,file:receiptFile});
+      setIntegrityResult(null);
       if(version===companyRequestVersion.current)setReceiptFile(null);
     }catch(err){
       if(version===companyRequestVersion.current && draftVersion===draftRequestVersion.current)
@@ -185,6 +224,39 @@ export default function ScNewCashPreview() {
 
   const verifyEvidence=async()=>{
     if(activeCompanyId!==1 || !readiness || !pendingEvidence || evidenceBusy ||
+  const checkPendingIntegrity=async()=>{
+    if(activeCompanyId!==1 || !readiness || !pendingEvidence || integrityBusy || evidenceBusy)return;
+    const id=pendingEvidence.transactionId;
+    const version=companyRequestVersion.current;
+    setIntegrityBusy(true);
+    setIntegrityResult(null);
+    try{
+      const response=await fetch(ENDPOINT+"/documents/"+encodeURIComponent(id)+"/integrity",{
+        method:"GET",credentials:"include",cache:"no-store",
+      });
+      const payload=await response.json().catch(()=>null) as ({
+        transactionId?:string;status?:string;storageIntegrity?:string;
+        documentApproval?:string;postingAllowed?:boolean;
+        historicalSheetConfig5?:string;
+      })|null;
+      if(version!==companyRequestVersion.current)return;
+      if(response.ok && payload?.transactionId===id &&
+          payload.status==="PENDING_VERIFICATION" &&
+          payload.storageIntegrity==="MATCH" &&
+          payload.documentApproval==="NOT_VERIFIED" &&
+          payload.postingAllowed===false &&
+          payload.historicalSheetConfig5==="NOT_USED_NONMIGRATION"){
+        setIntegrityResult("MATCH");
+      }else{
+        setIntegrityResult("UNAVAILABLE");
+      }
+    }catch{
+      if(version===companyRequestVersion.current)setIntegrityResult("UNAVAILABLE");
+    }finally{setIntegrityBusy(false);}
+  };
+
+  const verifyEvidence=async()=>{
+    if(activeCompanyId!==1 || !readiness || !pendingEvidence || evidenceBusy || integrityBusy || integrityResult!=="MATCH" ||
        reviewedUpload?.transactionId!==pendingEvidence.transactionId ||
        verifiedId===pendingEvidence.transactionId)return;
     if(!window.confirm("Konfirmasi bahwa Anda telah memeriksa bukti asli yang baru diunggah, nominal dan tanggalnya. Verifikasi ini bukan persetujuan posting."))return;
@@ -202,6 +274,7 @@ export default function ScNewCashPreview() {
          payload?.status!=="VERIFIED" || payload?.postingAllowed!==false)
         throw Error("Verifikasi belum berhasil (HTTP "+response.status+").");
       setVerifiedId(id);
+      setVerifiedId(id);setIntegrityResult(null);
     }catch(err){
       if(version===companyRequestVersion.current)
         setError(err instanceof Error?err.message:"Verifikasi belum tersedia.");
@@ -224,6 +297,7 @@ export default function ScNewCashPreview() {
           <ShieldAlert className="shrink-0" size={18}/>
           <p>Pratinjau debit-kredit hanya dihitung dalam memori. File bukti baru dapat disimpan
             sebagai PENDING dan diverifikasi oleh Owner. Persetujuan OTP untuk posting belum tersedia.
+            sebagai PENDING dan dapat diverifikasi oleh Owner. Persetujuan OTP untuk posting belum tersedia.
             Tidak ada penulisan jurnal atau impor Sheet historis.</p>
         </CardContent>
       </Card>
@@ -284,6 +358,34 @@ export default function ScNewCashPreview() {
           </CardContent>
         </Card>
       )}
+      {readiness && activeCompanyId===1 && (
+        <Card className="border-sky-500/30 bg-slate-800/90 text-white">
+          <CardHeader><CardTitle className="text-base">Dokumen PENDING tersimpan di server</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs text-slate-300">
+              Dokumen berasal dari database CST-DEV, bukan riwayat tab browser.
+              Pilih dokumen untuk melakukan audit byte tanpa unggah ulang.
+            </p>
+            {serverPendingDocuments.length===0 && <p role="status" className="text-sm text-slate-300">
+              {pendingListError?"Daftar dokumen belum dapat diambil dari server.":
+              "Tidak ada dokumen PENDING yang ditemukan dalam daftar terbaru."}
+            </p>}
+            {serverPendingDocuments.map(doc=><div key={doc.transactionId}
+              className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-slate-600 p-3">
+              <div className="text-sm">
+                <p className="font-mono break-all">{doc.transactionId}</p>
+                <p className="text-slate-300">{doc.date} · {doc.direction==="IN"?"Kas masuk":"Kas keluar"} · Rp {money(doc.amount)}</p>
+              </div>
+              <Button type="button" variant="outline" disabled={evidenceBusy||integrityBusy}
+                onClick={()=>{
+                  setPendingEvidence({transactionId:doc.transactionId,status:"PENDING_VERIFICATION"});
+                  setIntegrityResult(null);setReviewedUpload(null);setVerifiedId(null);
+                  setPreview(null);
+                }}>Buka audit dokumen</Button>
+            </div>)}
+          </CardContent>
+        </Card>
+      )}
       {readiness && pendingEvidence && activeCompanyId===1 && (
         <Card className="border-sky-500/40 bg-slate-800/90 text-white">
           <CardContent className="space-y-2 py-4">
@@ -302,6 +404,38 @@ export default function ScNewCashPreview() {
               try{window.sessionStorage.removeItem(COMPANY1_PENDING_ACK_KEY);}
               catch{/* Storage may be disabled. */}
               setPendingEvidence(null);setReviewedUpload(null);setVerifiedId(null);
+            <Button type="button" variant="outline"
+              disabled={integrityBusy||evidenceBusy||verifiedId===pendingEvidence.transactionId}
+              onClick={()=>void checkPendingIntegrity()}>
+              {integrityBusy?"Memeriksa byte dokumen...":"Periksa integritas PDF (baca-saja)"}
+            </Button>
+            <a
+              href={ENDPOINT+"/documents/"+encodeURIComponent(pendingEvidence.transactionId)+"/download"}
+              className="inline-flex min-h-9 items-center rounded-md border border-slate-500 px-3 py-2 text-sm text-slate-100 hover:bg-slate-700"
+            >Unduh bukti asli untuk diperiksa (Owner)</a>
+            <p className="text-xs text-slate-300">
+              File akan diunduh dari server privat setelah otorisasi ulang. Periksa isi
+              dokumen secara manual sebelum memverifikasi; unduhan tidak menyetujui transaksi.
+            </p>
+            {integrityResult==="MATCH" && <p role="status" className="text-sm text-sky-200">
+              Integritas file privat PASS: byte, ukuran, dan SHA-256 cocok. Dokumen tetap
+              PENDING_VERIFICATION; persetujuan dan posting belum diaktifkan.
+            </p>}
+            {integrityResult==="UNAVAILABLE" && <p role="alert" className="text-sm text-amber-200">
+              Integritas belum dapat dikonfirmasi. Periksa sesi Owner, file privat,
+              dan catatan server. Tidak ada perubahan pada status dokumen atau jurnal.
+            </p>}
+            {reviewedUpload?.transactionId===pendingEvidence.transactionId && verifiedId!==pendingEvidence.transactionId && (
+              <div className="space-y-2">
+                <p className="text-sm">Bukti asli: {reviewedUpload.file.name}. Periksa dokumen asli, nominal dan tanggal sebelum konfirmasi.</p>
+                <Button type="button" disabled={evidenceBusy||integrityBusy||integrityResult!=="MATCH"} onClick={()=>void verifyEvidence()}>Verifikasi Bukti (tanpa posting)</Button>
+              </div>
+            )}
+            <Button type="button" variant="outline" disabled={evidenceBusy||integrityBusy} onClick={()=>{
+              try{window.sessionStorage.removeItem(COMPANY1_PENDING_ACK_KEY);}
+              catch{/* Storage may be disabled. */}
+              setPendingEvidence(null);setReviewedUpload(null);setVerifiedId(null);
+              setIntegrityResult(null);
               draftRequestVersion.current++;
               setPreview(null);setReceiptFile(null);
               setAmount("");setCounterCoaId("");
