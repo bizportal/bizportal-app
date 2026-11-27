@@ -19,7 +19,7 @@ const row = {
   direction:"IN", transaction_date:"2026-11-27", amount_cents:"1000000",
   byte_length:bytes.length, event_count:"0",
 };
-type Row = typeof row;
+type Row = typeof row & {latest_event?:string|null};
 const reader = (records:Row[]):PendingCashIntegritySqlReader => ({
   query:async(sql,params)=>{
     expect(sql).toContain("public.sc_future_cash_documents");
@@ -62,4 +62,14 @@ describe("Account18 server-only pending evidence integrity audit (no posting)",(
     const broken:PendingCashIntegritySqlReader={query:async()=>{throw Error("DB down");}};
     expect(await auditPendingFutureCashBytes(id,broken,storage(bytes))).toBe("UNAVAILABLE");
   });
+  it("allows validated VERIFIED download only when explicitly enabled and denies revoked or tampered proof",async()=>{
+    const verified={...row,event_count:"1",latest_event:"VERIFIED"};
+    expect((await readPendingFutureCashVerifiedBytes(id,reader([verified]),storage(bytes),true))?.bytes.equals(bytes)).toBe(true);
+    expect(await auditPendingFutureCashBytes(id,reader([verified]),storage(bytes))).toBe("UNAVAILABLE");
+    expect(await readPendingFutureCashVerifiedBytes(id,reader([{...verified,event_count:"2",latest_event:"REVOKED"}]),storage(bytes),true)).toBeNull();
+    expect(await readPendingFutureCashVerifiedBytes(id,reader([{...verified,latest_event:"REVOKED"}]),storage(bytes),true)).toBeNull();
+    const changed=Buffer.from(bytes);changed[changed.length-1]^=1;
+    expect(await readPendingFutureCashVerifiedBytes(id,reader([verified]),storage(changed),true)).toBeNull();
+  });
+
 });
