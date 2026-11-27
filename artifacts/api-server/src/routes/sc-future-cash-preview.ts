@@ -691,7 +691,7 @@ router.post(PATH + "/documents/revoke", cashDocumentRateLimit, async(req,res):Pr
   const email=typeof res.locals.scCashOwnerEmail==="string"?res.locals.scCashOwnerEmail.trim().toLowerCase():"";
   const role=res.locals.scCashOwnerRole;
   if(Object.keys(body).some(k=>!allowed.has(k)) || body.companyId!==1 || body.accountId!==18 ||
-     typeof id!=="string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[89ab][a-f0-9]{12}$/.test(id) ||
+     typeof id!=="string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id) ||
      !["WRONG_DOCUMENT_TYPE","TRANSACTION_MISMATCH","COA_MISMATCH","OTHER_INVALID_EVIDENCE"].includes(String(reasonCode)) ||
      typeof reason!=="string" || reason!==reason.trim() || reason.length<12 || reason.length>240 ||
      !["owner","super_admin"].includes(role) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){
@@ -856,6 +856,18 @@ router.post(PATH + "/voucher/otp/send", async (req, res): Promise<void> => {
         [contraId],
       );
       if (!validContra(contra.rows[0])) throw Error("SC_CASH_COUNTER_COA_NOT_ELIGIBLE");
+      // Byte-level VERIFIED alone cannot prove a financial transaction.
+      // Require one signed Owner content review bound to exact COA and proof.
+      const contentReview=await client.query<{metadata:unknown}>(
+        "select metadata from public.approval_requests "+
+        "where company_id=1 and module='cash_bank' and doc_type='sc_future_cash_evidence_review' "+
+        "and status='confirmed' and metadata->>'transactionId'=$1 order by id desc limit 2",[id],
+      );
+      if(contentReview.rows.length!==1 || !matchingCashEvidenceReview(
+        contentReview.rows[0]!.metadata,
+        {transactionId:id,sourceFingerprint,documentSha256:d.document_sha256,
+          date:d.transaction_date,amountCents:d.amount_cents},contraId,
+      )) throw Error("SC_CASH_OWNER_CONTENT_REVIEW_REQUIRED");
       const approved = await client.query(
         "select id from public.approval_requests where company_id=1 and module='cash_bank' and doc_type='sc_future_cash_voucher' and metadata->>'transactionId'=$1 and lower(status)='approved' limit 1",
         [id],
@@ -978,6 +990,18 @@ router.post(PATH + "/voucher/otp/confirm", async (req, res): Promise<void> => {
         [contraId],
       );
       if (!validContra(contra.rows[0])) throw Error("SC_CASH_COUNTER_COA_NOT_ELIGIBLE");
+      // Byte-level VERIFIED alone cannot prove a financial transaction.
+      // Require one signed Owner content review bound to exact COA and proof.
+      const contentReview=await client.query<{metadata:unknown}>(
+        "select metadata from public.approval_requests "+
+        "where company_id=1 and module='cash_bank' and doc_type='sc_future_cash_evidence_review' "+
+        "and status='confirmed' and metadata->>'transactionId'=$1 order by id desc limit 2",[id],
+      );
+      if(contentReview.rows.length!==1 || !matchingCashEvidenceReview(
+        contentReview.rows[0]!.metadata,
+        {transactionId:id,sourceFingerprint,documentSha256:d.document_sha256,
+          date:d.transaction_date,amountCents:d.amount_cents},contraId,
+      )) throw Error("SC_CASH_OWNER_CONTENT_REVIEW_REQUIRED");
       const existing = await client.query(
         "select id from public.approval_requests where company_id=1 and module='cash_bank' and doc_type='sc_future_cash_voucher' and metadata->>'transactionId'=$1 limit 1",
         [id],
