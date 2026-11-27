@@ -36,6 +36,7 @@ describe("Account18 purpose-separated OTP approval reader — SELECT only", () =
       authenticationMethod: "SIGNED_EMAIL_OTP", counterCoaId: 902 });
     expect(reader.query.mock.calls[0]![1]).toEqual([
       1, source.transactionId, fp, `sc-cash-voucher:${source.transactionId}:${fp}:`,
+      source.sourceDocumentSha256,
     ]);
     const sql = reader.query.mock.calls[0]![0].trim().toLowerCase();
     expect(sql.startsWith("select")).toBe(true);
@@ -48,6 +49,15 @@ describe("Account18 purpose-separated OTP approval reader — SELECT only", () =
     expect(sql).toContain("verified_at >= created_at");
     expect(sql).toContain("attempts < 5");
     expect(sql).not.toContain("code_hash");
+    // Reusable approval facts must also demand a currently VERIFIED original.
+    // The revoked historical OTP approval still exists, but cannot reauthorize.
+    expect(sql).toContain("join public.sc_future_cash_documents d");
+    expect(sql).toContain("d.transaction_id=$2::uuid");
+    expect(sql).toContain("d.document_sha256=$5");
+    expect(sql).toContain("d.source_fingerprint=$3");
+    expect(sql).toContain("current_document.event_type='verified'");
+    expect(sql).toContain("revoked.event_type='revoked'");
+    expect(sql).toContain("not exists");
   });
 
   it("binds the OTP purpose to the exact counter COA and rejects invalid COAs", () => {
