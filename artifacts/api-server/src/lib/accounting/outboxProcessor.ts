@@ -146,7 +146,7 @@ async function processOutboxBatch(): Promise<number> {
           ${payload.meta ? JSON.stringify(payload.meta) : null}
         )
         ON CONFLICT DO NOTHING
-      `).catch(() => {});
+      `);
 
       // Also emit to in-memory event bus (lazy import)
       const eventType = payload.eventType as string;
