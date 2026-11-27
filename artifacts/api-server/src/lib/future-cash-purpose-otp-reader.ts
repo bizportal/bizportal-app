@@ -11,6 +11,7 @@ import type { TrustedFutureCashApproval } from "./future-cash-approval-preflight
  * matching records; never use client-provided approval metadata.
  */
 type EvidenceRow = {
+  approval_id?: number;
   transaction_id: string;
   source_fingerprint: string;
   account_id: number;
@@ -50,11 +51,21 @@ export async function readPurposeBoundFutureCashApproval(
   source: FutureCashSource,
   reader: CashApprovalSqlReader,
 ): Promise<TrustedFutureCashApproval | null> {
+  const binding=await readFutureCashApprovalBinding(source,reader);
+  return binding?.approval??null;
+}
+
+/** Internal server evidence. Approval row ID is globally unique in its table;
+ * it is NOT an authorized Accounting source namespace or a posting permit. */
+export async function readFutureCashApprovalBinding(
+  source: FutureCashSource,
+  reader: CashApprovalSqlReader,
+): Promise<{approval:TrustedFutureCashApproval;approvalId:number|null}|null> {
   try {
     const { sourceFingerprint } = prepareFutureCashSource(source);
     const purposePrefix = `sc-cash-voucher:${source.transactionId}:${sourceFingerprint}:`;
     const result = await reader.query(
-      `select a.company_id,
+      `select a.id as approval_id, a.company_id,
               a.status, a.approval_type, a.approver_role, a.approved_by,
               a.approved_at::text as approved_at,
               a.metadata->>'transactionId' as transaction_id,
@@ -126,13 +137,13 @@ export async function readPurposeBoundFutureCashApproval(
         verifiedAtMs < createdAtMs || verifiedAtMs > expiresAtMs ||
         approvedAtMs < verifiedAtMs || approvedAtMs - verifiedAtMs > 10 * 60_000) return null;
     const approvedAt = new Date(approvedAtMs).toISOString();
-    return {
+    return {approvalId:typeof a.approval_id==='number' && Number.isSafeInteger(a.approval_id) && a.approval_id>0 && a.approval_id<=2147483647?a.approval_id:null, approval:{
       transactionId: source.transactionId, companyId: 1, accountId: 18,
       sourceFingerprint, counterCoaId: a.counter_coa_id,
       status: "APPROVED", authenticationMethod: "SIGNED_EMAIL_OTP",
       authorizedRole: a.approver_role as "owner" | "super_admin",
       approvedAt,
-    };
+    }};
   } catch {
     return null;
   }
