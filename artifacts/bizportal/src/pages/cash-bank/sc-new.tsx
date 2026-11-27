@@ -638,6 +638,42 @@ export default function ScNewCashPreview() {
           </CardContent>
         </Card>
       )}
+      {readiness && activeCompanyId===1 && (
+        <Card className="border-amber-500/40 bg-slate-800/90 text-white">
+          <CardHeader><CardTitle className="text-base">Voucher APPROVED — pemeriksaan ulang bukti</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-sm text-amber-200">APPROVED OTP tidak berarti isi PDF sah sebagai bukti transaksi. Tidak ada posting jurnal.</p>
+            {serverApprovedDocuments.length===0 && <p role="status" className="text-sm text-slate-300">
+              {approvedListError?"Daftar approval belum bisa dibaca dari server.":"Tidak ada approval voucher untuk diperiksa."}
+            </p>}
+            {serverApprovedDocuments.map(doc=><div key={doc.transactionId}
+              className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-600/50 p-3">
+              <div className="text-sm"><p className="font-mono break-all">{doc.transactionId}</p>
+                <p>Rp {money(doc.amount)} · {doc.date} · COA lawan ID {doc.counterCoaId}</p>
+              </div>
+              <Button type="button" variant="outline" disabled={voucherBusy||revokeBusy||reviewBusy}
+                onClick={()=>{
+                  if(voucherLock.current)return;
+                  resetEvidenceReview();setVoucherCode("");setVoucherChallenge(null);
+                  setVoucherCoa(String(doc.counterCoaId));setVoucherCoaSearch("");
+                  setVoucherApproved({transactionId:doc.transactionId,counterCoaId:doc.counterCoaId});
+                  setPendingEvidence({transactionId:doc.transactionId,status:"PENDING_VERIFICATION"});
+                  setVerifiedId(doc.transactionId);setIntegrityResult(null);setPreview(null);
+                }}>Audit / cabut bukti</Button>
+            </div>)}
+          </CardContent>
+        </Card>
+      )}
+      {readiness && activeCompanyId===1 && serverRevokedDocuments.length>0 && (
+        <Card className="border-slate-500 bg-slate-800/90 text-white">
+          <CardHeader><CardTitle className="text-base">Dokumen REVOKED — riwayat tetap tersimpan</CardTitle></CardHeader>
+          <CardContent className="space-y-2">
+            {serverRevokedDocuments.map(doc=><p key={doc.transactionId} className="text-sm break-all">
+              REVOKED · {doc.transactionId} · Rp {money(doc.amount)} · Tidak dapat digunakan untuk OTP atau posting.
+            </p>)}
+          </CardContent>
+        </Card>
+      )}
       {readiness && pendingEvidence && activeCompanyId===1 && (
         <Card className="border-sky-500/40 bg-slate-800/90 text-white">
           <CardContent className="space-y-2 py-4">
