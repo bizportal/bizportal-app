@@ -15,7 +15,8 @@
  * Worker berjalan setiap 10 detik, memproses batch 50 event.
  */
 
-import { db } from "@workspace/db";
+import { db, pool } from "@workspace/db";
+import { drizzle } from "drizzle-orm/node-postgres";
 import { sql } from "drizzle-orm";
 import { logger } from "../logger.js";
 import { registerHeartbeat, beat } from "../workerHeartbeat.js";
@@ -97,97 +98,68 @@ export async function writeToOutbox(payload: OutboxEventPayload): Promise<void> 
 const MAX_ATTEMPTS = 5;
 const BATCH_SIZE   = 50;
 
-async function processOutboxBatch(): Promise<number> {
-  await ensureOutboxTable();
-
-  // Ambil pending events, skip yang sudah too many attempts
-  const { rows } = await db.execute(sql`
-    SELECT id, event_type, payload, entry_id, company_id, attempt
-    FROM financial_outbox_events
-    WHERE status = 'pending'
-      AND attempt < ${MAX_ATTEMPTS}
-    ORDER BY created_at ASC
-    LIMIT ${BATCH_SIZE}
-    FOR UPDATE SKIP LOCKED
-  `).catch(() => ({ rows: [] }));
-
-  if (!rows.length) return 0;
-
-  let processed = 0;
-
-  for (const row of rows as Array<Record<string, unknown>>) {
-    const id      = Number(row["id"]);
-    const payload = (typeof row["payload"] === "string"
-      ? JSON.parse(row["payload"])
-      : row["payload"]) as OutboxEventPayload;
-
-    try {
-      // Mark as processing first
-      await db.execute(sql`
-        UPDATE financial_outbox_events
-        SET status = 'processing', attempt = attempt + 1
-        WHERE id = ${id} AND status = 'pending'
-      `).catch(() => {});
-
-      // Write to financial_events (idempotent)
-      await db.execute(sql`
-        INSERT INTO financial_events
-          (event_type, company_id, source_type, source_id, entry_id, mutation_id, amount, actor, ref, meta)
-        VALUES (
-          ${payload.eventType},
-          ${payload.companyId ?? null},
-          ${payload.sourceType ?? null},
-          ${payload.sourceId ?? null},
-          ${payload.entryId ?? null},
-          ${payload.mutationId ?? null},
-          ${payload.amount ?? null},
-          ${payload.actor ?? null},
-          ${null},
-          ${payload.meta ? JSON.stringify(payload.meta) : null}
-        )
-        ON CONFLICT DO NOTHING
+/** Durable delivery: lock one row, use a savepoint for delivery, and retain
+ * the lock until acknowledgement or retry is committed. No runtime DDL here.
+ * The durable financial event is the delivery boundary; do not call the
+ * legacy emitters, which themselves persist another financial event.
+ */
+export async function processOutboxBatch(): Promise<number> {
+  let processed=0;
+  for(let n=0;n<BATCH_SIZE;n++){
+    const connection=await pool.connect();
+    const result=await (async()=>{
+      try {
+        return await drizzle(connection).transaction(async tx=>{
+      const {rows}=await tx.execute(sql`
+        SELECT id::text AS id,event_type,payload,entry_id,company_id,attempt
+        FROM financial_outbox_events
+        WHERE status='pending' AND attempt < ${MAX_ATTEMPTS}
+        ORDER BY created_at,id LIMIT 1 FOR UPDATE SKIP LOCKED
       `);
-
-      // Also emit to in-memory event bus (lazy import)
-      const eventType = payload.eventType as string;
-      if (eventType === "JOURNAL_CREATED" || eventType === "JOURNAL_VOIDED") {
-        import("../events/financialEventBus.js").then(({ emitJournalCreated, emitJournalVoided }) => {
-          if (eventType === "JOURNAL_CREATED" && payload.entryId) {
-            emitJournalCreated({
-              entryId:    payload.entryId,
-              sourceType: payload.sourceType ?? null,
-              sourceId:   payload.sourceId ?? null,
-              amount:     payload.amount ?? null,
-              actor:      payload.actor ?? null,
-              companyId:  payload.companyId ?? null,
-            });
-          }
-        }).catch(() => {});
+      const row=rows[0] as Record<string,unknown>|undefined;
+      if(!row)return "empty" as const;
+      const id=String(row.id);
+      try {
+        await tx.transaction(async delivery=>{
+          const payload=(typeof row.payload==="string"?JSON.parse(row.payload):row.payload) as OutboxEventPayload;
+          if(!payload || payload.eventType!==row.event_type || (payload.companyId??null)!==(row.company_id??null) || (payload.entryId??null)!==(row.entry_id??null))throw Error("OUTBOX_SCOPE_MISMATCH");
+          // Write to financial_events (idempotent within the locked delivery transaction)
+          await delivery.execute(sql`
+            INSERT INTO financial_events
+              (event_type,company_id,source_type,source_id,entry_id,mutation_id,amount,actor,ref,meta)
+            VALUES(${payload.eventType},${payload.companyId??null},${payload.sourceType??null},
+              ${payload.sourceId??null},${payload.entryId??null},${payload.mutationId??null},
+              ${payload.amount??null},${payload.actor??null},${null},
+              ${payload.meta?JSON.stringify(payload.meta):null})
+          `);
+          const ack=await delivery.execute(sql`
+            UPDATE financial_outbox_events SET status='done',attempt=attempt+1,processed_at=now(),last_error=null
+            WHERE id=${id}::bigint AND status='pending' RETURNING id
+          `);
+          if(ack.rows.length!==1)throw Error("OUTBOX_ACK_FAILED");
+        });
+        return "done" as const;
+      }catch(err){
+        // The savepoint has rolled back the event insert and acknowledgement.
+        // Keep the outer row lock while recording the retry; never expose raw DB errors.
+        logger.warn({id},"[outbox] delivery failed; retry retained");
+        const retry=await tx.execute(sql`
+          UPDATE financial_outbox_events
+          SET status = 'pending', last_error='OUTBOX_DELIVERY_FAILED',attempt=attempt+1
+          WHERE id=${id}::bigint AND status='pending' RETURNING id
+        `);
+        if(retry.rows.length!==1)throw Error("OUTBOX_RETRY_FAILED");
+        return "retry" as const;
       }
-
-      // Mark done
-      await db.execute(sql`
-        UPDATE financial_outbox_events
-        SET status = 'done', processed_at = NOW()
-        WHERE id = ${id}
-      `).catch(() => {});
-
-      processed++;
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn({ id, eventType: payload.eventType, err: msg }, "[outbox] processOutboxBatch: event failed");
-      await db.execute(sql`
-        UPDATE financial_outbox_events
-        SET status = 'pending', last_error = ${msg}
-        WHERE id = ${id}
-      `).catch(() => {});
-    }
+        });
+      } finally {
+        connection.release();
+      }
+    })();
+    if(result==="empty")break;
+    if(result==="retry")break; // avoid exhausting retries in one poll
+    processed++;
   }
-
-  if (processed > 0) {
-    logger.info({ processed, total: rows.length }, "[outbox] Batch processed");
-  }
-
   return processed;
 }
 
@@ -208,27 +180,23 @@ async function deadLetterCleanup(): Promise<void> {
 const POLL_INTERVAL_MS    = 10_000;  // poll setiap 10 detik
 const CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // cleanup setiap 1 jam
 
+let started=false;
+let polling=false;
 export function startOutboxProcessor(): void {
+  if(started)return;
+  started=true;
   registerHeartbeat("financial-outbox-processor", POLL_INTERVAL_MS);
 
-  // Process pending events
-  setInterval(() => {
-    beat("financial-outbox-processor");
-    processOutboxBatch().catch((e: unknown) => {
-      logger.warn({ e }, "[outbox] processOutboxBatch tick failed (non-fatal)");
-    });
-  }, POLL_INTERVAL_MS);
-
-  // Dead letter cleanup
-  setInterval(() => {
-    deadLetterCleanup().catch(() => {});
-  }, CLEANUP_INTERVAL_MS);
-
-  // Run once immediately (after 5s delay to let DB pool stabilize)
-  setTimeout(() => {
-    beat("financial-outbox-processor");
-    processOutboxBatch().catch(() => {});
-  }, 5_000);
+  const tick=async()=>{
+    if(polling)return;
+    polling=true;
+    try{beat("financial-outbox-processor");await processOutboxBatch();}
+    catch{logger.warn("[outbox] poll failed");}
+    finally{polling=false;}
+  };
+  setInterval(()=>void tick(),POLL_INTERVAL_MS).unref();
+  setInterval(()=>void deadLetterCleanup(),CLEANUP_INTERVAL_MS).unref();
+  setTimeout(()=>void tick(),5000).unref();
 
   logger.info(
     { pollIntervalSec: POLL_INTERVAL_MS / 1000 },

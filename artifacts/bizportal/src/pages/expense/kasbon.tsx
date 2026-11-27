@@ -3,6 +3,8 @@ import { Link } from "wouter";
 import { DatePicker } from "@/components/ui/date-picker";
 import { AppShell } from "@/components/layout/AppShell";
 import { AiTaskKasbonReadPanel } from "@/components/expense/ai-task-kasbon-read-panel";
+import { DevCstKasbonHistoryPage, isDevCstKasbonHistoryScope } from "@/components/expense/dev-cst-kasbon-history";
+import { useSupabaseAuth } from "@/contexts/SupabaseAuthContext";
 import { parseKasbonListResponse, kasbonListReadState } from "@/lib/kasbon-list-read-state";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -152,6 +154,15 @@ async function apiFetch(url: string, opts?: RequestInit) {
 }
 
 export default function KasbonPage() {
+  const { user, isLoading } = useSupabaseAuth();
+  const { activeCompanyId, isConsolidated } = useCompany();
+  const host = typeof window === "undefined" ? "" : window.location.hostname;
+  if (host === "dev-bizportal.cstlogistic.co.id" && isLoading) return <AppShell><p className="p-6">Memuat sesi…</p></AppShell>;
+  if (isDevCstKasbonHistoryScope(host, user?.role, activeCompanyId, isConsolidated)) return <DevCstKasbonHistoryPage />;
+  return <LegacyKasbonPage />;
+}
+
+function LegacyKasbonPage() {
   const { toast } = useToast();
   const qc = useQueryClient();
   const { activeCompanyId, isConsolidated } = useCompany();
