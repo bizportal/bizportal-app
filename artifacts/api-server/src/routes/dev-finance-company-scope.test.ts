@@ -14,6 +14,7 @@ const keys = [
   "BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV",
   "BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV",
   "BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV",
+  "BIZPORTAL_FINANCE_APPROVAL_QA_ENABLED_DEV",
   "BIZPORTAL_FINANCE_GLOBAL_SCOPE_ENABLED_DEV",
   "BIZPORTAL_FINANCE_GLOBAL_COMPANY_IDS_DEV",
   "BIZPORTAL_MARKETPLACE_AP_BANK_STATUS_ADAPTER_DEV",
@@ -81,6 +82,18 @@ describe("signed Finance scope — narrow cookie paths", () => {
     expect(cookies).toHaveLength(1);
     expect(cookies[0]).toContain("Path=/api/mkt/admin;");
     expect(cookies[0]).not.toContain("Path=/api/bank-reconciliation;");
+  });
+
+  it("permits signed company selection for isolated QA without canonical Finance writers", () => {
+    delete process.env.BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV;
+    delete process.env.BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV;
+    process.env.BIZPORTAL_FINANCE_APPROVAL_QA_ENABLED_DEV = "true";
+    expect(isFinanceGlobalScopeDevEnabled()).toBe(true);
+    const { response, cookies } = fakeResponse();
+    setFinanceCompanyScopeCookie(response, signedSession(), 1);
+    expect(cookies).toHaveLength(1);
+    expect(cookies[0]).toContain("Path=/api/mkt/admin;");
+    expect(process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV).toBeUndefined();
   });
 
   it("rejects unallowlisted tenants and disabled approval-only mode", () => {
