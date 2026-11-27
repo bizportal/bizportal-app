@@ -14,7 +14,8 @@ describe("Kas Besar SC pending evidence upload resilience", () => {
     expect(page).toContain('<Select value={direction} disabled={evidenceBusy||!!pendingEvidence}');
     expect(page).toContain('<DatePicker value={date} disabled={evidenceBusy||!!pendingEvidence}');
     expect(page).toContain('disabled={evidenceBusy||!!pendingEvidence} onChange={e=>{if(evidenceBusy||pendingEvidence)return;setAmount');
-    expect(page).toContain('<Select value={counterCoaId} disabled={evidenceBusy||!!pendingEvidence}');
+    expect(page).toContain('aria-label="Daftar calon COA lawan" size={7}');
+    expect(page).toContain('value={counterCoaId} disabled={evidenceBusy||!!pendingEvidence}');
     expect(page).toContain('disabled={busy || evidenceBusy || !!pendingEvidence || loading');
     expect(page).toContain('if(activeCompanyId!==1 || !readiness || busy || evidenceBusy || !!pendingEvidence) return;');
   });
