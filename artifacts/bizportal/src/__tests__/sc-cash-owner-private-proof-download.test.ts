@@ -17,7 +17,7 @@ describe("Account18 Owner private proof download, no posting",()=>{
     const end=route.indexOf("/** Explicit Owner review",start);
     const code=route.slice(start,end);
     expect(start).toBeGreaterThan(0);
-    expect(code).toContain("readPendingFutureCashVerifiedBytes(id,pool,pendingEvidenceStorage)");
+    expect(code).toContain("readPendingFutureCashVerifiedBytes(id,pool,pendingEvidenceStorage,true)");
     expect(code).toContain('Content-Disposition');
     expect(code).toContain('attachment; filename=');
     expect(code).toContain('no-store');

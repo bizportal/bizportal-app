@@ -8,6 +8,7 @@ type PendingRow = {
   document_sha256: string; source_fingerprint: string;
   direction: string; transaction_date: string; amount_cents: string;
   byte_length: number | string; event_count: string | number;
+  latest_event?: string | null;
 };
 
 export interface PendingCashIntegritySqlReader {
@@ -29,6 +30,7 @@ export async function readPendingFutureCashVerifiedBytes(
   transactionId: string,
   db: PendingCashIntegritySqlReader,
   storage: PrivateCashFileReader,
+  allowVerified = false,
 ): Promise<{bytes: Buffer; extension: string} | null> {
   if (!UUID.test(transactionId)) return null;
   try {
@@ -38,7 +40,8 @@ export async function readPendingFutureCashVerifiedBytes(
       "d.direction, d.transaction_date::text as transaction_date,",
       "d.amount_cents::text as amount_cents, d.byte_length,",
       "(select count(*) from public.sc_future_cash_document_events e",
-      " where e.transaction_id=d.transaction_id)::text as event_count",
+      " where e.transaction_id=d.transaction_id)::text as event_count,",
+      "(select e.event_type from public.sc_future_cash_document_events e where e.transaction_id=d.transaction_id order by e.event_id desc limit 1) as latest_event",
       "from public.sc_future_cash_documents d",
       "where d.transaction_id=$1::uuid and d.company_id=1 and d.account_id=18 limit 2",
     ].join("\n"), [transactionId]);
@@ -50,7 +53,8 @@ export async function readPendingFutureCashVerifiedBytes(
         d.object_bucket !== "private-uploads" ||
         !PRIVATE_PATH.test(d.object_path) ||
         !/^[0-9a-f]{64}$/.test(d.document_sha256) ||
-        d.event_count.toString() !== "0" ||
+        !(d.event_count.toString() === "0" && d.latest_event == null ||
+          allowVerified && d.event_count.toString() === "1" && d.latest_event === "VERIFIED") ||
         !Number.isSafeInteger(expectedLength) ||
         expectedLength <= 0 || expectedLength > MAX_BYTES ||
         !/^[0-9]+$/.test(d.amount_cents)) return null;
