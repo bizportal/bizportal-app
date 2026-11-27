@@ -348,6 +348,100 @@ async function verifySupabaseAccessToken(accessToken: string): Promise<{
   };
 }
 
+/** DEV-only signed Finance company scope; never an authorization grant by itself. */
+const FINANCE_SCOPE_COOKIE = "bizportal_finance_company_scope";
+const FINANCE_SCOPE_TTL_MS = 30 * 60 * 1000;
+interface FinanceCompanyScope {
+  version: 1;
+  userId: string;
+  email: string;
+  sessionIssuedAt: number;
+  companyId: number;
+  expiresAt: number;
+}
+
+export function isFinanceGlobalScopeDevEnabled(): boolean {
+  return isSignedOtpDevEnabled()
+    && (process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV === "true"
+      || process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV === "true")
+    && process.env.BIZPORTAL_FINANCE_GLOBAL_SCOPE_ENABLED_DEV === "true";
+}
+
+export function isApprovedFinanceGlobalSuperAdmin(email: string): boolean {
+  if (!isFinanceGlobalScopeDevEnabled()) return false;
+  const normalized = email.trim().toLowerCase();
+  if (!normalized || !normalized.includes("@")) return false;
+  return (process.env.BIZPORTAL_FINANCE_GLOBAL_SUPERADMIN_EMAILS_DEV ?? "")
+    .split(",").some(value => value.trim().toLowerCase() === normalized);
+}
+
+export function isApprovedFinanceGlobalCompany(companyId: number): boolean {
+  if (!isFinanceGlobalScopeDevEnabled() || !Number.isSafeInteger(companyId) || companyId <= 0) {
+    return false;
+  }
+  return (process.env.BIZPORTAL_FINANCE_GLOBAL_COMPANY_IDS_DEV ?? "")
+    .split(",").some(value => /^[0-9]+$/.test(value.trim()) && Number(value.trim()) === companyId);
+}
+
+export function setFinanceCompanyScopeCookie(
+  response: Response, session: ProductionSession, companyId: number,
+): void {
+  if (!isApprovedFinanceGlobalCompany(companyId)) {
+    throw new Error("DEV_FINANCE_GLOBAL_SCOPE_DISABLED_OR_INVALID");
+  }
+  const secret = getExplicitSessionSecret();
+  if (!secret) throw new Error("DEV_FINANCE_SCOPE_SESSION_SECRET_MISSING");
+  const expiresAt = Math.min(session.expiresAt, Date.now() + FINANCE_SCOPE_TTL_MS);
+  if (expiresAt <= Date.now() || !Number.isFinite(session.issuedAt)) {
+    throw new Error("DEV_FINANCE_SCOPE_SESSION_INVALID");
+  }
+  const scope: FinanceCompanyScope = {
+    version: 1, userId: session.id, email: session.email.trim().toLowerCase(),
+    sessionIssuedAt: session.issuedAt, companyId, expiresAt,
+  };
+  const payload = encode(JSON.stringify(scope));
+  const value = payload + "." + sign("finance-company-scope:v1\n" + payload, secret);
+  const maxAge = Math.max(0, Math.floor((expiresAt - Date.now()) / 1000));
+  response.append("Set-Cookie",
+    FINANCE_SCOPE_COOKIE + "=" + value + "; Max-Age=" + maxAge
+    + "; Path=/api/mkt/admin; HttpOnly; Secure; SameSite=Strict");
+  if (process.env.BIZPORTAL_CUSTOMER_AR_PREVIEW_ENABLED_DEV === "true") {
+    // Keep the Marketplace cookie's original path. A second copy of the same
+    // signed scope is sent only to the Customer AR preview's exact GET path.
+    response.append("Set-Cookie",
+      FINANCE_SCOPE_COOKIE + "=" + value + "; Max-Age=" + maxAge
+      + "; Path=/api/sales/customer-invoices/auto-match-preview; HttpOnly; Secure; SameSite=Strict");
+  }
+  response.setHeader("Cache-Control", "no-store");
+}
+
+export function getFinanceCompanyScope(request: Request, session: ProductionSession): number | null {
+  if (!isFinanceGlobalScopeDevEnabled() || session.expiresAt <= Date.now()) return null;
+  const secret = getExplicitSessionSecret();
+  const raw = getCookie(request, FINANCE_SCOPE_COOKIE);
+  if (!secret || !raw) return null;
+  const separator = raw.lastIndexOf(".");
+  if (separator <= 0) return null;
+  const payload = raw.slice(0, separator);
+  if (!safeEqual(sign("finance-company-scope:v1\n" + payload, secret), raw.slice(separator + 1))) {
+    return null;
+  }
+  try {
+    const scope = JSON.parse(decode(payload)) as FinanceCompanyScope;
+    if (scope?.version !== 1 || scope.userId !== session.id
+      || scope.email !== session.email.trim().toLowerCase()
+      || scope.sessionIssuedAt !== session.issuedAt
+      || !isApprovedFinanceGlobalCompany(scope.companyId)
+      || typeof scope.expiresAt !== "number" || scope.expiresAt <= Date.now()
+      || scope.expiresAt > session.expiresAt
+      || scope.expiresAt > Date.now() + FINANCE_SCOPE_TTL_MS) return null;
+    return scope.companyId;
+  } catch {
+    return null;
+  }
+}
+
+
 export async function getProductionUser(session: ProductionSession): Promise<DevAuthUser | null> {
   const signedOtpDev = isSignedOtpDevEnabled();
   // Only DEV signed OTP pins the lookup to the signed account ID as well as

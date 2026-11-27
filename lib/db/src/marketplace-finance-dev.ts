@@ -144,7 +144,21 @@ async function getFinanceDb(): Promise<FinanceDatabase> {
  */
 export async function withMarketplaceFinanceDevTransaction<T>(
   companyId: number, work: (session: ScopedDb) => Promise<T>,
+  options: { readOnly?: boolean; paymentApprovalOnly?: boolean } = {},
 ): Promise<T> {
+  // A previously initialized Finance pool is not a grant to write. The
+  // independent read-only feature must never activate the writer helper.
+  const approvalOnly=options.paymentApprovalOnly===true;
+  if (approvalOnly && (options.readOnly===true ||
+      process.env.APP_ENV !== "development" ||
+      process.env.BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV !== "true" ||
+      process.env.BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV !== "true")) {
+    throw new Error("DEV_FINANCE_PAYMENT_APPROVAL_DISABLED");
+  }
+  if (options.readOnly !== true && !approvalOnly &&
+      process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV !== "true") {
+    throw new Error("DEV_FINANCE_WRITER_DISABLED");
+  }
   if (!Number.isSafeInteger(companyId) || companyId <= 0) {
     throw new Error("DEV_FINANCE_COMPANY_INVALID");
   }
@@ -186,7 +200,16 @@ export async function withMarketplaceFinanceDevTransaction<T>(
     if (bound.rows[0]?.company_id !== String(companyId)) {
       throw new Error("DEV_FINANCE_TENANT_BINDING_FAILED");
     }
-    return await work(tx as unknown as ScopedDb);
+    // A dedicated approval-only session must never register unrelated
+    // post-commit callbacks (external notifications, payment dispatch).
+    const value = await work(tx as unknown as ScopedDb);
+    if (approvalOnly && afterCommit.length > 0) {
+      throw new Error("DEV_FINANCE_PAYMENT_APPROVAL_SIDE_EFFECT_DENIED");
+    }
+    if (options.readOnly === true && afterCommit.length > 0) {
+      throw new Error("DEV_FINANCE_READ_ONLY_SIDE_EFFECT_DENIED");
+    }
+    return value;
     } finally {
       pendingAfterCommit.delete(tx);
     }
