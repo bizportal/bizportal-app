@@ -13,7 +13,7 @@ export type CashEvidenceReview = Readonly<{
 const KINDS = new Set<CashEvidenceKind>(["BANK_TRANSFER_RECEIPT","CASH_DEPOSIT_SLIP","SIGNED_CASH_RECEIPT"]);
 
 export function cashAmountToCents(value: unknown): string | null {
-  if (typeof value !== "string" || !/^(?:0|[1-9][0-9]{0,11})(?:\\.[0-9]{1,2})?$/.test(value)) return null;
+  if (typeof value !== "string" || !/^(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,2})?$/.test(value)) return null;
   const [whole, fraction = ""] = value.split(".");
   const amount = BigInt(whole!) * 100n + BigInt(fraction.padEnd(2, "0") || "0");
   return amount > 0n && amount <= 99999999999999n ? amount.toString() : null;
@@ -32,7 +32,7 @@ export function parseCashEvidenceReview(
       typeof counterCoaId !== "number" || !Number.isSafeInteger(counterCoaId) || counterCoaId <= 0 ||
       typeof rawReference !== "string" || rawReference !== rawReference.trim() ||
       rawReference.length < 6 || rawReference.length > 120 ||
-      !/[0-9]/.test(rawReference) || /\\b(?:NPWP|KTP|NIK|IDENTITY CARD)\\b/i.test(rawReference)) return null;
+      !/[0-9]/.test(rawReference) || /\b(?:NPWP|KTP|NIK|IDENTITY CARD)\b/i.test(rawReference)) return null;
   const amountCents = cashAmountToCents(body.evidenceAmount);
   if (!amountCents || amountCents !== document.amountCents) return null;
   return { evidenceKind:kind as CashEvidenceKind,evidenceDate:date,evidenceAmountCents:amountCents,
