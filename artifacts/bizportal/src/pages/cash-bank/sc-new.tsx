@@ -29,6 +29,10 @@ type ServerPendingDocument = PendingCashAcknowledgement & {
 type ServerVerifiedDocument = {
   transactionId:string;status:"VERIFIED";date:string;direction:"IN"|"OUT";amount:string;
 };
+type ServerApprovedDocument = Omit<ServerVerifiedDocument,"status"> & {
+  status:"APPROVED_PENDING_POSTING";counterCoaId:number;
+};
+type ServerRevokedDocument = Omit<ServerVerifiedDocument,"status"> & {status:"REVOKED"};
 const COMPANY1_PENDING_ACK_KEY="cst.account18.pending.evidence.ack.v1";
 function loadCompany1PendingAcknowledgement():PendingCashAcknowledgement|null{
   if(typeof window==="undefined")return null;
@@ -70,6 +74,9 @@ export default function ScNewCashPreview() {
   const [pendingListError,setPendingListError]=useState(false);
   const [serverVerifiedDocuments,setServerVerifiedDocuments]=useState<ServerVerifiedDocument[]>([]);
   const [verifiedListError,setVerifiedListError]=useState(false);
+  const [serverApprovedDocuments,setServerApprovedDocuments]=useState<ServerApprovedDocument[]>([]);
+  const [serverRevokedDocuments,setServerRevokedDocuments]=useState<ServerRevokedDocument[]>([]);
+  const [approvedListError,setApprovedListError]=useState(false);
   const [integrityBusy,setIntegrityBusy]=useState(false);
   const [integrityResult,setIntegrityResult]=useState<"MATCH"|"UNAVAILABLE"|null>(null);
   const [reviewedUpload,setReviewedUpload]=useState<{transactionId:string;file:File}|null>(null);
@@ -77,6 +84,17 @@ export default function ScNewCashPreview() {
   const [ownerReviewConfirmed,setOwnerReviewConfirmed]=useState(false);
   const [voucherCoa,setVoucherCoa]=useState("");
   const [voucherCoaSearch,setVoucherCoaSearch]=useState("");
+  const [evidenceKind,setEvidenceKind]=useState("");
+  const [evidenceDate,setEvidenceDate]=useState("");
+  const [evidenceAmount,setEvidenceAmount]=useState("");
+  const [evidenceReference,setEvidenceReference]=useState("");
+  const [evidenceAttested,setEvidenceAttested]=useState(false);
+  const [evidenceReviewed,setEvidenceReviewed]=useState(false);
+  const [reviewBusy,setReviewBusy]=useState(false);
+  const [revokeReasonCode,setRevokeReasonCode]=useState("WRONG_DOCUMENT_TYPE");
+  const [revokeReason,setRevokeReason]=useState("");
+  const [revokeBusy,setRevokeBusy]=useState(false);
+  const [revokedId,setRevokedId]=useState<string|null>(null);
   const [voucherCode,setVoucherCode]=useState("");
   const [voucherBusy,setVoucherBusy]=useState(false);
   const voucherLock=useRef(false);
@@ -102,6 +120,9 @@ export default function ScNewCashPreview() {
     setPendingListError(false);
     setServerVerifiedDocuments([]);
     setVerifiedListError(false);
+    setServerApprovedDocuments([]);setServerRevokedDocuments([]);setApprovedListError(false);
+    setEvidenceReviewed(false);setRevokedId(null);setEvidenceKind("");setEvidenceDate("");
+    setEvidenceAmount("");setEvidenceReference("");setEvidenceAttested(false);setRevokeReason("");
     setIntegrityResult(null);
     setOwnerReviewConfirmed(false);
     setVoucherCode("");setVoucherError(null);
