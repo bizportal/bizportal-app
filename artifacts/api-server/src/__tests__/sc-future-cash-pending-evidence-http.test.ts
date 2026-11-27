@@ -281,10 +281,10 @@ describe("Account18 pending receipt intake HTTP — no journal or approval", () 
     }]);
     expect(JSON.stringify(data)).not.toMatch(/document_sha256|object_path|uploaded_by|otpEvidenceId/);
     mock.approved=true;
-    expect((await (await fetch(url)).json()).documents).toEqual([]);
+    expect(((await (await fetch(url)).json()) as {documents:unknown[]}).documents).toEqual([]);
     mock.approved=false;
     mock.pendingDoc.event_type=null;
-    expect((await (await fetch(url)).json()).documents).toEqual([]);
+    expect(((await (await fetch(url)).json()) as {documents:unknown[]}).documents).toEqual([]);
     expect(mock.queries.some(q=>q.includes("insert into"))).toBe(false);
   });
   it("denies unsigned, finance, and foreign-company verified voucher lists", async()=>{
