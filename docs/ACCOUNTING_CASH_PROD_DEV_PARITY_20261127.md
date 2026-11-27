@@ -9,6 +9,13 @@ Accounting already operates in Hostinger PROD. The work in DEV is **not** a mand
 - Read-only HTTP fetch on 27 November: PROD `https://bizportal.cstlogistic.co.id` serves `/assets/index-CGqjpAPz.js` modified **2026-11-14 13:41:38 UTC**. DEV `https://dev-bizportal.cstlogistic.co.id` serves `/assets/index-DMpcs0RV.js` modified **2026-11-27 08:32:17 UTC**. Both root and `/api/health/live` HTTP 200; unauthenticated `/api/accounting/entries` HTTP 401 on each. These are **availability/auth** facts, not behavioral parity or exact deployment-SHA proof.
 - The DEV main bundle references the `sc-new` feature; the PROD main bundle does not. This shows intentional frontend differences, not authorization to change PROD.
 
+## Existing upstream posting engine is a reference, not a deploy target
+The legacy repository `Travelintrips/CST-BIZPORTAL@647f2778` contains a **separate archived source tree** at `.upstream-cst-super-app/artifacts/api-server/src/lib/`:
+- `posting-engine/CanonicalPostingEngine.ts` and `posting-engine/index.ts` expose a documented single posting entrypoint `getPostingEngine().post(...)`, delegating to the existing `postEntryWithClient` function rather than recreating balance/idempotency logic.
+- `accountingPostingService.ts` serves as an Accounting Hub service, referenced by archived `routes/accountingHub.ts`.
+
+**Do not mistake archived files for active Hostinger code**: the active `artifacts/api-server/src/lib` of the legacy deploy source and the canonical standalone repository do not contain these engine files. This is a concrete reuse candidate and migration reference, **not** authority to copy it wholesale or run its writers. First locate the currently executing PROD service and verify its auth, journal/period lock, source replay and ledger ownership contract.
+
 ## Canonical code reused today
 - `routes/accounting.ts`: GET journals and entries, chart of accounts and GL reports from `public.accounting_entries`, `public.accounting_entry_lines` and `public.accounting_general_ledger_v`.
 - `routes/bank-reconciliation.ts`: already writes canonical `accounting_entries` and `accounting_entry_lines`, locks matching bank mutations, enforces balanced journal and idempotent post. **Its private `postBankMutationCanonical` function is specific to bank mutations; it is NOT a generic cash posting entrypoint. Never call it on a fabricated bank mutation to post Kas Besar SC.**
