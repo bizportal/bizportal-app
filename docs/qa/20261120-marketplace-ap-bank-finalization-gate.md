@@ -1,0 +1,440 @@
+# CST-DEV Marketplace AP to bank to GL: release acceptance
+
+Scope: DEV only; no payment execution or journal posting. Existing Invoice, AP,
+handoff, reconciliation and canonical posting are unchanged.
+
+Verified:
+- AP makes one Payment Request draft and Handoff, idempotent by AP ID.
+- Canonical bank posting checks mutation, company, journal identity, GL balance, duplicates and replay.
+- Disposable PostgreSQL canonical posting previously passed six tests.
+- Server-side company selection and signed Super Admin Finance authorization already exist.
+
+Unproven:
+- Bank execution evidence is not linked to the originating Payment Request.
+- The AP-to-bank-to-GL finalization path is not deployed nor E2E proven.
+- Marketplace invoices remain ready_for_ap while the existing vendor-invoice bank allocation
+  requires posted status. A documented and tested canonical adapter is mandatory. Never
+  silently promote ready_for_ap to posted to make the test pass.
+- Genuine signed Super Admin HTTP bank-posting acceptance is not proven.
+
+The newly added pure release admission module is not mounted to any HTTP route.
+It accepts a verified actor and *server-provided* transaction evidence and
+reports GO_CANDIDATE or NO_GO. It never transfers funds, pays a request, or
+posts any journal. GO_CANDIDATE is not payment authority.
+
+A final bridge must, within a locked atomic transaction:
+1. obtain the actor via the existing signed-session server identity, not request headers;
+2. bind invoice, AP, handoff, request, bank mutation, and bank account to one company;
+3. verify genuine owner approval, Treasury readiness, proof of bank execution,
+   active company-specific COA mapping, and bank reconciliation evidence;
+4. use canonical posting only, guarantee balanced entries, and reject competing matches;
+5. ensure an immutable idempotency key; rollback on injected failure;
+6. finalize Payment Request only after confirmed bank posting and audit.
+A transfer cannot be marked paid based on a draft handoff or caller-supplied status.
+
+Status: existing AP-to-Accounting Draft GO; real disbursement/final GL NO-GO
+until the bridge and real signed-session E2E are verified.
+
+## Atomic posted-bank finalizer candidate
+marketplacePaymentFinalization.ts is an UNMOUNTED transaction service. It never
+sends a transfer or posts a GL entry. After an actual bank reconciliation has
+already posted an outgoing mutation, it verifies a bank-import record, immutable
+AP/request/handoff identifiers and fingerprint, signed Super Admin authorization,
+existing approval and Treasury fields, canonical payment-request bank match,
+journal balance, matching active company bank account/COA, and duplicate matching.
+It then atomically marks ONLY that Payment Request paid, updates the Handoff to
+posted, and inserts an audit record. Failures trigger full ROLLBACK; replay
+requires exact same posted bank/journal evidence. It blocks foreign company data.
+
+Disposable PostgreSQL tests cover success, replay, concurrent requests,
+mismatched company, wrong references, invalid status, failed audit after
+updates, broken journal balance, and bank/COA mismatches. This is not real
+signed-session HTTP E2E and does not prove the existing canonical bank
+reconciliation can produce its required payment-request-specific match/source
+tags. These two integration gaps remain release blockers. Do not deploy or
+enable a POST until the match adapter and signed HTTP acceptance are verified.
+
+## Canonical native Vendor Invoice allocation adapter (2026-11-20)
+The unchanged Bank Reconciliation implementation emits one approved
+vendor_invoice match, active payment_allocations and payment_matching_groups,
+and linked_transaction_type vendor_invoice_batch. It does NOT emit the
+payment_request candidate/source identifiers assumed by the initial draft.
+The proposed unmounted nativeVendorBankEvidence.ts now verifies those
+existing records with row locks and with the locked AP/Handoff/PaymentRequest
+chain, requiring identical company, invoice, mutation, approved match,
+exact monetary amount and one active allocation in one matching group.
+It refuses shared groups, batches spanning multiple invoices, and a second
+posted mutation with an active allocation for the same invoice.
+There is NO fabricated Payment Request match or bank mutation source tag.
+
+Current Bank Reconciliation pays only a legitimately posted Vendor Invoice.
+The candidate finalizer therefore requires invoice status posted; it will NOT
+automatically turn Marketplace ready_for_ap into posted. A genuine, reviewed
+Invoice posting step and bank-confirmation workflow remain requirements.
+No HTTP routes are mounted; no bank transfers or accounting postings are
+initiated by these components.
+
+Disposable PostgreSQL regression: 79/79 combined tests PASS (includes
+native allocation proof, concurrency, replay, audit-failure rollback,
+CST/Diva authorization and the existing AP tests). API typecheck PASS.
+These are staged candidate tests, not a real signed-owner HTTP E2E.
+
+## Reviewed Marketplace status adapter candidate — 20 November
+
+The existing Purchase UI references a legacy Vendor Invoice POST action, but
+no matching posting route was found in the scoped API source reviewed here.
+We do NOT create a fake posting operation or change the Marketplace status.
+
+A narrowly gated branch in the existing bank-reconciliation
+vendor-invoice-payment-batch writer now permits a *single* Marketplace
+ready_for_ap Invoice only if:
+- APP_ENV=development and BIZPORTAL_MARKETPLACE_AP_BANK_STATUS_ADAPTER_DEV=true
+  (default OFF, never enabled by this PR);
+- the authenticated request carries an actual server-verified signed Super Admin
+  session, including approved Finance company scope;
+- the existing imported outgoing bank mutation, canonical AP, Payment Request,
+  verified Finance/Treasury approval, Handoff, supplier, amount and immutable
+  fingerprint all match within the existing bank writer transaction.
+Other statuses and multi-invoice batches are refused; the original legacy
+posted-Invoice allocation path is preserved.
+
+The unmounted atomic finalizer has also been aligned to expect the actual
+Marketplace ready_for_ap Invoice, after canonical single-invoice bank evidence
+and GL have been posted. It does not mark the Invoice posted, initiate a
+transfer, or fabricate proof.
+
+Evidence: 94/94 combined tests PASS covering the status adapter, canonical
+bank evidence, atomic finalization, replay/rollback, authorization and existing
+posting contracts, with real disposable PostgreSQL queries for the adapters.
+API typecheck PASS. The test container was stopped and must be removed.
+This is not a real signed Owner HTTP E2E and remains NO-GO for real payments.
+
+## Signed Owner QA button (SAFE UI acceptance candidate)
+
+The new frontend route /finance/payment-approval-qa contains a visible functional
+"Setujui Pembayaran Uji" button and is linked from Finance Vendor Invoice preview.
+It uses a signed server-side Super Admin session, a verified CST/Diva company
+scope, and an isolated PostgreSQL QA database bound to 127.0.0.1:55495 and
+database name finance_approval_qa. Its acceptance endpoint is disabled by
+default, refuses cross-origin POST, prevents replay/double audit, and never
+touches payments, bank transfers or financial journals.
+
+This is a REAL UI-to-server approval QA test, but specifically NOT the real
+supplier-payment E2E. It exercises Super Admin approval only. Do not confuse
+the QA receipt with a bank settlement or accounting posting receipt.
+
+No owner action is requested until the candidate is actually deployed and
+verified in a browser. PROD unchanged.
+
+## Signed Super Admin QA button — deployed in Finance DEV preview
+
+Deployment verified under finance-pr81.72.61.210.205.sslip.io:
+
+- Web page: /finance/payment-approval-qa HTTP 200
+- Functional React button chunk HTTP 200; React DOM tests 2/2 PASS
+- Authenticated QA endpoint /api/mkt/admin/payment-approval-qa (GET/POST only);
+  anonymous HTTPS GET returns 401, production bank POST remains 404
+- HTTP integration on isolated PostgreSQL with synthetic signed-auth mocks: 4/4 PASS
+  (success, exactly-once audit, replay, anonymous/wrong role/tenant,
+  cross-origin and flag OFF restrictions)
+- QA PostgreSQL 127.0.0.1:55495/finance_approval_qa only, two synthetic
+  cases for CST and Diva, no bank transfers and no BizPortal GL transactions.
+- Main Finance backend remains the existing c1abee7 runtime. The only added
+  HTTPS API route proxies to a separate QA-only runtime on 127.0.0.1:19882.
+  The static Finance frontend bundle was updated with an on-disk rollback.
+- Both QA endpoint and frontend explicitly label this as a sandbox approval,
+  NOT proof of the real supplier-bank-reconciliation posting E2E.
+- Real signed Owner browser click has not yet occurred, and the authentic
+  payment-to-bank posting path remains NO-GO.
+
+Build sources were aligned from the c1abee7 preview baseline plus candidate
+changes, avoiding unrelated changes from the older QA workspace. Vite built
+successfully after the first constrained heap failed; API typecheck PASS.
+
+## 403 Finance scope recovery — DEV UI fix
+The screenshot of an authenticated Super Admin showed HTTP 403:
+"Pilih dan verifikasi perusahaan Finance". Root cause: the signed Finance
+company-scope cookie had not been issued for the QA screen opened directly,
+although the BizPortal company selector showed CST. The QA backend must
+continue refusing an unscoped global Super Admin.
+
+The scoped QA frontend now retries only after a 403, using the EXISTING
+server-validated POST /api/mkt/admin/finance-company-selection with the
+user-selected, strictly allowlisted company ID (1 CST or 3 Diva). It checks
+server confirmation and retries QA GET once. It does not attempt an
+auto-selection on 401 or on an unsupported company, and checks that the QA
+response company equals the selected UI company. A successful QA response
+replaces the manual verify card with a verified-company indicator.
+
+React/jsdom regressions: 5/5 PASS, covering success, retry 403, 401 without
+scope selection, unsupported company and sandbox click receipt. Existing
+backend isolated HTTP QA: 4/4 PASS. Frontend Vite production build PASS.
+UI static bundle deployed in Finance DEV (no backend/PROD changes).
+HTTPS approval screen 200, new JS chunk 200, unauthenticated QA GET 401,
+main Finance health 200, bank POST remains 404. Rollback at
+/var/lib/bizportal-finance-preview-rollbacks/20261120-signed-approval-ui-scope-fix-final.
+Real owner browser action has not been accessed by the connector. QA scenarios
+remain pending without any audit rows. No real transfers or GL posted.
+
+## QA approval concurrency and rollback validation (2026-11-20)
+On the existing, separate localhost-only finance_approval_qa PostgreSQL,
+real HTTP integration tests now include two concurrent signed synthetic
+approval requests: one first successful transition, one idempotent replay,
+exactly one audit row. A database trigger fault injected into the approval
+audit INSERT after the status update returns HTTP 503 and proves full
+rollback to pending with no audit. The trigger is removed in test cleanup.
+6/6 approval HTTP tests PASS; no production cookies or real Owner credentials
+were generated or read. This remains a synthetic authenticated harness,
+not the genuine Owner browser acceptance and not the bank/GL E2E.
+
+## Real Marketplace Payment Request approval candidate (CST-DEV 2026-11-20)
+The new marketplacePaymentApproval.ts service targets the real Marketplace AP
+Payment Request draft through the existing company-scoped Finance transaction.
+It verifies signed Super Admin identity, CST/Diva company, the immutable
+AP/Invoice/Handoff relationship, three-way match, and amount snapshots.
+Only draft to approved and single Super Admin Treasury readiness are recorded.
+It does not pay, transfer, reconcile or post any journal.
+Replay creates no new audit. An audit INSERT failure rolls back the status.
+
+The dedicated POST candidate path is
+/api/mkt/admin/payment-requests/:id/approve and the release flag is
+BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV=true (OFF by default).
+Same-origin JSON, role, company and valid ID are required.
+
+The narrow SQL migration was applied only to CST-DEV after disposable
+PostgreSQL QA. Only approval columns are writable by the company Finance
+roles. Both roles still cannot UPDATE total_amount, paid_amount or journal
+ID, nor INSERT GL entries. The RLS-protected audit table accepts exactly one
+approval per request. The rollback SQL is included.
+
+Evidence: isolated PostgreSQL approval tests 7/7 PASS; existing and new
+HTTP writer tests 37/37 PASS; combined targeted 44/44 PASS; API typecheck
+PASS. CST-DEV postflight: 0 active Payment Requests/Handoffs, 0 new approval
+audit, historical CST Invoice fingerprint unchanged. Active Finance DEV
+runtime is still c1abee7, and the business-approval path is NOT enabled.
+Authentic Owner E2E and the real bank/GL pipeline are still NO-GO.
+
+## Integrated approval → posted-bank evidence → finalization (disposable PostgreSQL)
+A new integration sequence was added to
+marketplacePaymentFinalization.test.ts. Starting with an actual synthetic
+Marketplace AP Payment Request in draft, the test invokes the same
+approveMarketplacePaymentRequest service in a PostgreSQL transaction,
+commits the approval and audit, then invokes the canonical-evidence
+checking finalizer against a matching synthetic posted bank mutation,
+allocation and balanced GL journal. It proves approved→paid is only
+possible with verified posted evidence and that replay returns REPLAY
+without double audit. A separate negative case starts with draft and
+rejects finalization. This is a composition test, NOT a real bank posting
+or a signed browser E2E: the bank evidence is pre-seeded in the fixture.
+
+Disposable PostgreSQL integration: 15/15 PASS; broader Finance/AP and
+canonical posting contract regression: 82/82 PASS; API typecheck PASS.
+No change to the existing bank posting service or running Finance preview.
+Production and business GL remain untouched. A genuine bank posting
+workflow and authentic signed Super Admin HTTP request remain release gates.
+
+## Narrow independent approval-only gate — 21 November 2026
+
+Audit found the first real Payment Request approval handler depended on
+BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV, the general Finance
+writer switch. Enabling it for the sole purpose of verifying approval
+would also expose unrelated vendor invoice and AP writer operations.
+
+The candidate code now has an independent approval-only transaction option
+and handler guard. Both BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV
+and BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV must explicitly
+be true, APP_ENV must be development, and the independent tenant-bound
+Finance PostgreSQL role and the existing full RLS/11-table readiness checks
+remain mandatory. The common Finance Writer flag is NOT required. Unrelated
+writers continue to return 404 when their general flag is OFF.
+No external after-commit actions may be registered in approval-only mode.
+When the approval flag is OFF, the handler returns 404 before session lookup.
+
+New tests: 39/39 approval HTTP tests PASS including isolation from vendor
+invoice/AP writers; 5/5 DB guard tests PASS. API TypeScript typecheck PASS.
+Two preexisting isolated PostgreSQL suites were not rerun in the combined
+test because their disposable containers (ports 55493 and 55497) had been
+removed; their historical PASS remains separate and is not included in
+the current run.
+
+This is a code-only change on a draft PR. Neither the unrestricted Finance
+writer nor the new approval-only flag was enabled on the currently deployed
+Finance DEV backend. Real Payment Requests count was zero as of last
+read-only DB inspection; no bank or journal was posted.
+
+## 25 Nov 2026 actual CST-DEV Marketplace E2E preflight
+A new read-only SQL readiness query is kept in
+scripts/sql/20261125_cst_dev_marketplace_payment_e2e_readiness_READ_ONLY.sql.
+It checks delivered Shipment -> passed GR -> ready_for_ap three-way-matched
+Vendor Invoice before checking AP, Payment Request, approval audit and
+canonically imported, reconciled, posted outgoing bank evidence.
+This is a blocker diagnosis, NOT a payment or automatic approval job.
+
+Current evidence from CST-DEV: PO #14, shipment #8 delivered, GR #6
+inspection passed, but 0 of 10 CST Vendor Invoices reference a Marketplace
+PO/GR, 0 invoices ready_for_ap, 0 AP Preparations, 0 Payment Requests,
+0 Handoffs and 0 payment approval audits. No invoice, Payment Request,
+bank mutation or journal was created to fake an E2E result.
+An actual canonical Vendor Invoice with authentic supplier references,
+lines, totals and attachment must first exist; the canonical workflow
+validates these fields. Do not rewrite historical invoices to force PASS.
+
+## 25 November 2026 — Owner confirms PO #14 is internal TEST ONLY
+
+The Owner explicitly confirmed that CST-DEV PO #14 can be used as a
+reference for isolated test-only Finance E2E without a real bank payment.
+Live CST-DEV records were independently examined: PO-20261117-00014,
+company 1, supplier ID 24 (the same PT Cahaya Sejati Teknologi), one
+Frozen Tuna Saku unit, grand total IDR 100000.00; shipment #8 delivered,
+GR #6 inspection passed. This self-supplier record must not be treated as
+a legitimate external Accounts Payable invoice.
+
+Updated the existing disposable PostgreSQL integration fixture to carry
+the verified PO #14 / shipment #8 / GR #6 and IDR 100000.00 nominal.
+The integration calls the real approveMarketplacePaymentRequest and
+finalizePostedMarketplacePayment services against isolated synthetic
+Invoice/AP/Payment Request, pre-seeded bank mutation, matching allocation,
+and balanced posted journal. It verifies replay, rollback and rejection
+of mismatched evidence. The fixture schema initialization is repeatable.
+
+Focused integrated tests 15/15 PASS. Wider Marketplace/AP/bank regression
+84/84 PASS (5 files). The disposable PostgreSQL used localhost port 55493
+only. No business records, supplier invoice attachment, bank import,
+authentic Super Admin browser session, live reconciler, or actual journal
+posting was created by this test. This is an integrated SERVICE/DB fixture,
+not an end-to-end application/business completion.
+
+CST-DEV read-only postflight: 0 Payment Requests, 0 AP Preparations,
+0 Handoffs, 0 approval audit records; 287 existing journal entries and 54
+bank mutations; CST Invoice fingerprint remains
+531f175c6618c26f3ad0983d3d90f5f6. PROD unchanged.
+
+## 25 Nov 2026 — signed PO14 sandbox web workflow DEPLOYED
+User requested direct work on authentic signed Super Admin browser E2E. The
+connected Owner browser is not exposed to the Browser tool, so a real Owner
+click CANNOT be claimed. We installed a narrow, usable, signed-identity
+simulator in the existing Finance DEV preview instead of forging a session.
+
+- New page: /finance/po14-e2e-qa, linked from the existing
+  /finance/payment-approval-qa page
+- Exact HTTPS QA API: /api/mkt/admin/po14-e2e-qa, routed by Nginx ONLY to
+  localhost 127.0.0.1:19882 and PostgreSQL 127.0.0.1:55495/finance_approval_qa
+- Signed Super Admin, CST company scope, HTTPS Origin, JSON body and
+  explicit PO-20261117-00014 reference are validated.
+- Result is ALWAYS explicitly SIMULATED for every stage. No real invoice,
+  bank transfer, bank reconciliation, journal posting or business payable
+  exists as a side effect of this page. An exactly-once sandbox audit
+  is stored with the synthetic receipt. Conflicting actor rejected.
+- Backend isolated PostgreSQL HTTP tests: 5/5 PASS including replay,
+  concurrent requests, unauthorized actors, cross-origin and PROD flags.
+  UI React/jsdom tests: 4/4 PASS including hidden action on unauthorized
+  or wrong-company states. API typecheck PASS; Vite frontend build PASS.
+- Live HTTPS page 200, revised JS chunk 200, API anonymous GET/POST 401,
+  main Finance health 200, real bank posting POST 404. Both DEV services
+  active. No sandbox runs/audits were created from a fake user session.
+- Rollback snapshot saved under
+  /var/lib/bizportal-finance-preview-rollbacks/20261125-po14-web-qa/
+  (old API dist, frontend public, and prior Nginx config). No PROD changes.
+
+This is a signed-browser-ready QA simulation that a genuine owner can run,
+NOT the requested full real Invoice -> AP -> bank reconcile -> GL E2E, which
+continues to require real browser access and production-equivalent but
+fully isolated bank import/posting infrastructure. Keep business release NO-GO.
+
+## 25 November 2026 — live signed CST page race fix
+Actual Owner screenshot proved Super Admin login and company CST scope
+were visible; the PO14 QA page simultaneously displayed a stale 403
+("Pilih dan verifikasi Finance CST"). Runtime logs showed two GET 403
+responses followed by successful signed GET 200 and a successful
+finance-company-selection POST 200. Cause: overlapping frontend GET
+requests allowed a stale failed response to set error after a newer
+successful Finance scope selection.
+
+Added a monotonic request sequence guard in the PO14 React page. Only
+the latest GET may update loading/error/data; a successful GET explicitly
+clears prior errors. Starting a POST also invalidates prior GETs.
+The React regression covers out-of-order stale failing GETs under
+StrictMode, in addition to the four existing success/auth/tenant tests:
+5/5 PASS. Production frontend Vite build PASS.
+
+Deployed static frontend only with rollback snapshot
+/var/lib/bizportal-finance-preview-rollbacks/20261125-po14-scope-race-fix.
+HTTPS page 200, revised JS 200, anonymous GET 401, Finance health 200,
+QA PO14 run=0/audits=0. Backend authentication and the business ledger
+were unchanged. Genuine Owner POST click remains unobserved.
+
+## 25 November 2026 — REAL canonical bank posting helper now executed in isolated PostgreSQL
+Previous finalizer tests seeded bank mutation and GL as already posted.
+The new integration tests import and invoke the unchanged
+postBankMutationCanonical function from bank-reconciliation.ts, which is
+now a named export for testing only (no new endpoint or runtime mount).
+In isolated PostgreSQL only, the mutation starts
+approved_pending_posting, journal starts draft, and match starts candidate.
+The canonical bank helper locks records, checks the balanced Rp100000
+debit/credit and exact journal/source/match, executes updates to
+bank_mutations + accounting_entries + bank_reconciliation_matches and
+records bank_reconciliation_audit. The existing
+finalizePostedMarketplacePayment then marks the previously signed
+Marketplace Payment Request paid with accounting handoff posted.
+The subsequent repeated canonical bank post returns idempotent true
+without a new audit; Payment Request finalizer returns REPLAY.
+An intentionally unbalanced journal denies posting, and an injected
+bank audit INSERT failure rolls back bank/match/journal updates atomically.
+
+Focused isolated actual helper/SQL test suite: 18/18 PASS.
+Six-suite broader Finance/AP/bank regression: 91/91 PASS.
+API TypeScript typecheck PASS. The unrelated canonical Invoice and
+AP services are included in their own contract tests only; actual
+invoice/AP creation in a shared isolated PostgreSQL transaction and
+real statement ingestion are NOT yet demonstrated. A fixture marks the
+bank row as imported for finalizer eligibility, not an actual import.
+No real bank transfers, supplier payables, or CST/PROD journals were
+issued. Never classify this as full application/business E2E PASS.
+
+## 25 Nov 2026 — actual canonical Invoice/AP plus bank posting integration (test-only)
+User requested service execution instead of a seven-step UI simulation.
+Created a repeatable disposable PostgreSQL test using OFFLINE-generated
+Drizzle Marketplace DDL (15 canonical tables). Only foreign keys to
+unrelated ERP tables are omitted from this local test schema. Additional
+bank/reconciliation/GL test tables live in the other local-only fixture.
+
+The unified integration test executes ACTUAL existing services/SQL:
+1. createMarketplaceVendorInvoice for the approved synthetic internal
+   PO #14, GR #6, supplier 24, Frozen Tuna Saku, IDR 100000, local-only
+   placeholder attachment path; no supplier invoice or physical PDF created.
+2. submitMarketplaceVendorInvoice; 3-way-match persisted as passed,
+   Invoice status ready_for_ap; rejects changed line price before insert.
+3. createApPreparation -> reviewApPreparation -> waiting_payment,
+   createMarketplaceAccountingHandoff -> one draft Payment Request.
+4. approveMarketplacePaymentRequest for test actor signed_server_session,
+   with an atomic approval audit in local PostgreSQL.
+5. authorizeMarketplaceReadyForApBankAllocation checks the real joined
+   Invoice/AP/PaymentRequest/Handoff/BankMutation amount, actor, status,
+   fingerprint, company and immutable chain.
+6. The bank statement import and native matching writer remain outside
+   this test: a synthetic imported row, match and allocation are seeded
+   in isolated PostgreSQL. The test then invokes the REAL unmodified
+   postBankMutationCanonical function to transition draft GL + candidate
+   matching mutation to posted/reconciled and records a canonical bank audit.
+7. finalizePostedMarketplacePayment confirms paid once, then REPLAY
+   idempotently, and both debit/credit lines equal IDR 100000.
+
+The separate canonical bank helper suite proves audit-insertion failure
+rolls back mutation/match/journal and rejects unbalanced journal lines.
+No emails or vendor notifications are sent; side effects are stubbed,
+while the service database writes themselves are REAL local Postgres SQL.
+No authenticated human browser session was used in this new harness.
+
+The reproducible isolated test runner at
+scripts/qa/run-po14-isolated-marketplace-e2e.sh creates two restricted
+localhost Docker postgres:16-alpine instances on ports 55497 and 55493,
+loads the offline schema, runs the seven test suites, and destroys the
+containers on EXIT. Fresh run from EMPTY databases: 94/94 PASS
+(7 files), exit 0. API typecheck PASS.
+
+Honest release boundary: this validates the actual service code and
+local SQL across Invoice/AP/approval/bank posting/finalization, but DOES
+NOT prove true bank statement ingestion, the production bank matching
+writer's own match insertion, actual vendor invoice attachments,
+a real owner click to execute this service chain, or finance business DB
+deployment. DO NOT call full operational bank/GL E2E PASS.

@@ -4,21 +4,36 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { PgDialect } from "drizzle-orm/pg-core";
 const mock=vi.hoisted(()=>({
-  session:vi.fn(),user:vi.fn(),isDev:vi.fn(),query:vi.fn(),roleCheck:vi.fn(),finance:vi.fn(),
-  getInvoice:vi.fn(),submitInvoice:vi.fn(),createAp:vi.fn(),getAp:vi.fn(),reviewAp:vi.fn(),waitingAp:vi.fn(),handoffAp:vi.fn(),
+  session:vi.fn(),user:vi.fn(),isDev:vi.fn(),query:vi.fn(),roleCheck:vi.fn(),finance:vi.fn(),financeReadOnly:vi.fn(),
+  companyQuery:vi.fn(),globalAllowed:vi.fn(),allowedCompany:vi.fn(),globalEnabled:vi.fn(),signedScope:vi.fn(),setScopeCookie:vi.fn(),
+  getInvoice:vi.fn(),submitInvoice:vi.fn(),createAp:vi.fn(),getAp:vi.fn(),reviewAp:vi.fn(),waitingAp:vi.fn(),handoffAp:vi.fn(),approvePay:vi.fn(),
 }));
-vi.mock("./dev-auth",()=>({getProductionSession:mock.session,getProductionUser:mock.user,isDevelopmentEnvironment:mock.isDev}));
+vi.mock("./dev-auth",()=>({
+  getProductionSession: mock.session,
+  getProductionUser: mock.user,
+  isDevelopmentEnvironment: mock.isDev,
+  isFinanceGlobalScopeDevEnabled: mock.globalEnabled,
+  isApprovedFinanceGlobalSuperAdmin: mock.globalAllowed,
+  isApprovedFinanceGlobalCompany: mock.allowedCompany,
+  getFinanceCompanyScope: mock.signedScope,
+  setFinanceCompanyScopeCookie: mock.setScopeCookie,
+}));
 vi.mock("@workspace/db",()=>({
   withMarketplaceFinanceDevTransaction: mock.finance,
 }));
 vi.mock("../lib/services/mktVendorInvoiceService.js",()=>({getMarketplaceVendorInvoice:mock.getInvoice,submitMarketplaceVendorInvoice:mock.submitInvoice,safeMarketplaceVendorInvoiceView:vi.fn(()=>({id:77}))}));
 vi.mock("../lib/services/mktApPreparationService.js",()=>({createApPreparation:mock.createAp,getApPreparation:mock.getAp,reviewApPreparation:mock.reviewAp,markApPreparationWaitingPayment:mock.waitingAp,createMarketplaceAccountingHandoff:mock.handoffAp,safeApView:vi.fn(()=>({id:88}))}));
+vi.mock("../lib/finance/marketplacePaymentApproval.js",()=>({approveMarketplacePaymentRequest:mock.approvePay}));
 import route from "./dev-marketplace-finance-writer";
 let server:Server,base:string;
 beforeAll(async()=>{const app=express();app.use(express.json());app.use("/api",route);server=app.listen(0);await new Promise<void>(r=>server.once("listening",r));base="http://127.0.0.1:"+(server.address() as AddressInfo).port});
 afterAll(async()=>{await new Promise<void>((resolve,reject)=>server.close(e=>e?reject(e):resolve()))});
 beforeEach(()=>{
   for(const v of Object.values(mock))v.mockReset();
+  mock.globalEnabled.mockReturnValue(false);
+  mock.globalAllowed.mockReturnValue(false);
+  mock.allowedCompany.mockReturnValue(false);
+  mock.signedScope.mockReturnValue(null);
   mock.isDev.mockReturnValue(true);mock.session.mockReturnValue({id:"signed"});mock.user.mockResolvedValue({email:"admin@test.dev",role:"super_admin",companyId:1});mock.query.mockResolvedValue({rows:[{company_id:1}]});
   mock.roleCheck.mockResolvedValue({rows:[{db_role:"bizportal_marketplace_finance_login_dev",elevated:false,vendor_rls_active:true,ap_rls_active:true,payment_rls_active:true}]});
   mock.finance.mockImplementation(async (companyId:number, fn:(db:unknown)=>Promise<unknown>) => {
@@ -41,6 +56,8 @@ beforeEach(()=>{
   delete process.env.NODE_ENV;
   process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV="true";
   delete process.env.BIZPORTAL_MARKETPLACE_ACCOUNTING_HANDOFF_ENABLED_DEV;
+  delete process.env.BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV;
+  delete process.env.BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV;
 });
 const get=(path:string)=>fetch(base+path);
 const post=(path:string,body:any={})=>fetch(base+path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
@@ -225,4 +242,135 @@ describe("DEV-only restored canonical vendor invoice/AP runtime gates",()=>{
    expect((await post("/api/mkt/admin/ap-preparations/88/finance-review")).status).toBe(404);
    expect(mock.reviewAp).not.toHaveBeenCalled();
  });
+});
+
+describe("DEV Marketplace real Payment Request approval protected HTTP boundary",()=>{
+  it("is invisible while the real payment-approval flag is OFF",async()=>{
+    expect((await post("/api/mkt/admin/payment-requests/41/approve")).status).toBe(404);
+    expect(mock.approvePay).not.toHaveBeenCalled();
+  });
+  it("rejects anonymous, mismatched company and non-superadmin",async()=>{
+    process.env.BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV="true";
+    process.env.BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV="true";
+    mock.session.mockReturnValue(null);
+    expect((await post("/api/mkt/admin/payment-requests/41/approve")).status).toBe(401);
+    mock.session.mockReturnValue({id:"signed",email:"admin@test.dev",issuedAt:100,expiresAt:Date.now()+600000});
+    mock.user.mockResolvedValue({email:"other@test.dev",role:"admin",companyId:1});
+    expect((await post("/api/mkt/admin/payment-requests/41/approve")).status).toBe(403);
+    expect(mock.approvePay).not.toHaveBeenCalled();
+  });
+  it("rejects invalid body and cross-site origin before any financial operation",async()=>{
+    process.env.BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV="true";
+    process.env.BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV="true";
+    const origin="https://"+new URL(base).host;
+    const path="/api/mkt/admin/payment-requests/41/approve";
+    expect((await post(path,{approve:true})).status).toBe(422);
+    const bad=await fetch(base+path,{method:"POST",
+      headers:{"Content-Type":"application/json","Origin":"https://evil.invalid"},
+      body:"{}"});
+    expect(bad.status).toBe(403);
+    expect(mock.approvePay).not.toHaveBeenCalled();
+  });
+  it("keeps all other Finance writers OFF when approval-only is enabled",async()=>{
+    delete process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV;
+    process.env.BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV="true";
+    process.env.BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV="true";
+    mock.approvePay.mockResolvedValue({requestId:41,companyId:1,status:"approved",
+      replay:false,bankTransfer:false,glPosted:false});
+    const path="/api/mkt/admin/payment-requests/41/approve";
+    const response=await fetch(base+path,{method:"POST",
+      headers:{"Content-Type":"application/json","Origin":"https://"+new URL(base).host},body:"{}"});
+    expect(response.status).toBe(200);
+    expect(mock.finance).toHaveBeenCalledWith(1,expect.any(Function),
+      {paymentApprovalOnly:true});
+    expect((await post("/api/mkt/admin/ap-preparations/88/accounting-handoff")).status).toBe(404);
+    expect((await post("/api/mkt/admin/vendor-invoices/77/match")).status).toBe(404);
+    expect(mock.handoffAp).not.toHaveBeenCalled();
+    expect(mock.submitInvoice).not.toHaveBeenCalled();
+  });
+  it("does not expose approval without company-scoped credential mode",async()=>{
+    process.env.BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV="true";
+    delete process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV;
+    expect((await post("/api/mkt/admin/payment-requests/41/approve")).status).toBe(404);
+    expect(mock.approvePay).not.toHaveBeenCalled();
+  });
+  it("uses existing signed Super Admin, company role and approval-only transaction",async()=>{
+    process.env.BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV="true";
+    process.env.BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV="true";
+    mock.approvePay.mockResolvedValue({requestId:41,companyId:1,status:"approved",
+      replay:false,bankTransfer:false,glPosted:false});
+    const path="/api/mkt/admin/payment-requests/41/approve";
+    const response=await fetch(base+path,{method:"POST",
+      headers:{"Content-Type":"application/json","Origin":"https://"+new URL(base).host,
+        "Sec-Fetch-Site":"same-origin"},body:"{}"});
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ok:true,requestId:41,status:"approved",
+      bankTransfer:false,glPosted:false});
+    expect(mock.approvePay).toHaveBeenCalledOnce();
+    expect(mock.finance).toHaveBeenCalledOnce();
+  });
+});
+
+
+describe("Finance company selection — signed Super Admin and tenant isolation", () => {
+  const endpoint = "/api/mkt/admin/finance-company-selection";
+  const scopedPost = (body: unknown, origin = "https://" + new URL(base).host) =>
+    fetch(base + endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Origin": origin,
+        "Sec-Fetch-Site": "same-origin" },
+      body: JSON.stringify(body),
+    });
+
+  it("is invisible without the dedicated global Finance gate and in PROD", async () => {
+    expect((await scopedPost({ companyId: 1 })).status).toBe(404);
+    mock.globalEnabled.mockReturnValue(true);
+    mock.isDev.mockReturnValue(false);
+    expect((await scopedPost({ companyId: 1 })).status).toBe(404);
+    expect(mock.setScopeCookie).not.toHaveBeenCalled();
+  });
+
+  it("rejects missing signed session, wrong role, cross-tenant company and cross-site Origin", async () => {
+    mock.globalEnabled.mockReturnValue(true);
+    mock.allowedCompany.mockReturnValue(true);
+    mock.session.mockReturnValue(null);
+    expect((await scopedPost({ companyId: 1 })).status).toBe(401);
+    mock.session.mockReturnValue({ id: "signed" });
+    mock.user.mockResolvedValue({ email: "admin@test.dev", role: "admin", companyId: null });
+    expect((await scopedPost({ companyId: 1 })).status).toBe(403);
+    mock.user.mockResolvedValue({ email: "admin@test.dev", role: "super_admin", companyId: null });
+    mock.globalAllowed.mockReturnValue(true);
+    expect((await scopedPost({ companyId: 1 }, "https://evil.invalid")).status).toBe(403);
+    expect((await scopedPost({ companyId: 0 })).status).toBe(422);
+    expect((await scopedPost({ companyId: -1 })).status).toBe(422);
+    expect((await scopedPost({ companyId: 1, companyId2: 3 })).status).toBe(422);
+    mock.allowedCompany.mockReturnValue(false);
+    expect((await scopedPost({ companyId: 1 })).status).toBe(403);
+    expect(mock.setScopeCookie).not.toHaveBeenCalled();
+  });
+
+  it("issues exactly one verified scope to an allowlisted global Super Admin", async () => {
+    mock.globalEnabled.mockReturnValue(true);
+    mock.globalAllowed.mockReturnValue(true);
+    mock.allowedCompany.mockImplementation((companyId: number) => companyId === 3);
+    mock.user.mockResolvedValue({ email: "owner@test.dev", role: "super_admin", companyId: null });
+    const response = await scopedPost({ companyId: 3 });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, companyId: 3 });
+    expect(mock.setScopeCookie).toHaveBeenCalledWith(expect.anything(), expect.anything(), 3);
+    expect(mock.finance).not.toHaveBeenCalled();
+    expect(mock.approvePay).not.toHaveBeenCalled();
+  });
+
+  it("global Super Admin cannot read Finance without signed scope; with it tenant is pinned", async () => {
+    mock.globalEnabled.mockReturnValue(true);
+    mock.globalAllowed.mockReturnValue(true);
+    mock.allowedCompany.mockImplementation((companyId: number) => companyId === 1);
+    mock.user.mockResolvedValue({ email: "owner@test.dev", role: "super_admin", companyId: null });
+    expect((await get("/api/mkt/admin/vendor-invoices/77")).status).toBe(403);
+    expect(mock.getInvoice).not.toHaveBeenCalled();
+    mock.signedScope.mockReturnValue(1);
+    expect((await get("/api/mkt/admin/vendor-invoices/77")).status).toBe(200);
+    expect(mock.finance.mock.calls[0][0]).toBe(1);
+  });
 });
