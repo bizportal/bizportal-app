@@ -8354,6 +8354,8 @@ export default function BankReconciliationPage() {
     companies,
     isConsolidated,
     isLoading: companiesLoading,
+    loadError: companyLoadError,
+    refetch: refetchCompanies,
     setActiveCompany,
     setConsolidatedMode,
   } = useCompany();
@@ -10341,6 +10343,21 @@ export default function BankReconciliationPage() {
                        {company.companyCode ? `${company.companyCode} — ` : ""}{company.companyName}
                      </SelectItem>
                    ))}
+                   {companies.filter((company) => !company.isHolding).length === 0 && (
+                     <div className="px-2 py-2 text-xs text-amber-700 dark:text-amber-300" role="status">
+                       <p>{companiesLoading ? "Memuat daftar perusahaan..." : companyLoadError ?? "Belum ada perusahaan tersedia untuk sesi ini."}</p>
+                       {!companiesLoading && (
+                         <button
+                           type="button"
+                           className="mt-2 text-indigo-700 underline dark:text-indigo-300"
+                           onPointerDown={(event) => event.stopPropagation()}
+                           onClick={(event) => { event.preventDefault(); event.stopPropagation(); refetchCompanies(); }}
+                         >
+                           Coba lagi
+                         </button>
+                       )}
+                     </div>
+                   )}
                  </SelectContent>
                </Select>
              </div>
