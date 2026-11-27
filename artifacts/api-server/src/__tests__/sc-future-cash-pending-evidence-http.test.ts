@@ -50,6 +50,22 @@ vi.mock("@workspace/db", () => {
       mock.pendingDoc = { transaction_id: args[0], object_bucket: "private-uploads", object_path: args[1], document_sha256: args[2], source_fingerprint: args[3], direction: args[4], transaction_date: args[5], amount_cents: args[6], byte_length: args[7], event_type: null };
       return { rowCount: 1, rows: [] };
     }
+    if (sql.includes("ev.event_type='VERIFIED'") && sql.includes("and exists (select 1 from public.approval_requests")) {
+      return {rows:mock.pendingDoc?.event_type==="VERIFIED" && mock.approved ? [mock.pendingDoc] : []};
+    }
+    if (sql.includes("from public.approval_requests a") && sql.includes("otpEvidenceId")) {
+      const a=mock.approvalRows[0];
+      if(!a || !mock.otpConsumed || mock.otpDisabled)return {rows:[]};
+      const meta=JSON.parse(String(a[4]));
+      if(meta.transactionId!==args[1] || meta.sourceFingerprint!==args[2] ||
+        mock.otpRows.at(-1)?.[2]!==String(args[3])+meta.counterCoaId)return {rows:[]};
+      return {rows:[{company_id:1,account_id:18,transaction_id:meta.transactionId,
+        source_fingerprint:meta.sourceFingerprint,counter_coa_id:meta.counterCoaId,
+        status:"approved",approval_type:"signed_email_otp",approver_role:a[3],approved_by:a[2],
+        approved_at:"2026-11-27T00:02:00.000Z",otp_email:a[2],
+        otp_verified_at:"2026-11-27T00:01:00.000Z",otp_created_at:"2026-11-27T00:00:30.000Z",
+        otp_expires_at:"2026-11-27T00:05:30.000Z"}]};
+    }
     if (sql.includes("ev.event_type='VERIFIED'") &&
         sql.includes("order by d.uploaded_at")) {
       const doc=mock.pendingDoc;
@@ -501,6 +517,40 @@ describe("Account18 pending receipt intake HTTP — no journal or approval", () 
     mock.approvalFail=false;
     expect((await confirmOtp(id,code)).status).toBe(201);
     expect(mock.approvalRows).toHaveLength(1);
+  });
+
+  it("recovers approved voucher from exact server evidence, with no new writes or OTP",async()=>{
+    const {id,code}=await issuedVoucher();
+    const url=base+"/api/cash-bank/sc-new/documents/approved";
+    const expectEmptyApprovedList=async()=>{
+      const response=await fetch(url);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({mode:"ACCOUNT18_APPROVED_SERVER_RECORDS",companyId:1,accountId:18,postingAllowed:false,documents:[]});
+    };
+    await expectEmptyApprovedList();
+    expect((await confirmOtp(id,code)).status).toBe(201);
+    mock.queries.length=0;
+    const response=await fetch(url);
+    expect(response.status).toBe(200);
+    const payload=await response.json();
+    expect(payload).toMatchObject({mode:"ACCOUNT18_APPROVED_SERVER_RECORDS",companyId:1,accountId:18,postingAllowed:false,
+      documents:[{transactionId:id,status:"APPROVED",counterCoaId:902,amount:"50000.00",date:"2026-11-27",direction:"OUT"}]});
+    expect(JSON.stringify(payload)).not.toMatch(/otpEvidenceId|document_sha256|source_fingerprint|owner@example/);
+    expect(mock.queries.every(q=>/^\s*select/i.test(q))).toBe(true);
+    expect(mock.smtpCalls).toHaveLength(1);
+    mock.otpConsumed=false;
+    await expectEmptyApprovedList();
+    mock.otpConsumed=true;
+    if(!mock.pendingDoc)throw Error("missing fixture");
+    mock.pendingDoc.event_type="REVOKED";
+    await expectEmptyApprovedList();
+  });
+  it("protects approved recovery from unsigned and foreign-company callers",async()=>{
+    const url=base+"/api/cash-bank/sc-new/documents/approved";
+    mock.signed=false;expect((await fetch(url)).status).toBe(401);
+    mock.signed=true;mock.actorRole="finance";expect((await fetch(url)).status).toBe(403);
+    mock.actorRole="owner";mock.actorCompany=2;expect((await fetch(url)).status).toBe(403);
+    expect(mock.queries).toHaveLength(0);
   });
 
 });
