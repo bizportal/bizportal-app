@@ -55,7 +55,7 @@ vi.mock("@workspace/db", () => {
         transaction_date: doc.transaction_date, amount_cents: doc.amount_cents,
       }] : []};
     }
-    if (sql.includes("from public.sc_future_cash_documents d") && sql.trimStart().toLowerCase().startsWith("select")) return { rows: mock.pendingDoc && mock.pendingDoc.transaction_id === args[0] ? [mock.pendingDoc] : [] };
+    if (sql.toLowerCase().includes("from public.sc_future_cash_documents d") && sql.trimStart().toLowerCase().startsWith("select")) return { rows: mock.pendingDoc && mock.pendingDoc.transaction_id === args[0] ? [mock.pendingDoc] : [] };
     if (sql.includes("from public.sc_future_cash_documents where")) {
       const match = mock.pendingDoc && mock.pendingDoc.transaction_id === args[0];
       return { rowCount: match ? 1 : 0, rows: match ? [mock.pendingDoc] : [] };
@@ -83,7 +83,15 @@ vi.mock("@workspace/db", () => {
     }
     throw Error("UNEXPECTED_SQL");
   };
-  return { pool: { query, connect: async () => ({ query, release: () => undefined }) } };
+  let checkedOut = false;
+  return { pool: { query: async (sql: string, args: unknown[] = []) => {
+    if (checkedOut) throw Error("SINGLE_CONNECTION_POOL_EXHAUSTED");
+    return query(sql, args);
+  }, connect: async () => {
+    if (checkedOut) throw Error("SINGLE_CONNECTION_POOL_EXHAUSTED");
+    checkedOut = true;
+    return { query, release: () => { checkedOut = false; } };
+  } } };
 });
 vi.mock("../lib/objectStorage", () => ({
   ObjectStorageService: class {
