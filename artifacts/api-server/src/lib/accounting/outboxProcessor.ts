@@ -15,7 +15,8 @@
  * Worker berjalan setiap 10 detik, memproses batch 50 event.
  */
 
-import { db } from "@workspace/db";
+import { db, pool } from "@workspace/db";
+import { drizzle } from "drizzle-orm/node-postgres";
 import { sql } from "drizzle-orm";
 import { logger } from "../logger.js";
 import { registerHeartbeat, beat } from "../workerHeartbeat.js";
@@ -105,7 +106,10 @@ const BATCH_SIZE   = 50;
 export async function processOutboxBatch(): Promise<number> {
   let processed=0;
   for(let n=0;n<BATCH_SIZE;n++){
-    const result=await db.transaction(async tx=>{
+    const connection=await pool.connect();
+    const result=await (async()=>{
+      try {
+        return await drizzle(connection).transaction(async tx=>{
       const {rows}=await tx.execute(sql`
         SELECT id::text AS id,event_type,payload,entry_id,company_id,attempt
         FROM financial_outbox_events
@@ -147,7 +151,11 @@ export async function processOutboxBatch(): Promise<number> {
         if(retry.rows.length!==1)throw Error("OUTBOX_RETRY_FAILED");
         return "retry" as const;
       }
-    });
+        });
+      } finally {
+        connection.release();
+      }
+    })();
     if(result==="empty")break;
     if(result==="retry")break; // avoid exhausting retries in one poll
     processed++;
