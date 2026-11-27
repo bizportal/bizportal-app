@@ -522,7 +522,12 @@ describe("Account18 pending receipt intake HTTP — no journal or approval", () 
   it("recovers approved voucher from exact server evidence, with no new writes or OTP",async()=>{
     const {id,code}=await issuedVoucher();
     const url=base+"/api/cash-bank/sc-new/documents/approved";
-    expect((await (await fetch(url)).json()).documents).toEqual([]);
+    const expectEmptyApprovedList=async()=>{
+      const response=await fetch(url);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({mode:"ACCOUNT18_APPROVED_SERVER_RECORDS",companyId:1,accountId:18,postingAllowed:false,documents:[]});
+    };
+    await expectEmptyApprovedList();
     expect((await confirmOtp(id,code)).status).toBe(201);
     mock.queries.length=0;
     const response=await fetch(url);
@@ -534,11 +539,11 @@ describe("Account18 pending receipt intake HTTP — no journal or approval", () 
     expect(mock.queries.every(q=>/^\s*select/i.test(q))).toBe(true);
     expect(mock.smtpCalls).toHaveLength(1);
     mock.otpConsumed=false;
-    expect((await (await fetch(url)).json()).documents).toEqual([]);
+    await expectEmptyApprovedList();
     mock.otpConsumed=true;
     if(!mock.pendingDoc)throw Error("missing fixture");
     mock.pendingDoc.event_type="REVOKED";
-    expect((await (await fetch(url)).json()).documents).toEqual([]);
+    await expectEmptyApprovedList();
   });
   it("protects approved recovery from unsigned and foreign-company callers",async()=>{
     const url=base+"/api/cash-bank/sc-new/documents/approved";
