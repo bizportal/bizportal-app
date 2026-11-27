@@ -337,8 +337,10 @@ async function _nextEntryNumber(
   companyId?: number | null,
 ): Promise<string> {
   const year = new Date().getFullYear();
-  const prefix = (source === "manual" || !source) ? "JE" : journalCode;
   const cid = companyId ?? 0;
+  const basePrefix = (source === "manual" || !source) ? "JE" : journalCode;
+  // Company-local counters must not collide under global entry_number uniqueness.
+  const prefix = `${basePrefix}-C${cid}`;
 
   try {
     const result = await client.execute(sql`
@@ -1258,24 +1260,29 @@ export async function createLedgerSnapshot(opts: {
   const activities: ActivityRow[] = (activityRows as unknown as { rows: ActivityRow[] }).rows
     ?? (activityRows as unknown as ActivityRow[]);
 
-  if (activities.length === 0) return [];
 
   // ── 2. Opening balance dari snapshot periode sebelumnya ────────────────────
   const prevSnapRows = await client.execute(sql`
-    SELECT account_id, closing_balance
+    SELECT account_id, account_code, account_name, account_type, closing_balance
     FROM ledger_snapshots
     WHERE company_id = ${cid} AND period = ${prevPeriod}
   `);
-  type PrevSnap = { account_id: string | number; closing_balance: string | number };
+  type PrevSnap = { account_id: string | number; account_code: string; account_name: string; account_type: string | null; closing_balance: string | number };
   const prevSnaps: PrevSnap[] = (prevSnapRows as unknown as { rows: PrevSnap[] }).rows
     ?? (prevSnapRows as unknown as PrevSnap[]);
   const prevMap = new Map<number, number>(
     prevSnaps.map((r) => [Number(r.account_id), Number(r.closing_balance)]),
   );
 
+  // Include inactive accounts and entirely idle months to preserve opening balances.
+  const activeIds = new Set(activities.map(row => Number(row.account_id)));
+  const allActivities = [...activities, ...prevSnaps.filter(row => !activeIds.has(Number(row.account_id))).map(row => ({
+    account_id: row.account_id, account_code: row.account_code, account_name: row.account_name,
+    account_type: row.account_type, period_debit: 0, period_credit: 0, entry_count: 0,
+  }))];
   // ── 3. Hitung closing balance dan upsert snapshot ──────────────────────────
   const rows: LedgerSnapshotRow[] = [];
-  for (const row of activities) {
+  for (const row of allActivities) {
     const accountId      = Number(row.account_id);
     const openingBalance = prevMap.get(accountId) ?? 0;
     const periodDebit    = Number(row.period_debit);

@@ -73,7 +73,9 @@ export class CanonicalPostingEngine {
     try {
       // The caller owns the transaction boundary. postEntryWithClient inserts
       // the entry as draft, inserts lines, then promotes it to posted.
-      const entry: JournalEntryRow = await postEntryWithClient(client, input, request.journalCode, request.initialStatus ?? "posted");
+      const entry: JournalEntryRow = client === db
+        ? await db.transaction(tx => postEntryWithClient(tx as unknown as DbClient, input, request.journalCode, request.initialStatus ?? "posted"))
+        : await postEntryWithClient(client, input, request.journalCode, request.initialStatus ?? "posted");
 
       // These hooks are only safe for the root-client path. A transaction
       // caller may still roll back after post() returns, so it must publish
