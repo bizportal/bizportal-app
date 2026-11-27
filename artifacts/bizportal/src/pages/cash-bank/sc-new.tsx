@@ -59,6 +59,8 @@ export default function ScNewCashPreview() {
   const [receiptFile,setReceiptFile]=useState<File|null>(null);
   const [evidenceBusy,setEvidenceBusy]=useState(false);
   const [pendingEvidence,setPendingEvidence]=useState<PendingCashAcknowledgement|null>(loadCompany1PendingAcknowledgement);
+  const [integrityBusy,setIntegrityBusy]=useState(false);
+  const [integrityResult,setIntegrityResult]=useState<"MATCH"|"UNAVAILABLE"|null>(null);
   const companyRequestVersion=useRef(0);
   const draftRequestVersion=useRef(0);
   const invalidateDraft=()=>{
@@ -74,6 +76,7 @@ export default function ScNewCashPreview() {
     draftRequestVersion.current++;
     setPreview(null);setReadiness(null);setError(null);setBusy(false);
     setReceiptFile(null); // Preserve Company #1 acknowledgement across company changes.
+    setIntegrityResult(null);
     if(activeCompanyId!==1){
       setError("Khusus PT Cahaya Sejati Teknologi (Company #1), Account #18.");
       return ()=>controller.abort();
@@ -173,11 +176,43 @@ export default function ScNewCashPreview() {
       try{window.sessionStorage.setItem(COMPANY1_PENDING_ACK_KEY,JSON.stringify(ack));}
       catch{/* Keep the successful receipt visible in component state. */}
       setPendingEvidence(ack);
+      setIntegrityResult(null);
       if(version===companyRequestVersion.current)setReceiptFile(null);
     }catch(err){
       if(version===companyRequestVersion.current && draftVersion===draftRequestVersion.current)
         setError(err instanceof Error?err.message:"Penyimpanan bukti belum tersedia.");
     }finally{setEvidenceBusy(false);}
+  };
+
+  const checkPendingIntegrity=async()=>{
+    if(activeCompanyId!==1 || !readiness || !pendingEvidence || integrityBusy || evidenceBusy)return;
+    const id=pendingEvidence.transactionId;
+    const version=companyRequestVersion.current;
+    setIntegrityBusy(true);
+    setIntegrityResult(null);
+    try{
+      const response=await fetch(ENDPOINT+"/documents/"+encodeURIComponent(id)+"/integrity",{
+        method:"GET",credentials:"include",cache:"no-store",
+      });
+      const payload=await response.json().catch(()=>null) as ({
+        transactionId?:string;status?:string;storageIntegrity?:string;
+        documentApproval?:string;postingAllowed?:boolean;
+        historicalSheetConfig5?:string;
+      })|null;
+      if(version!==companyRequestVersion.current)return;
+      if(response.ok && payload?.transactionId===id &&
+          payload.status==="PENDING_VERIFICATION" &&
+          payload.storageIntegrity==="MATCH" &&
+          payload.documentApproval==="NOT_VERIFIED" &&
+          payload.postingAllowed===false &&
+          payload.historicalSheetConfig5==="NOT_USED_NONMIGRATION"){
+        setIntegrityResult("MATCH");
+      }else{
+        setIntegrityResult("UNAVAILABLE");
+      }
+    }catch{
+      if(version===companyRequestVersion.current)setIntegrityResult("UNAVAILABLE");
+    }finally{setIntegrityBusy(false);}
   };
 
   return (
@@ -264,10 +299,24 @@ export default function ScNewCashPreview() {
               ID transaksi: <code className="break-all">{pendingEvidence.transactionId}</code>.
               Tidak ada jurnal keuangan yang diposting.
             </p>
-            <Button type="button" variant="outline" disabled={evidenceBusy} onClick={()=>{
+            <Button type="button" variant="outline"
+              disabled={integrityBusy||evidenceBusy}
+              onClick={()=>void checkPendingIntegrity()}>
+              {integrityBusy?"Memeriksa byte dokumen...":"Periksa integritas PDF (baca-saja)"}
+            </Button>
+            {integrityResult==="MATCH" && <p role="status" className="text-sm text-sky-200">
+              Integritas file privat PASS: byte, ukuran, dan SHA-256 cocok. Dokumen tetap
+              PENDING_VERIFICATION; persetujuan dan posting belum diaktifkan.
+            </p>}
+            {integrityResult==="UNAVAILABLE" && <p role="alert" className="text-sm text-amber-200">
+              Integritas belum dapat dikonfirmasi. Periksa sesi Owner, file privat,
+              dan catatan server. Tidak ada perubahan pada status dokumen atau jurnal.
+            </p>}
+            <Button type="button" variant="outline" disabled={evidenceBusy||integrityBusy} onClick={()=>{
               try{window.sessionStorage.removeItem(COMPANY1_PENDING_ACK_KEY);}
               catch{/* Storage may be disabled. */}
               setPendingEvidence(null);
+              setIntegrityResult(null);
               draftRequestVersion.current++;
               setPreview(null);setReceiptFile(null);
               setAmount("");setCounterCoaId("");

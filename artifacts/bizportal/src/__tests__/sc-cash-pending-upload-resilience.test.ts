@@ -20,7 +20,7 @@ describe("Kas Besar SC pending evidence upload resilience", () => {
   });
   it("preserves server receipt across CompanySwitcher changes and disabled sessionStorage", () => {
     const uploadFn=page.slice(page.indexOf("const uploadPendingEvidence=async()=>"),
-      page.indexOf("  return (\n    <div className=\"space-y-5\">"));
+      page.indexOf("  const checkPendingIntegrity=async()=>"));
     expect(uploadFn).not.toContain("if(version!==companyRequestVersion.current)return;");
     expect(uploadFn).toContain("sessionStorage.setItem(COMPANY1_PENDING_ACK_KEY");
     expect(uploadFn).toContain("setPendingEvidence(ack)");
