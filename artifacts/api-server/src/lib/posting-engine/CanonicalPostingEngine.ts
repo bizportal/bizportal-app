@@ -74,26 +74,20 @@ export class CanonicalPostingEngine {
       // The caller owns the transaction boundary. postEntryWithClient inserts
       // the entry as draft, inserts lines, then promotes it to posted.
       const entry: JournalEntryRow = client === db
-        ? await db.transaction(tx => postEntryWithClient(tx as unknown as DbClient, input, request.journalCode, request.initialStatus ?? "posted"))
+        ? await db.transaction(tx => postEntryWithClient(tx as unknown as DbClient, input, request.journalCode, request.initialStatus ?? "posted", true))
         : await postEntryWithClient(client, input, request.journalCode, request.initialStatus ?? "posted");
 
       // These hooks are only safe for the root-client path. A transaction
       // caller may still roll back after post() returns, so it must publish
       // its own post-commit effects after the transaction commits.
-      if (client === db) {
+      if (client === db && entry.status === "posted") {
+        // The durable outbox was committed with the journal. Do not emit a
+        // second JOURNAL_CREATED event directly from this path.
         import("../ledgerImmutability.js").then(({ lockAccountingEntry }) => {
           lockAccountingEntry(entry.id, request.createdById ?? "SYSTEM").catch(() => {});
         }).catch(() => {});
-        import("../events/financialEventBus.js").then(({ emitJournalCreated }) => {
-          emitJournalCreated({
-            entryId: entry.id,
-            sourceType: request.source,
-            sourceId: request.sourceId,
-            amount: request.lines.reduce((s, l) => s + (l.debit ?? 0), 0),
-            actor: request.createdById ?? "SYSTEM",
-            ref: request.ref ?? null,
-            companyId: request.companyId,
-          });
+        import("../jobs/ledgerConsistencyCheck.js").then(({ scheduleSpotCheck }) => {
+          scheduleSpotCheck(entry.id);
         }).catch(() => {});
       }
 
