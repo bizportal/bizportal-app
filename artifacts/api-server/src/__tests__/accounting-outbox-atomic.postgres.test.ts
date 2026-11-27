@@ -1,8 +1,13 @@
 import { describe,it,expect,beforeAll,afterAll,vi } from "vitest";
 import { createRequire } from "node:module";
-import { drizzle } from "drizzle-orm/node-postgres";
-const state=vi.hoisted(()=>({db:null as any}));
-vi.mock("@workspace/db",()=>({db:{transaction:(...args:any[])=>state.db.transaction(...args)}}));
+const state=vi.hoisted(()=>({pool:null as any,checkedOut:0,released:0}));
+vi.mock("@workspace/db",()=>({db:{},pool:{connect:async()=>{
+  const client=await state.pool.connect();
+  state.checkedOut++;
+  const release=client.release.bind(client);
+  client.release=()=>{state.released++;release();};
+  return client;
+}}}));
 vi.mock("../lib/logger.js",()=>({logger:{warn:vi.fn(),info:vi.fn()}}));
 import { processOutboxBatch } from "../lib/accounting/outboxProcessor";
 const url=process.env.CASH_QA_PG_URL;
@@ -29,7 +34,7 @@ suite("atomic outbox delivery on disposable PostgreSQL",()=>{
       end$$;
       create trigger reject_ack before update on financial_outbox_events for each row execute function reject_ack();
     `);
-    state.db=drizzle(pool);
+    state.pool=pool;
   });
   afterAll(async()=>{if(pool){await pool.query("drop schema if exists outbox_qa cascade");await pool.end();}});
   async function add(entryId:number,companyId=1,payloadCompany=companyId){
@@ -44,6 +49,8 @@ suite("atomic outbox delivery on disposable PostgreSQL",()=>{
     expect(counts.reduce((a,b)=>a+b,0)).toBe(1);
     expect(await status(1)).toMatchObject({status:"done",attempt:1,delivered:1});
     expect(await processOutboxBatch()).toBe(0);
+    expect(state.checkedOut).toBeGreaterThan(0);
+    expect(state.released).toBe(state.checkedOut);
   });
   it("failed financial insert remains pending with recorded retry",async()=>{
     await add(997);expect(await processOutboxBatch()).toBe(0);
