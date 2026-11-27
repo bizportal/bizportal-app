@@ -503,7 +503,7 @@ describe("Account18 pending receipt intake HTTP — no journal or approval", () 
   });
   it("rejects wrong COA, forged fields, foreign origin and unauthorized caller",async()=>{
     const {id,code}=await issuedVoucher();
-    expect((await confirmOtp(id,code,{counterCoaId:903})).status).toBe(400);
+    expect((await confirmOtp(id,code,{counterCoaId:903})).status).toBe(409); // Content review is bound to COA 902.
     expect((await confirmOtp(id,code,{approvedBy:"forged"})).status).toBe(400);
     expect((await confirmOtp(id,code,{},"https://malicious.invalid")).status).toBe(403);
     mock.signed=false;expect((await confirmOtp(id,code)).status).toBe(401);
