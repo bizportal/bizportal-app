@@ -26,8 +26,8 @@ describe("Account18 voucher COA selection with long lists",()=>{
     expect(page).toContain('const coa=readiness.contraCandidates.find(');
   });
   it("keeps COA choice locked after OTP challenge or during in-flight request",()=>{
-    expect(page).toContain('disabled={voucherBusy||!!voucherChallenge}');
-    expect(page).toContain('if(voucherLock.current||voucherChallenge)return;');
+    expect(page).toContain('disabled={voucherBusy||!!voucherChallenge||evidenceReviewed}');
+    expect(page).toContain('if(voucherLock.current||voucherChallenge||evidenceReviewed)return;');
     expect(page).toContain('String(voucherChallenge.counterCoaId)!==voucherCoa');
     expect(page).toContain('postingAllowed!==false');
   });

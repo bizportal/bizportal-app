@@ -30,6 +30,8 @@ type ServerVerifiedDocument = {
   transactionId:string;status:"VERIFIED";date:string;direction:"IN"|"OUT";amount:string;
 };
 type ServerApprovedDocument = Omit<ServerVerifiedDocument,"status"> & {status:"APPROVED";counterCoaId:number;approvedAt:string};
+type ServerRevokedDocument = Omit<ServerVerifiedDocument,"status"> & {status:"REVOKED"};
+
 const COMPANY1_PENDING_ACK_KEY="cst.account18.pending.evidence.ack.v1";
 function loadCompany1PendingAcknowledgement():PendingCashAcknowledgement|null{
   if(typeof window==="undefined")return null;
@@ -72,6 +74,8 @@ export default function ScNewCashPreview() {
   const [serverVerifiedDocuments,setServerVerifiedDocuments]=useState<ServerVerifiedDocument[]>([]);
   const [verifiedListError,setVerifiedListError]=useState(false);
   const [serverApprovedDocuments,setServerApprovedDocuments]=useState<ServerApprovedDocument[]>([]);
+  const [serverRevokedDocuments,setServerRevokedDocuments]=useState<ServerRevokedDocument[]>([]);
+
   const [approvedListError,setApprovedListError]=useState(false);
   const [integrityBusy,setIntegrityBusy]=useState(false);
   const [integrityResult,setIntegrityResult]=useState<"MATCH"|"UNAVAILABLE"|null>(null);
@@ -80,6 +84,17 @@ export default function ScNewCashPreview() {
   const [ownerReviewConfirmed,setOwnerReviewConfirmed]=useState(false);
   const [voucherCoa,setVoucherCoa]=useState("");
   const [voucherCoaSearch,setVoucherCoaSearch]=useState("");
+  const [evidenceKind,setEvidenceKind]=useState("");
+  const [evidenceDate,setEvidenceDate]=useState("");
+  const [evidenceAmount,setEvidenceAmount]=useState("");
+  const [evidenceReference,setEvidenceReference]=useState("");
+  const [evidenceAttested,setEvidenceAttested]=useState(false);
+  const [evidenceReviewed,setEvidenceReviewed]=useState(false);
+  const [reviewBusy,setReviewBusy]=useState(false);
+  const [revokeReasonCode,setRevokeReasonCode]=useState("WRONG_DOCUMENT_TYPE");
+  const [revokeReason,setRevokeReason]=useState("");
+  const [revokeBusy,setRevokeBusy]=useState(false);
+  const [revokedId,setRevokedId]=useState<string|null>(null);
   const [voucherCode,setVoucherCode]=useState("");
   const [voucherBusy,setVoucherBusy]=useState(false);
   const voucherLock=useRef(false);
@@ -94,6 +109,11 @@ export default function ScNewCashPreview() {
     setReceiptFile(null);
     setBusy(false);
   };
+  const resetEvidenceReview=()=>{
+    setEvidenceReviewed(false);setRevokedId(null);setEvidenceKind("");setEvidenceDate("");
+    setEvidenceAmount("");setEvidenceReference("");setEvidenceAttested(false);
+    setRevokeReasonCode("WRONG_DOCUMENT_TYPE");setRevokeReason("");
+  };
 
   useEffect(()=>{
     const controller=new AbortController();
@@ -105,7 +125,10 @@ export default function ScNewCashPreview() {
     setPendingListError(false);
     setServerVerifiedDocuments([]);
     setVerifiedListError(false);
-    setServerApprovedDocuments([]);setApprovedListError(false);
+    setServerApprovedDocuments([]);setServerRevokedDocuments([]);setApprovedListError(false);
+    setEvidenceReviewed(false);setRevokedId(null);setEvidenceKind("");setEvidenceDate("");
+    setEvidenceAmount("");setEvidenceReference("");setEvidenceAttested(false);setRevokeReason("");
+
     setIntegrityResult(null);
     setOwnerReviewConfirmed(false);
     setVoucherCode("");setVoucherError(null);
@@ -185,6 +208,7 @@ export default function ScNewCashPreview() {
             setVerifiedListError(true);
         }
         // Server approval evidence is read-only and never restored from browser storage.
+
         try{
           const approvedResponse=await fetch(ENDPOINT+"/documents/approved",{
             credentials:"include",cache:"no-store",signal:controller.signal,
@@ -201,6 +225,21 @@ export default function ScNewCashPreview() {
         }catch{
           if(!controller.signal.aborted && version===companyRequestVersion.current)setApprovedListError(true);
         }
+        try{
+          const revokedResponse=await fetch(ENDPOINT+"/documents/revoked",{
+            credentials:"include",cache:"no-store",signal:controller.signal,
+          });
+          const list=await revokedResponse.json().catch(()=>null) as ({
+            mode?:string;companyId?:number;accountId?:number;postingAllowed?:boolean;
+            documents?:ServerRevokedDocument[];
+          })|null;
+          if(revokedResponse.ok && list?.mode==="ACCOUNT18_REVOKED_EVIDENCE_AUDIT" &&
+             list.companyId===1 && list.accountId===18 && list.postingAllowed===false &&
+             Array.isArray(list.documents) && !controller.signal.aborted &&
+             version===companyRequestVersion.current)
+            setServerRevokedDocuments(list.documents.filter(d=>d.status==="REVOKED").slice(0,20));
+        }catch{/* Owner may still revoke via the approved list if the read fails. */}
+
       }catch(err){
         if(!controller.signal.aborted && version===companyRequestVersion.current)
           setError(err instanceof Error?err.message:"Layanan pratinjau tidak tersedia.");
@@ -211,6 +250,25 @@ export default function ScNewCashPreview() {
     })();
     return ()=>controller.abort();
   },[activeCompanyId]);
+
+  useEffect(()=>{
+    if(activeCompanyId!==1 || !verifiedId || revokedId===verifiedId)return;
+    const controller=new AbortController();
+    void(async()=>{
+      try{
+        const response=await fetch(ENDPOINT+"/documents/"+encodeURIComponent(verifiedId)+"/review-status",{
+          credentials:"include",cache:"no-store",signal:controller.signal,
+        });
+        const status=await response.json().catch(()=>null);
+        if(controller.signal.aborted)return;
+        if(response.ok && status?.transactionId===verifiedId && status?.postingAllowed===false &&
+          status?.status==="EVIDENCE_REVIEWED" && Number.isSafeInteger(status?.counterCoaId)){
+          setVoucherCoa(String(status.counterCoaId));setEvidenceReviewed(true);
+        }
+      }catch{/* Remain fail-closed; review can be retried only after server status is available. */}
+    })();
+    return()=>controller.abort();
+  },[activeCompanyId,verifiedId,revokedId]);
 
   const calculate=async()=>{
     if(activeCompanyId!==1 || !readiness || busy || evidenceBusy || !!pendingEvidence) return;
@@ -347,6 +405,60 @@ export default function ScNewCashPreview() {
       if(version===companyRequestVersion.current)
         setError(err instanceof Error?err.message:"Verifikasi belum tersedia.");
     }finally{setEvidenceBusy(false);}
+  };
+
+  const saveContentReview=async()=>{
+    if(activeCompanyId!==1 || !readiness || !pendingEvidence ||
+       verifiedId!==pendingEvidence.transactionId || reviewBusy || voucherBusy ||
+       !evidenceAttested || !evidenceKind || !evidenceDate || !evidenceAmount ||
+       evidenceReference.trim().length<6 || !voucherCoa || evidenceReviewed || revokedId)return;
+    const id=pendingEvidence.transactionId;
+    const coa=readiness.contraCandidates.find(c=>String(c.id)===voucherCoa);
+    if(!coa)return;
+    if(!window.confirm("Pastikan isi PDF asli benar-benar bukti transaksi keuangan (bukan NPWP/KTP), tanggal, nominal, referensi dan COA lawan sudah cocok. Catatan pemeriksaan akan mengikat OTP ke COA ini."))return;
+    const version=companyRequestVersion.current;
+    setReviewBusy(true);setVoucherError(null);
+    try{
+      const response=await fetch(ENDPOINT+"/documents/review",{
+        method:"POST",credentials:"include",cache:"no-store",headers:{"content-type":"application/json"},
+        body:JSON.stringify({companyId:1,accountId:18,transactionId:id,
+          counterCoaId:coa.id,evidenceKind,evidenceDate,evidenceAmount,
+          reference:evidenceReference.trim(),attested:true}),
+      });
+      const payload=await response.json().catch(()=>null);
+      if(response.status!==201 || payload?.status!=="EVIDENCE_REVIEWED" ||
+         payload?.transactionId!==id || payload?.counterCoaId!==coa.id || payload?.postingAllowed!==false)
+        throw Error("Review isi bukti ditolak (HTTP "+response.status+"). Tidak ada OTP atau jurnal.");
+      setEvidenceReviewed(true);
+    }catch(err){
+      if(version===companyRequestVersion.current)setVoucherError(err instanceof Error?err.message:"Review belum tersedia.");
+    }finally{setReviewBusy(false);}
+  };
+
+  const revokeInvalidEvidence=async()=>{
+    if(activeCompanyId!==1 || !pendingEvidence || verifiedId!==pendingEvidence.transactionId ||
+       revokeBusy || voucherBusy || reviewBusy || revokeReason.trim().length<12 ||
+       revokedId===pendingEvidence.transactionId)return;
+    const id=pendingEvidence.transactionId;
+    if(!window.confirm("CABUT kelayakan bukti UUID "+id+"? Persetujuan OTP asli tetap disimpan untuk audit. Tindakan ini tidak memposting/menghapus jurnal."))return;
+    const version=companyRequestVersion.current;
+    setRevokeBusy(true);setVoucherError(null);
+    try{
+      const response=await fetch(ENDPOINT+"/documents/revoke",{
+        method:"POST",credentials:"include",cache:"no-store",headers:{"content-type":"application/json"},
+        body:JSON.stringify({companyId:1,accountId:18,transactionId:id,reasonCode:revokeReasonCode,
+          reason:revokeReason.trim()}),
+      });
+      const payload=await response.json().catch(()=>null);
+      if(![200,201].includes(response.status) || payload?.status!=="REVOKED" ||
+         payload?.transactionId!==id || payload?.postingAllowed!==false)
+        throw Error("Pencabutan bukti ditolak (HTTP "+response.status+"). Jangan posting.");
+      setRevokedId(id);setEvidenceReviewed(false);setVoucherApproved(null);setVoucherChallenge(null);setVoucherCode("");
+      setServerApprovedDocuments(old=>old.filter(d=>d.transactionId!==id));
+      setServerVerifiedDocuments(old=>old.filter(d=>d.transactionId!==id));
+    }catch(err){
+      if(version===companyRequestVersion.current)setVoucherError(err instanceof Error?err.message:"Pencabutan belum berhasil.");
+    }finally{setRevokeBusy(false);}
   };
 
   const requestVoucherOtp=async()=>{
@@ -506,7 +618,7 @@ export default function ScNewCashPreview() {
               <Button type="button" variant="outline" disabled={evidenceBusy||integrityBusy||voucherBusy}
                 onClick={()=>{
                   if(voucherLock.current)return;
-                  setVoucherChallenge(null);setVoucherApproved(null);setVoucherCode("");setVoucherCoa("");setVoucherCoaSearch("");setVoucherError(null);
+                  setVoucherChallenge(null);setVoucherApproved(null);setVoucherCode("");setVoucherCoa("");setVoucherCoaSearch("");setVoucherError(null);resetEvidenceReview();
                   setPendingEvidence({transactionId:doc.transactionId,status:"PENDING_VERIFICATION"});
                   setIntegrityResult(null);setReviewedUpload(null);setVerifiedId(null);
                   setOwnerReviewConfirmed(false);
@@ -539,7 +651,7 @@ export default function ScNewCashPreview() {
                 onClick={()=>{
                   if(voucherLock.current)return;
                   setVoucherChallenge(null);setVoucherApproved(null);setVoucherCode("");
-                  setVoucherCoa("");setVoucherError(null);
+                  setVoucherCoa("");setVoucherError(null);resetEvidenceReview();
                   setPendingEvidence({transactionId:doc.transactionId,status:"PENDING_VERIFICATION"});
                   setVerifiedId(doc.transactionId);
                   setIntegrityResult(null);setReviewedUpload(null);
@@ -561,15 +673,37 @@ export default function ScNewCashPreview() {
               <p className="text-sm">COA lawan: {readiness.contraCandidates.find(c=>c.id===doc.counterCoaId)?.code??doc.counterCoaId} · APPROVED</p>
               <p className="text-xs text-slate-300">Disetujui: {new Date(doc.approvedAt).toLocaleString("id-ID",{timeZone:"Asia/Jakarta"})} WIB</p>
               <a href={ENDPOINT+"/documents/"+encodeURIComponent(doc.transactionId)+"/download"} className="text-sm underline">Unduh bukti asli</a>
+              <p className="text-xs text-amber-200">Integrity VERIFIED tidak membuktikan isi bukti kas. Audit PDF sebelum posting.</p>
+              <Button type="button" variant="outline" disabled={voucherBusy||revokeBusy||reviewBusy}
+                onClick={()=>{
+                  if(voucherLock.current)return;
+                  resetEvidenceReview();setVoucherCode("");setVoucherChallenge(null);
+                  setVoucherCoa(String(doc.counterCoaId));setVoucherCoaSearch("");
+                  setVoucherApproved({transactionId:doc.transactionId,counterCoaId:doc.counterCoaId});
+                  setPendingEvidence({transactionId:doc.transactionId,status:"PENDING_VERIFICATION"});
+                  setVerifiedId(doc.transactionId);setIntegrityResult(null);setPreview(null);
+                }}>Audit / cabut bukti</Button>
+
             </div>)}
           </CardContent>
         </Card>
       )}
-      {readiness && pendingEvidence && activeCompanyId===1 && !serverApprovedDocuments.some(doc=>doc.transactionId===pendingEvidence.transactionId) && (
+      {readiness && activeCompanyId===1 && serverRevokedDocuments.length>0 && (
+        <Card className="border-slate-500 bg-slate-800/90 text-white">
+          <CardHeader><CardTitle className="text-base">Dokumen REVOKED — riwayat tetap tersimpan</CardTitle></CardHeader>
+          <CardContent className="space-y-2">
+            {serverRevokedDocuments.map(doc=><p key={doc.transactionId} className="text-sm break-all">
+              REVOKED · {doc.transactionId} · Rp {money(doc.amount)} · Tidak dapat digunakan untuk OTP atau posting.
+            </p>)}
+          </CardContent>
+        </Card>
+      )}
+      {readiness && pendingEvidence && activeCompanyId===1 && (!serverApprovedDocuments.some(doc=>doc.transactionId===pendingEvidence.transactionId) || voucherApproved?.transactionId===pendingEvidence.transactionId) && (
+
         <Card className="border-sky-500/40 bg-slate-800/90 text-white">
           <CardContent className="space-y-2 py-4">
             <p role="status" className="text-sm">
-              {verifiedId===pendingEvidence.transactionId?"Bukti VERIFIED oleh server (belum disetujui untuk posting).":"Bukti tersimpan sebagai PENDING_VERIFICATION (belum disetujui)."}
+              {verifiedId===pendingEvidence.transactionId?"Integritas dokumen tercatat VERIFIED (isi transaksi BELUM otomatis dinyatakan sah).":"Bukti tersimpan sebagai PENDING_VERIFICATION (belum disetujui)."}
               ID transaksi: <code className="break-all">{pendingEvidence.transactionId}</code>.
               Tidak ada jurnal keuangan yang diposting.
             </p>
@@ -614,7 +748,10 @@ export default function ScNewCashPreview() {
                   onClick={()=>void verifyEvidence()}>Verifikasi Bukti (tanpa posting)</Button>
               </div>
             )}
-            {verifiedId===pendingEvidence.transactionId && (
+            {verifiedId===pendingEvidence.transactionId && revokedId===pendingEvidence.transactionId && (
+              <p role="alert" className="text-sm text-amber-200">REVOKED — kelayakan bukti dicabut. Approval OTP historis tetap tersimpan, tidak ada posting jurnal.</p>
+            )}
+            {verifiedId===pendingEvidence.transactionId && revokedId!==pendingEvidence.transactionId && (
               <div className="space-y-3 rounded-md border border-slate-600 p-3">
                 <h3 className="font-semibold">Persetujuan voucher Owner</h3>
                 {voucherApproved?.transactionId===verifiedId ? (
@@ -624,16 +761,16 @@ export default function ScNewCashPreview() {
                     <Label htmlFor="sc-voucher-coa-search">COA lawan voucher</Label>
                     <Input id="sc-voucher-coa-search"
                       value={voucherCoaSearch} placeholder="Cari kode atau nama COA (contoh: 1-1023-CST)"
-                      disabled={voucherBusy||!!voucherChallenge}
+                      disabled={voucherBusy||!!voucherChallenge||evidenceReviewed}
                       onChange={e=>setVoucherCoaSearch(e.target.value)}
                       aria-label="Cari COA lawan voucher" />
                     <select
                       aria-label="Daftar COA lawan voucher"
                       value={voucherCoa}
                       size={7}
-                      disabled={voucherBusy||!!voucherChallenge}
+                      disabled={voucherBusy||!!voucherChallenge||evidenceReviewed}
                       onChange={e=>{
-                        if(voucherLock.current||voucherChallenge)return;
+                        if(voucherLock.current||voucherChallenge||evidenceReviewed)return;
                         setVoucherCoa(e.target.value);
                         setVoucherCoaSearch("");
                       }}
@@ -648,7 +785,42 @@ export default function ScNewCashPreview() {
                       COA terpilih: {readiness.contraCandidates.find(c=>String(c.id)===voucherCoa)?.code} — {readiness.contraCandidates.find(c=>String(c.id)===voucherCoa)?.name}
                     </p>}
                     <p className="text-xs text-slate-400">Gulir daftar di atas dengan roda mouse, touchpad, atau tombol panah. Ketik kode/nama untuk mencari.</p>
-                    <Button type="button" disabled={voucherBusy||!voucherCoa} onClick={()=>void requestVoucherOtp()}>
+                    <div className="space-y-2 rounded-md border border-amber-500/50 p-3">
+                      <p className="text-sm font-semibold text-amber-200">Wajib: review isi bukti transaksi sebelum OTP</p>
+                      <p className="text-xs text-slate-200">Status VERIFIED hanya mengesahkan integritas byte. Bukti NPWP/KTP bukan bukti kas. Buka PDF asli dan baca tanggal, nominal, referensi transaksi serta COA.</p>
+                      <Label htmlFor="sc-cash-evidence-kind">Jenis dokumen keuangan pada PDF</Label>
+                      <select id="sc-cash-evidence-kind" aria-label="Jenis bukti keuangan"
+                        value={evidenceKind} disabled={voucherBusy||reviewBusy||evidenceReviewed}
+                        onChange={e=>setEvidenceKind(e.target.value)}
+                        className="w-full rounded border border-slate-500 bg-slate-900 px-2 py-2 text-white">
+                        <option value="">Pilih jenis bukti (NPWP/KTP tidak diterima)</option>
+                        <option value="BANK_TRANSFER_RECEIPT">Bukti transfer bank</option>
+                        <option value="CASH_DEPOSIT_SLIP">Slip setoran kas</option>
+                        <option value="SIGNED_CASH_RECEIPT">Tanda terima kas bertanda tangan</option>
+                      </select>
+                      <Label htmlFor="sc-cash-evidence-date">Tanggal yang tertulis dalam bukti</Label>
+                      <Input id="sc-cash-evidence-date" type="date" value={evidenceDate}
+                        disabled={reviewBusy||evidenceReviewed} onChange={e=>setEvidenceDate(e.target.value)}/>
+                      <Label htmlFor="sc-cash-evidence-amount">Nominal bukti Rp (contoh 10000.00)</Label>
+                      <Input id="sc-cash-evidence-amount" value={evidenceAmount} inputMode="decimal"
+                        placeholder="Masukkan nominal yang terbaca dari PDF" disabled={reviewBusy||evidenceReviewed}
+                        onChange={e=>setEvidenceAmount(e.target.value)}/>
+                      <Label htmlFor="sc-cash-evidence-reference">Nomor referensi / kuitansi pada bukti</Label>
+                      <Input id="sc-cash-evidence-reference" value={evidenceReference}
+                        placeholder="Nomor transaksi yang benar-benar tertera pada bukti"
+                        disabled={reviewBusy||evidenceReviewed} onChange={e=>setEvidenceReference(e.target.value)}/>
+                      <label className="flex items-start gap-2 text-sm">
+                        <input type="checkbox" checked={evidenceAttested} disabled={reviewBusy||evidenceReviewed}
+                          onChange={e=>setEvidenceAttested(e.target.checked)}/>
+                        Saya sudah membaca bukti asli dan mencocokkan jenis dokumen, nominal, tanggal, referensi serta COA lawan di atas.
+                      </label>
+                      <Button type="button" variant="outline" onClick={()=>void saveContentReview()}
+                        disabled={reviewBusy||voucherBusy||evidenceReviewed||!evidenceAttested||!evidenceKind||!voucherCoa||!evidenceDate||!evidenceAmount||evidenceReference.trim().length<6}>
+                        {reviewBusy?"Mencatat review...":"Catat review isi bukti (tanpa OTP/posting)"}
+                      </Button>
+                      {evidenceReviewed && <p role="status" className="text-sm text-green-200">Review isi bukti telah dicatat pada server untuk COA terpilih. OTP dapat diminta.</p>}
+                    </div>
+                    <Button type="button" disabled={voucherBusy||reviewBusy||!voucherCoa||!evidenceReviewed} onClick={()=>void requestVoucherOtp()}>
                       {voucherBusy?"Memproses...":voucherChallenge?"Kirim ulang OTP":"Setujui Transaksi — Kirim OTP"}
                     </Button>
                     {voucherChallenge?.transactionId===verifiedId && (
@@ -664,6 +836,27 @@ export default function ScNewCashPreview() {
                   </>
                 )}
                 {voucherError && <p role="alert" className="text-sm text-red-300">{voucherError}</p>}
+                <div className="space-y-2 rounded-md border border-red-500/40 p-3">
+                  <p className="text-sm font-semibold text-red-200">Bukti tidak sesuai? Cabut kelayakan tanpa menghapus audit</p>
+                  <p className="text-xs text-slate-300">Gunakan untuk NPWP/KTP, nominal/tanggal berbeda, atau COA yang salah. Event VERIFIED dan approval OTP lama tetap tersimpan. Tidak ada posting jurnal.</p>
+                  <Label htmlFor="sc-cash-revoke-reason-code">Alasan pencabutan</Label>
+                  <select id="sc-cash-revoke-reason-code" value={revokeReasonCode}
+                    disabled={revokeBusy||voucherBusy} onChange={e=>setRevokeReasonCode(e.target.value)}
+                    className="w-full rounded border border-slate-500 bg-slate-900 px-2 py-2 text-white">
+                    <option value="WRONG_DOCUMENT_TYPE">Jenis dokumen salah (misal NPWP)</option>
+                    <option value="TRANSACTION_MISMATCH">Tanggal/nominal/transaksi tidak sesuai</option>
+                    <option value="COA_MISMATCH">COA lawan tidak sesuai</option>
+                    <option value="OTHER_INVALID_EVIDENCE">Alasan bukti tidak sah lainnya</option>
+                  </select>
+                  <Label htmlFor="sc-cash-revoke-reason">Catatan audit (minimal 12 karakter; jangan tulis data NPWP)</Label>
+                  <Input id="sc-cash-revoke-reason" value={revokeReason} disabled={revokeBusy||voucherBusy}
+                    placeholder="Contoh: Lampiran adalah kartu NPWP, bukan bukti uang masuk"
+                    onChange={e=>setRevokeReason(e.target.value)}/>
+                  <Button type="button" variant="outline" disabled={revokeBusy||voucherBusy||reviewBusy||revokeReason.trim().length<12}
+                    onClick={()=>void revokeInvalidEvidence()}>
+                    {revokeBusy?"Mencabut kelayakan...":"Cabut bukti (REVOKED, tanpa posting)"}
+                  </Button>
+                </div>
               </div>
             )}
             <Button type="button" variant="outline" disabled={evidenceBusy||integrityBusy||voucherBusy} onClick={()=>{

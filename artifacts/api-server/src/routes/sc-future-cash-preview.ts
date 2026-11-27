@@ -20,6 +20,7 @@ import {
   isSignedOtpDevEnabled,
 } from "./dev-auth";
 import { prepareCashJournal } from "../lib/cash-ledger-posting";
+import { parseCashEvidenceReview, matchingCashEvidenceReview } from "../lib/future-cash-content-review";
 
 /**
  * CST DEV Owner/Super Admin cash-entry *preview only*.
@@ -48,6 +49,10 @@ const cashRecoveryRateLimit = rateLimit({
 const cashDocumentRateLimit = rateLimit({
   windowMs: 10 * 60_000, limit: 6, standardHeaders: "draft-7",
   legacyHeaders: false, validate: false,
+});
+const cashRegistryReadRateLimit = rateLimit({
+  windowMs:10 * 60_000,limit:30,standardHeaders:"draft-7",
+  legacyHeaders:false,validate:false,
 });
 
 type CashAccount = {
@@ -171,6 +176,7 @@ router.get(PATH + "/readiness", async (req, res): Promise<void> => {
  * Exposes no private storage path, hash, uploader, or approval capability.
  */
 router.get(PATH + "/documents/pending", cashRecoveryRateLimit, async (_req, res): Promise<void> => {
+
   try {
     const result = await pool.query<{
       transaction_id: string; direction: "IN" | "OUT";
@@ -209,6 +215,7 @@ router.get(PATH + "/documents/pending", cashRecoveryRateLimit, async (_req, res)
  * not yet approved by voucher OTP. No private hash/path or posting writer.
  */
 router.get(PATH + "/documents/verified", cashRecoveryRateLimit, async (_req, res): Promise<void> => {
+
   try {
     const result=await pool.query<{
       transaction_id:string;direction:"IN"|"OUT";transaction_date:string;amount_cents:string;
@@ -280,6 +287,7 @@ router.get(PATH + "/documents/approved", cashRecoveryRateLimit, async (_req,res)
   }catch{
     res.status(503).json({code:"SC_CASH_APPROVED_LIST_UNAVAILABLE",postingAllowed:false});
   }
+
 });
 
 router.post(PATH + "/preview", async (req, res): Promise<void> => {
@@ -626,6 +634,240 @@ router.post(PATH + "/documents/verify", cashDocumentRateLimit, async (req, res):
   }
 });
 
+
+/** Explicit signed Owner review of financial content. Does NOT infer contents from SHA-256. */
+/** Only signed Owner/Super Admin can recover an existing server-side content review. */
+router.get(PATH + "/documents/:transactionId/review-status",cashRegistryReadRateLimit,async(req,res):Promise<void>=>{
+  const id=String(req.params.transactionId??"");
+  if(!/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id)){
+    res.status(400).json({code:"SC_CASH_INVALID_DOCUMENT_ID",postingAllowed:false});return;
+  }
+  try{
+    const result=await pool.query<{metadata:unknown;source_fingerprint:string;document_sha256:string;
+      transaction_date:string;amount_cents:string}>(
+      "select a.metadata,d.source_fingerprint,d.document_sha256,d.transaction_date::text,d.amount_cents::text "+
+      "from public.approval_requests a "+
+      "join public.sc_future_cash_documents d on d.transaction_id::text=a.metadata->>'transactionId' "+
+      "join lateral (select event_type from public.sc_future_cash_document_events e "+
+      "where e.transaction_id=d.transaction_id order by event_id desc limit 1) ev on true "+
+      "where d.transaction_id=$1::uuid and d.company_id=1 and d.account_id=18 and d.cash_coa_id=75839 "+
+      "and ev.event_type='VERIFIED' and a.company_id=1 and a.module='cash_bank' "+
+      "and a.doc_type='sc_future_cash_evidence_review' and a.status='confirmed' "+
+      "order by a.id desc limit 2",[id],
+    );
+    const raw=result.rows[0]?.metadata;
+    const parsed=raw && typeof raw==="object" && !Array.isArray(raw) ? raw as Record<string,unknown>:null;
+    const coa=typeof parsed?.counterCoaId==="number" && Number.isSafeInteger(parsed.counterCoaId)
+      ? parsed.counterCoaId:null;
+    const row=result.rows[0];
+    const accepted=result.rows.length===1 && coa!==null && !!row && matchingCashEvidenceReview(
+      row.metadata,{transactionId:id,sourceFingerprint:row.source_fingerprint,
+        documentSha256:row.document_sha256,date:row.transaction_date,amountCents:row.amount_cents},coa,
+    );
+    res.json({transactionId:id,status:accepted?"EVIDENCE_REVIEWED":"NOT_REVIEWED",
+      counterCoaId:accepted?coa:null,postingAllowed:false});
+  }catch{res.status(503).json({code:"SC_CASH_REVIEW_STATUS_UNAVAILABLE",postingAllowed:false});}
+});
+
+router.post(PATH + "/documents/review", cashDocumentRateLimit, async (req, res): Promise<void> => {
+  if (req.get("origin") !== OWNER_ORIGIN) {
+    res.status(403).json({code:"SC_CASH_SAME_ORIGIN_REQUIRED",postingAllowed:false});
+    return;
+  }
+  const body = req.body && typeof req.body==="object" && !Array.isArray(req.body)
+    ? req.body as Record<string,unknown> : {};
+  const allowed = new Set(["companyId","accountId","transactionId","counterCoaId",
+    "evidenceKind","evidenceDate","evidenceAmount","reference","attested"]);
+  const id=body.transactionId;
+  const email=typeof res.locals.scCashOwnerEmail==="string" ? res.locals.scCashOwnerEmail.trim().toLowerCase():"";
+  const role=res.locals.scCashOwnerRole;
+  if (Object.keys(body).some(k=>!allowed.has(k)) || body.companyId!==1 || body.accountId!==18 ||
+      typeof id!=="string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id) ||
+      !["owner","super_admin"].includes(role) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    res.status(400).json({code:"SC_CASH_INVALID_EVIDENCE_REVIEW",postingAllowed:false});
+    return;
+  }
+  try {
+    const docs=await pool.query<{
+      transaction_id:string;document_sha256:string;source_fingerprint:string;
+      direction:"IN"|"OUT";transaction_date:string;amount_cents:string;
+    }>(
+      "select transaction_id::text,document_sha256,source_fingerprint,direction,transaction_date::text,amount_cents::text "+
+      "from public.sc_future_cash_documents where company_id=1 and account_id=18 and cash_coa_id=75839 and transaction_id=$1::uuid",
+      [id],
+    );
+    const d=docs.rows[0];
+    if (docs.rows.length!==1 || !d) {
+      res.status(404).json({code:"SC_CASH_DOCUMENT_NOT_FOUND",postingAllowed:false});return;
+    }
+    const reviewed=parseCashEvidenceReview(body,{date:d.transaction_date,amountCents:d.amount_cents});
+    if (!reviewed || reviewed.counterCoaId===CASH_COA_ID) {
+      res.status(422).json({code:"SC_CASH_CONTENT_REVIEW_NOT_MATCHED",postingAllowed:false});return;
+    }
+    const source={
+      companyId:1,accountId:18,cashCoaId:75839,transactionId:id,sourceDocumentSha256:d.document_sha256,
+      direction:d.direction,date:d.transaction_date,amount:decimal(BigInt(d.amount_cents)),
+    };
+    if (prepareFutureCashSource(source).sourceFingerprint!==d.source_fingerprint ||
+        !await verifyPrivateFutureCashReceipt(source,await readVerifiedFutureCashDocument(source,pool),pendingEvidenceStorage)) {
+      res.status(409).json({code:"SC_CASH_VERIFIED_DOCUMENT_REQUIRED",postingAllowed:false});return;
+    }
+    const client=await pool.connect();let committed=false;
+    try {
+      await client.query("BEGIN");
+      const locked=await client.query(
+        "select transaction_id from public.sc_future_cash_documents where transaction_id=$1::uuid "+
+        "and company_id=1 and account_id=18 and document_sha256=$2 and source_fingerprint=$3 for update",
+        [id,d.document_sha256,d.source_fingerprint],
+      );
+      if (locked.rowCount!==1 || !await readVerifiedFutureCashDocument(source,client))
+        throw Error("SC_CASH_DOCUMENT_NO_LONGER_VERIFIED");
+      const contra=await client.query<ContraCoa>(
+        "select id,company_id,code,name,is_active,is_postable,is_header "+
+        "from public.chart_of_accounts where id=$1 and company_id=1 for share",[reviewed.counterCoaId],
+      );
+      if (!validContra(contra.rows[0])) throw Error("SC_CASH_COUNTER_COA_NOT_ELIGIBLE");
+      const existing=await client.query(
+        "select id from public.approval_requests where company_id=1 and module='cash_bank' "+
+        "and doc_type in ('sc_future_cash_voucher','sc_future_cash_evidence_review') "+
+        "and metadata->>'transactionId'=$1 limit 1",[id],
+      );
+      if (existing.rowCount) throw Error("SC_CASH_EVIDENCE_REVIEW_ALREADY_USED");
+      const event=await client.query<{event_id:string}>(
+        "select event_id::text from public.sc_future_cash_document_events "+
+        "where transaction_id=$1::uuid and event_type='VERIFIED' order by event_id desc limit 1",[id],
+      );
+      const docId=Number(event.rows[0]?.event_id);
+      if (!Number.isSafeInteger(docId) || docId<=0 || docId>2147483647)
+        throw Error("SC_CASH_VERIFIED_EVENT_MISSING");
+      const metadata={
+        transactionId:id,sourceFingerprint:d.source_fingerprint,documentSha256:d.document_sha256,
+        counterCoaId:reviewed.counterCoaId,evidenceKind:reviewed.evidenceKind,
+        evidenceDate:reviewed.evidenceDate,evidenceAmountCents:reviewed.evidenceAmountCents,
+        reference:reviewed.reference,contentAttestedByOwner:true,
+      };
+      await client.query(
+        "insert into public.approval_requests "+
+        "(company_id,module,doc_type,doc_id,doc_number,requested_by,status,approved_by,approved_at,approver_role,approval_type,decided_by,decided_at,metadata) "+
+        "values (1,'cash_bank','sc_future_cash_evidence_review',$1,$2,$3,'confirmed',$3,clock_timestamp(),$4,"+
+        "'signed_owner_content_attestation',$3,clock_timestamp(),$5::jsonb)",
+        [docId,id,email,role,JSON.stringify(metadata)],
+      );
+      await client.query("COMMIT");committed=true;
+      res.status(201).json({transactionId:id,status:"EVIDENCE_REVIEWED",
+        counterCoaId:reviewed.counterCoaId,postingAllowed:false});
+    }catch{
+      if(!committed)await client.query("ROLLBACK").catch(()=>undefined);
+      res.status(409).json({code:"SC_CASH_CONTENT_REVIEW_NOT_RECORDED",postingAllowed:false});
+    }finally{client.release();}
+  }catch{
+    res.status(503).json({code:"SC_CASH_CONTENT_REVIEW_UNAVAILABLE",postingAllowed:false});
+  }
+});
+
+/** Revoke VERIFIED financial eligibility with compensating audit; retain original OTP approval. */
+router.post(PATH + "/documents/revoke", cashDocumentRateLimit, async(req,res):Promise<void>=>{
+  if(req.get("origin")!==OWNER_ORIGIN){
+    res.status(403).json({code:"SC_CASH_SAME_ORIGIN_REQUIRED",postingAllowed:false});return;
+  }
+  const body=req.body && typeof req.body==="object" && !Array.isArray(req.body)
+    ?req.body as Record<string,unknown>:{};
+  const allowed=new Set(["companyId","accountId","transactionId","reasonCode","reason"]);
+  const id=body.transactionId;
+  const reasonCode=body.reasonCode;
+  const reason=body.reason;
+  const email=typeof res.locals.scCashOwnerEmail==="string"?res.locals.scCashOwnerEmail.trim().toLowerCase():"";
+  const role=res.locals.scCashOwnerRole;
+  if(Object.keys(body).some(k=>!allowed.has(k)) || body.companyId!==1 || body.accountId!==18 ||
+     typeof id!=="string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id) ||
+     !["WRONG_DOCUMENT_TYPE","TRANSACTION_MISMATCH","COA_MISMATCH","OTHER_INVALID_EVIDENCE"].includes(String(reasonCode)) ||
+     typeof reason!=="string" || reason!==reason.trim() || reason.length<12 || reason.length>240 ||
+     !["owner","super_admin"].includes(role) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){
+    res.status(400).json({code:"SC_CASH_REVOKE_REQUEST_INVALID",postingAllowed:false});return;
+  }
+  const client=await pool.connect();let committed=false;
+  try{
+    await client.query("BEGIN");
+    const document=await client.query<{
+      transaction_id:string;document_sha256:string;source_fingerprint:string;
+    }>(
+      "select transaction_id::text,document_sha256,source_fingerprint "+
+      "from public.sc_future_cash_documents where transaction_id=$1::uuid and company_id=1 and account_id=18 and cash_coa_id=75839 for update",[id],
+    );
+    const d=document.rows[0];
+    if(document.rows.length!==1 || !d)throw Error("SC_CASH_REVOKE_DOCUMENT_NOT_FOUND");
+    const ev=await client.query<{event_id:string;event_type:string}>(
+      "select event_id::text,event_type from public.sc_future_cash_document_events "+
+      "where transaction_id=$1::uuid order by event_id desc limit 1",[id],
+    );
+    if(ev.rows[0]?.event_type==="REVOKED"){
+      await client.query("ROLLBACK");
+      res.status(200).json({transactionId:id,status:"REVOKED",alreadyRevoked:true,postingAllowed:false});return;
+    }
+    if(ev.rows[0]?.event_type!=="VERIFIED")throw Error("SC_CASH_REVOKE_REQUIRES_VERIFIED");
+    // If a journal already exists, require formal reversal rather than changing the evidence state.
+    const posted=await client.query<{n:string}>(
+      "select ("+
+      "(select count(*) from public.accounting_entries where company_id=1 and "+
+      "(ref=$1 or correlation_id=$1 or ledger_source_id=$1))+"+
+      "(select count(*) from public.petty_cash_transactions where company_id=1 and account_id=18 and "+
+      "(receipt_no=$1 or transaction_no=$1 or notes ilike '%'||$1||'%'))+"+
+      "(select count(*) from public.bank_journal_entries where company_id=1 and "+
+      "(journal_id=$1 or metadata->>'transactionId'=$1))"+
+      ")::text as n",[id],
+    );
+    if(BigInt(posted.rows[0]?.n??"1")!==0n)throw Error("SC_CASH_JOURNAL_REVERSAL_REQUIRED");
+    const priorApproval=await client.query<{id:number}>(
+      "select id from public.approval_requests where company_id=1 and module='cash_bank' "+
+      "and doc_type='sc_future_cash_voucher' and metadata->>'transactionId'=$1 and lower(status)='approved' "+
+      "order by id desc limit 2",[id],
+    );
+    if(priorApproval.rows.length>1)throw Error("SC_CASH_DUPLICATE_APPROVAL");
+    const revoked=await client.query<{event_id:string}>(
+      "insert into public.sc_future_cash_document_events "+
+      "(transaction_id,event_type,document_sha256,source_fingerprint,actor_email,actor_role) "+
+      "values ($1::uuid,'REVOKED',$2,$3,$4,$5) on conflict (transaction_id,event_type) do nothing returning event_id::text",
+      [id,d.document_sha256,d.source_fingerprint,email,role],
+    );
+    if(revoked.rows.length!==1)throw Error("SC_CASH_REVOKE_CONFLICT");
+    const verifiedId=Number(ev.rows[0]!.event_id);
+    if(!Number.isSafeInteger(verifiedId) || verifiedId>2147483647 || verifiedId<1)
+      throw Error("SC_CASH_REVOKE_EVENT_ID_INVALID");
+    const metadata={transactionId:id,sourceFingerprint:d.source_fingerprint,
+      documentSha256:d.document_sha256,revocationEventId:revoked.rows[0]!.event_id,
+      priorApprovalId:priorApproval.rows[0]?.id??null,reasonCode,reason};
+    await client.query(
+      "insert into public.approval_requests "+
+      "(company_id,module,doc_type,doc_id,doc_number,requested_by,status,approved_by,approved_at,approver_role,approval_type,decided_by,decided_at,metadata) "+
+      "values (1,'cash_bank','sc_future_cash_evidence_revocation',$1,$2,$3,'recorded',$3,clock_timestamp(),$4,"+
+      "'signed_owner_evidence_revocation',$3,clock_timestamp(),$5::jsonb)",
+      [verifiedId,id,email,role,JSON.stringify(metadata)],
+    );
+    await client.query("COMMIT");committed=true;
+    res.status(201).json({transactionId:id,status:"REVOKED",alreadyRevoked:false,
+      priorApprovalRetained:priorApproval.rows.length===1,postingAllowed:false});
+  }catch{
+    if(!committed)await client.query("ROLLBACK").catch(()=>undefined);
+    res.status(409).json({code:"SC_CASH_REVOKE_BLOCKED",postingAllowed:false});
+  }finally{client.release();}
+});
+
+router.get(PATH + "/documents/revoked",cashRegistryReadRateLimit,async(_req,res):Promise<void>=>{
+  try{
+    const rows=await pool.query<{transaction_id:string;transaction_date:string;direction:"IN"|"OUT";amount_cents:string}>(
+      "select d.transaction_id::text,d.transaction_date::text,d.direction,d.amount_cents::text "+
+      "from public.sc_future_cash_documents d join lateral ("+
+      "select event_type from public.sc_future_cash_document_events e "+
+      "where e.transaction_id=d.transaction_id order by event_id desc limit 1) ev on true "+
+      "where d.company_id=1 and d.account_id=18 and d.cash_coa_id=75839 and ev.event_type='REVOKED' "+
+      "order by d.uploaded_at desc limit 20",
+    );
+    res.json({mode:"ACCOUNT18_REVOKED_EVIDENCE_AUDIT",companyId:1,accountId:18,
+      documents:rows.rows.map(d=>({transactionId:d.transaction_id,date:d.transaction_date,
+        direction:d.direction,amount:decimal(BigInt(d.amount_cents)),status:"REVOKED"})),postingAllowed:false});
+  }catch{res.status(503).json({code:"SC_CASH_REVOKED_LIST_UNAVAILABLE",postingAllowed:false});}
+});
+
 /** DEV only: issue one purpose-bound OTP, never consume it or post a journal. */
 router.post(PATH + "/voucher/otp/send", async (req, res): Promise<void> => {
   if (req.get("origin") !== OWNER_ORIGIN) {
@@ -702,6 +944,18 @@ router.post(PATH + "/voucher/otp/send", async (req, res): Promise<void> => {
         [contraId],
       );
       if (!validContra(contra.rows[0])) throw Error("SC_CASH_COUNTER_COA_NOT_ELIGIBLE");
+      // Byte-level VERIFIED alone cannot prove a financial transaction.
+      // Require one signed Owner content review bound to exact COA and proof.
+      const contentReview=await client.query<{metadata:unknown}>(
+        "select metadata from public.approval_requests "+
+        "where company_id=1 and module='cash_bank' and doc_type='sc_future_cash_evidence_review' "+
+        "and status='confirmed' and metadata->>'transactionId'=$1 order by id desc limit 2",[id],
+      );
+      if(contentReview.rows.length!==1 || !matchingCashEvidenceReview(
+        contentReview.rows[0]!.metadata,
+        {transactionId:id,sourceFingerprint,documentSha256:d.document_sha256,
+          date:d.transaction_date,amountCents:d.amount_cents},contraId,
+      )) throw Error("SC_CASH_OWNER_CONTENT_REVIEW_REQUIRED");
       const approved = await client.query(
         "select id from public.approval_requests where company_id=1 and module='cash_bank' and doc_type='sc_future_cash_voucher' and metadata->>'transactionId'=$1 and lower(status)='approved' limit 1",
         [id],
@@ -824,6 +1078,18 @@ router.post(PATH + "/voucher/otp/confirm", async (req, res): Promise<void> => {
         [contraId],
       );
       if (!validContra(contra.rows[0])) throw Error("SC_CASH_COUNTER_COA_NOT_ELIGIBLE");
+      // Byte-level VERIFIED alone cannot prove a financial transaction.
+      // Require one signed Owner content review bound to exact COA and proof.
+      const contentReview=await client.query<{metadata:unknown}>(
+        "select metadata from public.approval_requests "+
+        "where company_id=1 and module='cash_bank' and doc_type='sc_future_cash_evidence_review' "+
+        "and status='confirmed' and metadata->>'transactionId'=$1 order by id desc limit 2",[id],
+      );
+      if(contentReview.rows.length!==1 || !matchingCashEvidenceReview(
+        contentReview.rows[0]!.metadata,
+        {transactionId:id,sourceFingerprint,documentSha256:d.document_sha256,
+          date:d.transaction_date,amountCents:d.amount_cents},contraId,
+      )) throw Error("SC_CASH_OWNER_CONTENT_REVIEW_REQUIRED");
       const existing = await client.query(
         "select id from public.approval_requests where company_id=1 and module='cash_bank' and doc_type='sc_future_cash_voucher' and metadata->>'transactionId'=$1 limit 1",
         [id],

@@ -13,6 +13,7 @@ describe("Account18 verified proof recovery into existing voucher OTP controls",
     expect(page).toContain('list.postingAllowed!==false');
     expect(page).toContain('setServerVerifiedDocuments(valid)');
     expect(route).toContain('router.get(PATH + "/documents/verified", cashRecoveryRateLimit');
+
     expect(route).toContain("ev.event_type='VERIFIED'");
     expect(route).toContain("a.metadata->>'transactionId'");
   });
