@@ -191,8 +191,9 @@ async function authenticatePurchaseUser(
       const adminWriter = role === "admin";
       const signedOwnerInvoiceRead = Boolean(signedSession)
         && req.method === "GET"
-        && (req.path === "/purchase-workflow/vendor-invoices"
-          || req.path.startsWith("/purchase-workflow/vendor-invoices/"))
+        // Express trims the /purchase-workflow prefix for mounted middleware.
+        && (req.path === "/vendor-invoices"
+          || req.path.startsWith("/vendor-invoices/"))
         && (role === "owner" || role === "super_admin")
         && isSignedOtpDevEnabled();
       if (!adminWriter && !signedOwnerInvoiceRead) {
