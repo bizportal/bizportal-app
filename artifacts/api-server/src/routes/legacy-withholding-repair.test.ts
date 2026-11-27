@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { legacyRepairComponents, repairReason } from "./purchase-workflow";
+import { legacyRepairComponents, repairReason, resolveLegacyWithholdingLineId } from "./purchase-workflow";
 
 describe("legacy withholding repair classification", () => {
   it("keeps wrong-line rows in the repair queue", () => {
@@ -121,5 +121,32 @@ describe("legacy withholding repair classification", () => {
     expect(components.map((component) => component.taxType)).toEqual(["PPh 23", "PPh 4(2)"]);
     expect(components.reduce((sum, component) => sum + component.taxAmount, 0)).toBe(30_000);
     expect(repairReason(plans, taxes)).toBeNull();
+  });
+});
+describe("legacy withholding line identity regression (CST DEV historical shape)", () => {
+  const invoiceLines = [
+    { id: 18, name: "COA_MAPPING_REGRESSION_1788596573750 Monthly service" },
+    { id: 37, name: "Pendapatan Konsesi" },
+    { id: 38, name: "Pemakaian Listrik" },
+    { id: 39, name: "Pemakaian Air" },
+  ];
+  it("does not put concession PPh on an unrelated earlier QA line", () => {
+    const plans = [
+      { taxObject: "concession", taxType: "PPh 23", baseAmount: 15834000, taxAmount: 2375100, liabilityAccountId: null },
+      { taxObject: "electricity", taxType: "PPh 4(2)", baseAmount: 10962796, taxAmount: 1096280, liabilityAccountId: null },
+      { taxObject: "water", taxType: "PPh 4(2)", baseAmount: 1756710, taxAmount: 175671, liabilityAccountId: null },
+    ];
+    expect(plans.map(plan => resolveLegacyWithholdingLineId(plan, invoiceLines))).toEqual([37, 38, 39]);
+  });
+  it("fails closed if a component is missing or ambiguous, never choosing first row", () => {
+    const plan = { taxObject: "concession", taxType: "PPh 23", baseAmount: 100, taxAmount: 10, liabilityAccountId: null };
+    expect(resolveLegacyWithholdingLineId(plan, [invoiceLines[0]!])).toBe(0);
+    expect(resolveLegacyWithholdingLineId(plan, [invoiceLines[1]!, { id: 55, name: "Pendapatan Konsesi - Other" }])).toBe(0);
+    expect(repairReason([{ ...plan, invoiceLineId: 0 }], [])?.code).toBe("UNRESOLVED_VENDOR_INVOICE_LINE");
+  });
+  it("honors an explicit invoice-owned line ID and rejects an ID from elsewhere", () => {
+    const plan = { taxObject: "concession", taxType: "PPh 23", baseAmount: 100, taxAmount: 10, liabilityAccountId: null };
+    expect(resolveLegacyWithholdingLineId({ ...plan, invoiceLineId: 37 }, invoiceLines)).toBe(37);
+    expect(resolveLegacyWithholdingLineId({ ...plan, invoiceLineId: 999 }, invoiceLines)).toBe(0);
   });
 });

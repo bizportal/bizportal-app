@@ -482,10 +482,39 @@ export function legacyRepairComponents(invoice: LegacyRepairInvoiceRow): LegacyR
   }];
 }
 
+/**
+ * Resolve a legacy withholding component only against an invoice-owned line.
+ * Never use line ordering: historical invoices can retain unrelated QA rows.
+ * A missing or ambiguous match is represented by 0 and blocks repair writes.
+ */
+export function resolveLegacyWithholdingLineId(
+  plan: LegacyRepairComponent,
+  lines: Array<{ id: number; name: string | null }>,
+): number {
+  if (plan.invoiceLineId !== undefined) {
+    return lines.some((line) => line.id === plan.invoiceLineId) ? plan.invoiceLineId : 0;
+  }
+  const taxObject = plan.taxObject.toLocaleLowerCase().trim();
+  const componentAliases: Record<string, string> = {
+    concession: "pendapatan konsesi",
+    electricity: "pemakaian listrik",
+    water: "pemakaian air",
+  };
+  const expectedName = componentAliases[taxObject] ?? taxObject;
+  const matches = lines.filter((line) => {
+    const name = (line.name ?? "").toLocaleLowerCase().trim();
+    return name === expectedName || name.startsWith(`${expectedName} - `);
+  });
+  return matches.length === 1 ? matches[0]!.id : 0;
+}
+
 export function repairReason(
   plans: LegacyRepairPlan[],
   taxes: LegacyRepairTaxRow[],
 ): { code: string; message: string } | null {
+  if (plans.some((plan) => !Number.isSafeInteger(plan.invoiceLineId) || plan.invoiceLineId <= 0)) {
+    return { code: "UNRESOLVED_VENDOR_INVOICE_LINE", message: "Komponen PPh belum terikat pada baris invoice yang unik." };
+  }
   if (plans.some((plan) => /\s+\+\s+/.test(plan.taxType))) {
     return {
       code: "COMBINED_VENDOR_WITHHOLDING_ROW",
@@ -556,8 +585,8 @@ async function loadLegacyRepairData(
   );
   return Promise.all(invoiceResult.rows.map(async (invoice) => {
     const [lineResult, taxResult] = await Promise.all([
-      query<{ id: number }>(
-        "select id from public.vendor_invoice_lines where invoice_id = $1 order by id",
+      query<{ id: number; name: string | null }>(
+        "select id, name from public.vendor_invoice_lines where invoice_id = $1 order by id",
         [invoice.id],
       ),
       query<LegacyRepairTaxRow>(
@@ -571,10 +600,9 @@ async function loadLegacyRepairData(
       ),
     ]);
     const components = legacyRepairComponents(invoice);
-    const firstLineId = lineResult.rows[0]?.id ?? 0;
-    const plans = components.map((plan, index) => ({
+    const plans = components.map((plan) => ({
       ...plan,
-      invoiceLineId: plan.invoiceLineId ?? lineResult.rows[index]?.id ?? firstLineId,
+      invoiceLineId: resolveLegacyWithholdingLineId(plan, lineResult.rows),
       liabilityAccountId: taxResult.rows.find((tax) =>
         tax.tax_type.trim() === plan.taxType
         && tax.tax_object.trim() === plan.taxObject
