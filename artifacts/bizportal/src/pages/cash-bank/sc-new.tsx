@@ -63,6 +63,7 @@ export default function ScNewCashPreview() {
   const [direction,setDirection]=useState<"IN"|"OUT">("IN");
   const [amount,setAmount]=useState("");
   const [counterCoaId,setCounterCoaId]=useState("");
+  const [draftCoaSearch,setDraftCoaSearch]=useState("");
   const [receiptFile,setReceiptFile]=useState<File|null>(null);
   const [evidenceBusy,setEvidenceBusy]=useState(false);
   const [pendingEvidence,setPendingEvidence]=useState<PendingCashAcknowledgement|null>(loadCompany1PendingAcknowledgement);
@@ -456,14 +457,21 @@ export default function ScNewCashPreview() {
                   disabled={evidenceBusy||!!pendingEvidence} onChange={e=>{if(evidenceBusy||pendingEvidence)return;setAmount(e.target.value);invalidateDraft();}} className="mt-1"/>
               </div>
               <div>
-                <Label>Calon COA lawan (belum diverifikasi dokumen)</Label>
-                <Select value={counterCoaId} disabled={evidenceBusy||!!pendingEvidence} onValueChange={v=>{if(evidenceBusy)return;setCounterCoaId(v);invalidateDraft();}}>
-                  <SelectTrigger className="mt-1"><SelectValue placeholder="Pilih COA kandidat"/></SelectTrigger>
-                  <SelectContent>
-                    {readiness.contraCandidates.map(c=>
-                      <SelectItem key={c.id} value={String(c.id)}>{c.code} — {c.name}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+                <Label htmlFor="sc-draft-coa-search">Calon COA lawan (belum diverifikasi dokumen)</Label>
+                <Input id="sc-draft-coa-search" className="mt-1"
+                  aria-label="Cari calon COA lawan" placeholder="Cari kode atau nama COA"
+                  value={draftCoaSearch} disabled={evidenceBusy||!!pendingEvidence}
+                  onChange={e=>setDraftCoaSearch(e.target.value)}/>
+                <select aria-label="Daftar calon COA lawan" size={7}
+                  value={counterCoaId} disabled={evidenceBusy||!!pendingEvidence}
+                  onChange={e=>{if(evidenceBusy||pendingEvidence)return;setCounterCoaId(e.target.value);setDraftCoaSearch("");invalidateDraft();}}
+                  className="mt-2 w-full max-w-full min-h-36 overflow-y-auto overscroll-contain rounded-md border border-slate-500 bg-slate-900 px-2 py-1 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:cursor-not-allowed disabled:opacity-50">
+                  <option value="">Pilih COA kandidat</option>
+                  {readiness.contraCandidates
+                    .filter(c=>(c.code+" "+c.name).toLowerCase().includes(draftCoaSearch.trim().toLowerCase()))
+                    .map(c=><option key={c.id} value={String(c.id)}>{c.code} — {c.name}</option>)}
+                </select>
+                {counterCoaId && <p className="text-xs text-slate-300">COA terpilih: {readiness.contraCandidates.find(c=>String(c.id)===counterCoaId)?.code} — {readiness.contraCandidates.find(c=>String(c.id)===counterCoaId)?.name}</p>}
               </div>
             </div>
             <Button type="button" onClick={()=>void calculate()}
