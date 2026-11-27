@@ -1,8 +1,9 @@
 import { describe,it,expect,vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-const mock=vi.hoisted(()=>({transaction:vi.fn(),post:vi.fn(),lock:vi.fn(async()=>{}),emit:vi.fn(),spot:vi.fn()}));
-vi.mock("@workspace/db",()=>({db:{transaction:mock.transaction}}));
+const mock=vi.hoisted(()=>({transaction:vi.fn(),release:vi.fn(),post:vi.fn(),lock:vi.fn(async()=>{}),emit:vi.fn(),spot:vi.fn()}));
+vi.mock("@workspace/db",()=>({db:{},pool:{connect:async()=>({release:mock.release})}}));
+vi.mock("drizzle-orm/node-postgres",()=>({drizzle:()=>({transaction:mock.transaction})}));
 vi.mock("../lib/accounting.js",()=>({postEntryWithClient:mock.post}));
 vi.mock("../lib/posting-engine/validators.js",()=>({createDefaultValidators:()=>[]}));
 vi.mock("../lib/logger.js",()=>({logger:{warn:vi.fn(),error:vi.fn()}}));
@@ -26,6 +27,7 @@ describe("original Accounting engine regression",()=>{
     expect(mock.post.mock.calls[0]?.[4]).toBe(true);
     expect(mock.spot).not.toHaveBeenCalled();
     expect(mock.post.mock.calls[0]?.[0]).toBe(tx);
+    expect(mock.release).toHaveBeenCalled();
   });
   it("root commit failure never schedules consistency or publishes events",async()=>{
     mock.transaction.mockReset();mock.post.mockReset();mock.spot.mockClear();mock.emit.mockClear();
