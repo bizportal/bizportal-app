@@ -618,8 +618,10 @@ router.get(PATH + "/documents/:transactionId/review-status",cashRegistryReadRate
     res.status(400).json({code:"SC_CASH_INVALID_DOCUMENT_ID",postingAllowed:false});return;
   }
   try{
-    const result=await pool.query<{metadata:unknown}>(
-      "select a.metadata from public.approval_requests a "+
+    const result=await pool.query<{metadata:unknown;source_fingerprint:string;document_sha256:string;
+      transaction_date:string;amount_cents:string}>(
+      "select a.metadata,d.source_fingerprint,d.document_sha256,d.transaction_date::text,d.amount_cents::text "+
+      "from public.approval_requests a "+
       "join public.sc_future_cash_documents d on d.transaction_id::text=a.metadata->>'transactionId' "+
       "join lateral (select event_type from public.sc_future_cash_document_events e "+
       "where e.transaction_id=d.transaction_id order by event_id desc limit 1) ev on true "+
@@ -632,8 +634,13 @@ router.get(PATH + "/documents/:transactionId/review-status",cashRegistryReadRate
     const parsed=raw && typeof raw==="object" && !Array.isArray(raw) ? raw as Record<string,unknown>:null;
     const coa=typeof parsed?.counterCoaId==="number" && Number.isSafeInteger(parsed.counterCoaId)
       ? parsed.counterCoaId:null;
-    res.json({transactionId:id,status:result.rows.length===1 && coa!==null?"EVIDENCE_REVIEWED":"NOT_REVIEWED",
-      counterCoaId:result.rows.length===1?coa:null,postingAllowed:false});
+    const row=result.rows[0];
+    const accepted=result.rows.length===1 && coa!==null && !!row && matchingCashEvidenceReview(
+      row.metadata,{transactionId:id,sourceFingerprint:row.source_fingerprint,
+        documentSha256:row.document_sha256,date:row.transaction_date,amountCents:row.amount_cents},coa,
+    );
+    res.json({transactionId:id,status:accepted?"EVIDENCE_REVIEWED":"NOT_REVIEWED",
+      counterCoaId:accepted?coa:null,postingAllowed:false});
   }catch{res.status(503).json({code:"SC_CASH_REVIEW_STATUS_UNAVAILABLE",postingAllowed:false});}
 });
 
