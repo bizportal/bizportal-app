@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createRequire } from "node:module";
 import { disposableCashPgAdapter } from "../lib/cash-ledger-postgres-disposable";
 import { postCashJournal, prepareCashJournal, reverseCashJournalLines, type CashMovement } from "../lib/cash-ledger-posting";
-import { createHash } from "node:crypto";
+import { prepareApprovedFutureCashJournal, commitPreparedCashJournal } from "../lib/cash-ledger-posting";
 import { prepareFutureCashSource, type FutureCashSource } from "../lib/future-cash-source-identity";
 
 const url = process.env.CASH_QA_PG_URL;
@@ -144,36 +144,29 @@ suite("disposable PostgreSQL cash journal adapter (never business DB)", () => {
     // Source key and fingerprint come exclusively from PR239's canonical
     // future-cash identity module, NOT an alternate bespoke identity format.
     // This is QA-only composition, not an authorized business HTTP writer.
-    const voucherScope={ companyId:1,configId:9001,accountId:18,
-      accountType:"cash" as const,cashCoaId:75839,counterpartyCoaId:902 };
     const source:FutureCashSource={
       companyId:1,accountId:18,cashCoaId:75839,
       transactionId:"33333333-3333-4333-8333-333333333333",
       date:"2026-11-27",direction:"IN",amount:"150000.25",
       sourceDocumentSha256:"a".repeat(64),
     };
-    const post=async(input:FutureCashSource,counterCoaId=902)=>{
+    const evidence=(input:FutureCashSource,counterCoaId=902)=>{
       const identity=prepareFutureCashSource(input);
-      const provisional=prepareCashJournal({...voucherScope,counterpartyCoaId:counterCoaId},{
-        rowNumber:1,date:input.date,direction:input.direction,amount:input.amount,
-        sourceFingerprint:identity.sourceFingerprint,
-      });
-      // The canonical source fingerprint covers content; an independently
-      // verified future contra COA must also be bound to journal idempotency.
-      const fingerprint=createHash("sha256").update(JSON.stringify([
-        "future-cash-qa-journal-v1",identity.sourceFingerprint,counterCoaId,
-      ])).digest("hex");
-      const journal={...provisional,sourceKey:identity.sourceKey,fingerprint};
-      return adapter.transaction(async tx=>{
-        const existing=await tx.findForUpdate(journal.sourceKey);
-        if(existing){
-          if(existing.fingerprint!==journal.fingerprint) throw new Error("CASH_SOURCE_CHANGED_REVIEW_REQUIRED");
-          return {id:existing.id,replay:true};
-        }
-        const id=await tx.insertWithLines(journal);
-        return {id,replay:false};
-      });
+      return {
+        receipt:{transactionId:input.transactionId,companyId:1,accountId:18,sha256:input.sourceDocumentSha256,status:"VERIFIED" as const,verifiedAt:"2026-11-27T00:00:00.000Z"},
+        approval:{transactionId:input.transactionId,companyId:1,accountId:18,sourceFingerprint:identity.sourceFingerprint,counterCoaId,status:"APPROVED" as const,authenticationMethod:"SIGNED_EMAIL_OTP" as const,authorizedRole:"owner" as const,approvedAt:"2026-11-27T00:01:00.000Z"},
+        coa:{id:counterCoaId,companyId:1,isActive:true,isPostable:true,isHeader:false},
+      };
     };
+    const post=async(input:FutureCashSource,counterCoaId=902)=>{
+      const {receipt,approval,coa}=evidence(input,counterCoaId);
+      return commitPreparedCashJournal(adapter,prepareApprovedFutureCashJournal(input,receipt,approval,coa));
+    };
+    const {receipt,approval,coa}=evidence(source);
+    expect(()=>prepareApprovedFutureCashJournal(source,receipt,null,coa)).toThrow("APPROVAL_NOT_VERIFIED");
+    expect(()=>prepareApprovedFutureCashJournal(source,{...receipt,status:"REVOKED"},approval,coa)).toThrow("RECEIPT_NOT_VERIFIED");
+    expect(()=>prepareApprovedFutureCashJournal(source,receipt,approval,{...coa,id:903})).toThrow("COA_NOT_ELIGIBLE");
+    expect(()=>prepareApprovedFutureCashJournal(source,receipt,{...approval,authenticationMethod:"OTHER"},coa)).toThrow("APPROVAL_NOT_VERIFIED");
     const before=(await pool.query("SELECT count(*)::int n FROM cash_qa.accounting_entries")).rows[0].n;
     const first=await post(source);
     expect(first.replay).toBe(false);

@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { prepareFutureCashSource, type FutureCashSource } from "./future-cash-source-identity";
+import { assessFutureCashDraft, type TrustedFutureCashReceipt, type TrustedFutureCashApproval, type TrustedFutureCashCoa } from "./future-cash-approval-preflight";
 
 /** Internal cash-only posting contract. No route or DB writer is connected yet. */
 export type CashScope = Readonly<{
@@ -57,17 +59,30 @@ export function prepareCashJournal(scope: CashScope, movement: CashMovement): Ca
   const sourceKey = createHash("sha256").update(JSON.stringify([
     "cst-cash-sheet-row-v1", scope.companyId, scope.configId, scope.accountId, movement.rowNumber,
   ])).digest("hex");
-  const cashLine: CashLine = { accountId: scope.cashCoaId,
-    debitCents: movement.direction === "IN" ? amountCents : 0n,
-    creditCents: movement.direction === "OUT" ? amountCents : 0n };
-  const contraLine: CashLine = { accountId: scope.counterpartyCoaId,
-    debitCents: movement.direction === "OUT" ? amountCents : 0n,
-    creditCents: movement.direction === "IN" ? amountCents : 0n };
+  return buildCashJournal(sourceKey,movement.sourceFingerprint,movement.date,movement.direction,amountCents,scope.cashCoaId,scope.counterpartyCoaId);
+}
+/** Shared balanced-line builder, with source identity supplied by the appropriate source contract. */
+function buildCashJournal(sourceKey:string,fingerprint:string,date:string,direction:"IN"|"OUT",amountCents:bigint,cashCoaId:number,counterpartyCoaId:number):CashJournal {
+  const cashLine: CashLine = { accountId: cashCoaId,
+    debitCents: direction === "IN" ? amountCents : 0n,
+    creditCents: direction === "OUT" ? amountCents : 0n };
+  const contraLine: CashLine = { accountId: counterpartyCoaId,
+    debitCents: direction === "OUT" ? amountCents : 0n,
+    creditCents: direction === "IN" ? amountCents : 0n };
   if (cashLine.debitCents + contraLine.debitCents !== cashLine.creditCents + contraLine.creditCents) {
     throw new Error("UNBALANCED_CASH_JOURNAL");
   }
-  return { sourceKey, fingerprint: movement.sourceFingerprint, date: movement.date,
+  return { sourceKey, fingerprint, date,
     amountCents, lines: [cashLine, contraLine] };
+}
+/** Internal approved voucher plan. Caller must obtain server-owned evidence;
+ * this is not a public authorization or business database writer. */
+export function prepareApprovedFutureCashJournal(source:FutureCashSource,receipt:TrustedFutureCashReceipt|null,approval:TrustedFutureCashApproval|null,coa:TrustedFutureCashCoa|null):CashJournal {
+  const preflight=assessFutureCashDraft(source,receipt,approval,coa);
+  if(!preflight.eligibleForReadOnlyDraft || preflight.counterCoaId===null)throw Error(preflight.reason);
+  const identity=prepareFutureCashSource(source);
+  const fingerprint=createHash("sha256").update(JSON.stringify(["future-cash-qa-journal-v1",identity.sourceFingerprint,preflight.counterCoaId])).digest("hex");
+  return buildCashJournal(identity.sourceKey,fingerprint,source.date,source.direction,cents(source.amount),source.cashCoaId,preflight.counterCoaId);
 }
 /** Adapter transaction must lock source key and atomically create journal header + two lines.
  * No physical tables/credentials are defined here; only a disposable adapter is tested.
@@ -85,7 +100,10 @@ export async function postCashJournal(
   scope: CashScope,
   movement: CashMovement,
 ): Promise<{ id: string; replay: boolean }> {
-  const plan = prepareCashJournal(scope, movement);
+  return commitPreparedCashJournal(adapter,prepareCashJournal(scope,movement));
+}
+/** Adapter-only transaction; no HTTP route or business DB binding. */
+export async function commitPreparedCashJournal(adapter:CashLedgerAdapter,plan:CashJournal):Promise<{id:string;replay:boolean}> {
   return adapter.transaction(async tx => {
     const existing = await tx.findForUpdate(plan.sourceKey);
     if (existing) {
