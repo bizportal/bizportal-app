@@ -23,7 +23,7 @@ describe("Account18 approved voucher server recovery",()=>{
     expect(recovery).toContain('setServerPendingDocuments(old=>old.filter(doc=>!ids.has(doc.transactionId)))');
     expect(page).toContain('!serverApprovedDocuments.some(doc=>doc.transactionId===pendingEvidence.transactionId)');
     expect(page).toContain('serverApprovedDocuments.map(doc=>');
-    expect(page).toContain('setServerApprovedDocuments([]);setApprovedListError(false)');
+    expect(page).toContain('setServerApprovedDocuments([]);setServerRevokedDocuments([]);setApprovedListError(false)');
     expect(page).not.toContain('"/journal/post"');
   });
 });
