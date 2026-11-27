@@ -154,6 +154,45 @@ router.get(PATH + "/readiness", async (req, res): Promise<void> => {
   }
 });
 
+/**
+ * Server-owned PENDING receipt discovery for a signed Owner/Super Admin.
+ * No browser-supplied UUID is trusted; list is limited and read-only.
+ * Exposes no private storage path, hash, uploader, or approval capability.
+ */
+router.get(PATH + "/documents/pending", cashDocumentRateLimit, async (_req, res): Promise<void> => {
+  try {
+    const result = await pool.query<{
+      transaction_id: string; direction: "IN" | "OUT";
+      transaction_date: string; amount_cents: string;
+    }>([
+      "select d.transaction_id::text, d.direction,",
+      " d.transaction_date::text, d.amount_cents::text",
+      " from public.sc_future_cash_documents d",
+      " where d.company_id=1 and d.account_id=18 and d.cash_coa_id=75839",
+      " and not exists (select 1 from public.sc_future_cash_document_events e",
+      " where e.transaction_id=d.transaction_id)",
+      " order by d.uploaded_at desc, d.transaction_id desc limit 20",
+    ].join("\n"));
+    const documents = result.rows.map(row => ({
+      transactionId: row.transaction_id,
+      status: "PENDING_VERIFICATION" as const,
+      date: row.transaction_date,
+      direction: row.direction,
+      amount: decimal(BigInt(row.amount_cents)),
+    }));
+    res.json({
+      mode: "ACCOUNT18_PENDING_SERVER_RECORDS",
+      accountId: 18, companyId: 1,
+      documents, postingAllowed: false,
+      historicalSheetConfig5: "NOT_USED_NONMIGRATION",
+    });
+  } catch {
+    res.status(503).json({
+      code: "SC_CASH_PENDING_LIST_UNAVAILABLE", postingAllowed: false,
+    });
+  }
+});
+
 router.post(PATH + "/preview", async (req, res): Promise<void> => {
   if (req.get("origin") !== OWNER_ORIGIN) {
     res.status(403).json({ code: "SC_CASH_SAME_ORIGIN_REQUIRED" });
