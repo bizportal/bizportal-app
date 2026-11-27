@@ -25,6 +25,7 @@ import advanceKasbonReadOnlyRouter from "./advance-kasbon-readonly";
 import accountingSettingsReadParityRouter from "./accounting-settings-read-parity";
 import fleetIntelligenceRouter from "./fleet-intelligence";
 import fleetFinanceIntegrationRouter from "./fleet-finance-integration";
+import aiTaskKasbonReadRouter from "./ai-task-kasbon-read";
 import gmailInvoiceSourceRouter from "./gmail-invoice-source";
 import {
   createDevAuthRouter,
@@ -142,6 +143,8 @@ router.post("/auth/email-login", (_request, response) => {
   response.status(404).json({ error: "Not found" });
 });
 
+// DEV read-only route uses its own existing signed OTP verification.
+router.use(aiTaskKasbonReadRouter);
 router.use(companiesRouter);
 router.use(hrdRouter);
 router.use(payrollRouter);
