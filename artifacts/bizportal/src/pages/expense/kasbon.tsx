@@ -3,6 +3,8 @@ import { Link } from "wouter";
 import { DatePicker } from "@/components/ui/date-picker";
 import { AppShell } from "@/components/layout/AppShell";
 import { AiTaskKasbonReadPanel } from "@/components/expense/ai-task-kasbon-read-panel";
+import { DevKasbonGeneralReadPage } from "@/components/expense/dev-kasbon-general-read-page";
+import { useCstDevKasbonReadPage } from "@/lib/dev-kasbon-general-read";
 import { parseKasbonListResponse, kasbonListReadState } from "@/lib/kasbon-list-read-state";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -152,6 +154,14 @@ async function apiFetch(url: string, opts?: RequestInit) {
 }
 
 export default function KasbonPage() {
+  const {activeCompanyId,isConsolidated}=useCompany();
+  if(typeof window!=="undefined" && useCstDevKasbonReadPage(window.location.hostname,activeCompanyId,isConsolidated)) {
+    return <DevKasbonGeneralReadPage />;
+  }
+  return <LegacyKasbonPage />;
+}
+
+function LegacyKasbonPage() {
   const { toast } = useToast();
   const qc = useQueryClient();
   const { activeCompanyId, isConsolidated } = useCompany();

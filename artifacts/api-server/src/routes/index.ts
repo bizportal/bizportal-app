@@ -26,6 +26,7 @@ import accountingSettingsReadParityRouter from "./accounting-settings-read-parit
 import fleetIntelligenceRouter from "./fleet-intelligence";
 import fleetFinanceIntegrationRouter from "./fleet-finance-integration";
 import aiTaskKasbonReadRouter from "./ai-task-kasbon-read";
+import devKasbonGeneralReadRouter from "./dev-kasbon-general-read";
 import gmailInvoiceSourceRouter from "./gmail-invoice-source";
 import {
   createDevAuthRouter,
@@ -145,6 +146,7 @@ router.post("/auth/email-login", (_request, response) => {
 
 // DEV read-only route uses its own existing signed OTP verification.
 router.use(aiTaskKasbonReadRouter);
+router.use(devKasbonGeneralReadRouter);
 router.use(companiesRouter);
 router.use(hrdRouter);
 router.use(payrollRouter);
