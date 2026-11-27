@@ -198,6 +198,42 @@ router.get(PATH + "/documents/pending", cashDocumentRateLimit, async (_req, res)
   }
 });
 
+/**
+ * Signed DEV Owner/Super Admin: list only server-VERIFIED cash evidence
+ * not yet approved by voucher OTP. No private hash/path or posting writer.
+ */
+router.get(PATH + "/documents/verified", cashDocumentRateLimit, async (_req, res): Promise<void> => {
+  try {
+    const result=await pool.query<{
+      transaction_id:string;direction:"IN"|"OUT";transaction_date:string;amount_cents:string;
+    }>([
+      "select d.transaction_id::text,d.direction,d.transaction_date::text,d.amount_cents::text",
+      " from public.sc_future_cash_documents d",
+      " join lateral (select e.event_type from public.sc_future_cash_document_events e",
+      " where e.transaction_id=d.transaction_id order by e.event_id desc limit 1) ev on true",
+      " where d.company_id=1 and d.account_id=18 and d.cash_coa_id=75839",
+      " and ev.event_type='VERIFIED'",
+      " and not exists (select 1 from public.approval_requests a",
+      " where a.company_id=1 and a.module='cash_bank'",
+      " and a.doc_type='sc_future_cash_voucher'",
+      " and a.metadata->>'transactionId'=d.transaction_id::text)",
+      " order by d.uploaded_at desc,d.transaction_id desc limit 20",
+    ].join("\n"));
+    res.json({
+      mode:"ACCOUNT18_VERIFIED_UNAPPROVED_SERVER_RECORDS",
+      companyId:1,accountId:18,
+      documents:result.rows.map(d=>({
+        transactionId:d.transaction_id,date:d.transaction_date,
+        direction:d.direction,amount:decimal(BigInt(d.amount_cents)),
+        status:"VERIFIED" as const,
+      })),
+      postingAllowed:false,historicalSheetConfig5:"NOT_USED_NONMIGRATION",
+    });
+  } catch {
+    res.status(503).json({code:"SC_CASH_VERIFIED_LIST_UNAVAILABLE",postingAllowed:false});
+  }
+});
+
 router.post(PATH + "/preview", async (req, res): Promise<void> => {
   if (req.get("origin") !== OWNER_ORIGIN) {
     res.status(403).json({ code: "SC_CASH_SAME_ORIGIN_REQUIRED" });
