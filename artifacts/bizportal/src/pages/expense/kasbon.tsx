@@ -2,6 +2,7 @@ import { useState, useCallback, useRef } from "react";
 import { Link } from "wouter";
 import { DatePicker } from "@/components/ui/date-picker";
 import { AppShell } from "@/components/layout/AppShell";
+import { AiTaskKasbonReadPanel } from "@/components/expense/ai-task-kasbon-read-panel";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -523,6 +524,8 @@ export default function KasbonPage() {
             </Button>
           </Link>
         </div>
+
+        <AiTaskKasbonReadPanel />
 
         {/* Create Form */}
         {showForm && (
