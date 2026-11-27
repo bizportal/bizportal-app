@@ -395,6 +395,14 @@ export default function ScNewCashPreview() {
               onClick={()=>void checkPendingIntegrity()}>
               {integrityBusy?"Memeriksa byte dokumen...":"Periksa integritas PDF (baca-saja)"}
             </Button>
+            <a
+              href={ENDPOINT+"/documents/"+encodeURIComponent(pendingEvidence.transactionId)+"/download"}
+              className="inline-flex min-h-9 items-center rounded-md border border-slate-500 px-3 py-2 text-sm text-slate-100 hover:bg-slate-700"
+            >Unduh bukti asli untuk diperiksa (Owner)</a>
+            <p className="text-xs text-slate-300">
+              File akan diunduh dari server privat setelah otorisasi ulang. Periksa isi
+              dokumen secara manual sebelum memverifikasi; unduhan tidak menyetujui transaksi.
+            </p>
             {integrityResult==="MATCH" && <p role="status" className="text-sm text-sky-200">
               Integritas file privat PASS: byte, ukuran, dan SHA-256 cocok. Dokumen tetap
               PENDING_VERIFICATION; persetujuan dan posting belum diaktifkan.
