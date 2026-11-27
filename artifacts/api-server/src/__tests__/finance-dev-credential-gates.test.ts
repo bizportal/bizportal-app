@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   resolveMarketplaceFinanceDevDatabaseUrl,
   withMarketplaceFinanceDevTransaction,
-} from "./marketplace-finance-dev";
+} from "@workspace/db";
 
 const keys = [
   "APP_ENV", "BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV",
