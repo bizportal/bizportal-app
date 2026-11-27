@@ -26,6 +26,9 @@ type PendingCashAcknowledgement = { transactionId:string;status:"PENDING_VERIFIC
 type ServerPendingDocument = PendingCashAcknowledgement & {
   date:string;direction:"IN"|"OUT";amount:string;
 };
+type ServerVerifiedDocument = {
+  transactionId:string;status:"VERIFIED";date:string;direction:"IN"|"OUT";amount:string;
+};
 const COMPANY1_PENDING_ACK_KEY="cst.account18.pending.evidence.ack.v1";
 function loadCompany1PendingAcknowledgement():PendingCashAcknowledgement|null{
   if(typeof window==="undefined")return null;
@@ -64,6 +67,8 @@ export default function ScNewCashPreview() {
   const [pendingEvidence,setPendingEvidence]=useState<PendingCashAcknowledgement|null>(loadCompany1PendingAcknowledgement);
   const [serverPendingDocuments,setServerPendingDocuments]=useState<ServerPendingDocument[]>([]);
   const [pendingListError,setPendingListError]=useState(false);
+  const [serverVerifiedDocuments,setServerVerifiedDocuments]=useState<ServerVerifiedDocument[]>([]);
+  const [verifiedListError,setVerifiedListError]=useState(false);
   const [integrityBusy,setIntegrityBusy]=useState(false);
   const [integrityResult,setIntegrityResult]=useState<"MATCH"|"UNAVAILABLE"|null>(null);
   const [reviewedUpload,setReviewedUpload]=useState<{transactionId:string;file:File}|null>(null);
@@ -93,6 +98,8 @@ export default function ScNewCashPreview() {
     setReceiptFile(null); // Preserve Company #1 acknowledgement across company changes.
     setServerPendingDocuments([]);
     setPendingListError(false);
+    setServerVerifiedDocuments([]);
+    setVerifiedListError(false);
     setIntegrityResult(null);
     setOwnerReviewConfirmed(false);
     setVoucherCode("");setVoucherError(null);
@@ -143,6 +150,33 @@ export default function ScNewCashPreview() {
         }catch{
           if(!controller.signal.aborted && version===companyRequestVersion.current)
             setPendingListError(true);
+        }
+        // Server-owned VERIFIED evidence recovery after signed Owner readiness.
+        try{
+          const verifiedResponse=await fetch(ENDPOINT+"/documents/verified",{
+            credentials:"include",cache:"no-store",signal:controller.signal,
+          });
+          const list=await verifiedResponse.json().catch(()=>null) as ({
+            mode?:string;companyId?:number;accountId?:number;postingAllowed?:boolean;
+            historicalSheetConfig5?:string;documents?:ServerVerifiedDocument[];
+          })|null;
+          if(!verifiedResponse.ok ||
+             list?.mode!=="ACCOUNT18_VERIFIED_UNAPPROVED_SERVER_RECORDS" ||
+             list.companyId!==1 || list.accountId!==18 || list.postingAllowed!==false ||
+             list.historicalSheetConfig5!=="NOT_USED_NONMIGRATION" ||
+             !Array.isArray(list.documents))throw Error("VERIFIED_LIST_UNAVAILABLE");
+          const valid=list.documents.filter(doc=>
+            doc?.status==="VERIFIED" &&
+            /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(doc.transactionId) &&
+            /^\d{4}-\d{2}-\d{2}$/.test(doc.date) &&
+            (doc.direction==="IN"||doc.direction==="OUT") &&
+            /^\d+\.\d{2}$/.test(doc.amount)
+          ).slice(0,20);
+          if(!controller.signal.aborted && version===companyRequestVersion.current)
+            setServerVerifiedDocuments(valid);
+        }catch{
+          if(!controller.signal.aborted && version===companyRequestVersion.current)
+            setVerifiedListError(true);
         }
       }catch(err){
         if(!controller.signal.aborted && version===companyRequestVersion.current)
@@ -446,6 +480,39 @@ export default function ScNewCashPreview() {
                   setOwnerReviewConfirmed(false);
                   setPreview(null);
                 }}>Buka audit dokumen</Button>
+            </div>)}
+          </CardContent>
+        </Card>
+      )}
+      {readiness && activeCompanyId===1 && (
+        <Card className="border-sky-500/30 bg-slate-800/90 text-white">
+          <CardHeader><CardTitle className="text-base">Dokumen VERIFIED menunggu OTP Owner</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs text-slate-300">
+              Dokumen sudah diverifikasi di server. Pilih satu untuk melanjutkan
+              persetujuan OTP voucher melalui sesi Owner/Super Admin yang sah.
+              Tidak ada posting jurnal.
+            </p>
+            {serverVerifiedDocuments.length===0 && <p role="status" className="text-sm text-slate-300">
+              {verifiedListError?"Daftar VERIFIED belum dapat diambil dari server.":
+                "Tidak ada dokumen VERIFIED yang menunggu persetujuan."}
+            </p>}
+            {serverVerifiedDocuments.map(doc=><div key={doc.transactionId}
+              className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-slate-600 p-3">
+              <div className="text-sm">
+                <p className="font-mono break-all">{doc.transactionId}</p>
+                <p className="text-slate-300">{doc.date} · {doc.direction==="IN"?"Kas masuk":"Kas keluar"} · Rp {money(doc.amount)}</p>
+              </div>
+              <Button type="button" variant="outline" disabled={voucherBusy||evidenceBusy||integrityBusy}
+                onClick={()=>{
+                  if(voucherLock.current)return;
+                  setVoucherChallenge(null);setVoucherApproved(null);setVoucherCode("");
+                  setVoucherCoa("");setVoucherError(null);
+                  setPendingEvidence({transactionId:doc.transactionId,status:"PENDING_VERIFICATION"});
+                  setVerifiedId(doc.transactionId);
+                  setIntegrityResult(null);setReviewedUpload(null);
+                  setOwnerReviewConfirmed(false);setPreview(null);
+                }}>Buka persetujuan OTP</Button>
             </div>)}
           </CardContent>
         </Card>
