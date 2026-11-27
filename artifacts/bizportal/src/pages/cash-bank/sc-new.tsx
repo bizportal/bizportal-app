@@ -29,6 +29,7 @@ type ServerPendingDocument = PendingCashAcknowledgement & {
 type ServerVerifiedDocument = {
   transactionId:string;status:"VERIFIED";date:string;direction:"IN"|"OUT";amount:string;
 };
+type ServerApprovedDocument = Omit<ServerVerifiedDocument,"status"> & {status:"APPROVED";counterCoaId:number;approvedAt:string};
 const COMPANY1_PENDING_ACK_KEY="cst.account18.pending.evidence.ack.v1";
 function loadCompany1PendingAcknowledgement():PendingCashAcknowledgement|null{
   if(typeof window==="undefined")return null;
@@ -69,6 +70,8 @@ export default function ScNewCashPreview() {
   const [pendingListError,setPendingListError]=useState(false);
   const [serverVerifiedDocuments,setServerVerifiedDocuments]=useState<ServerVerifiedDocument[]>([]);
   const [verifiedListError,setVerifiedListError]=useState(false);
+  const [serverApprovedDocuments,setServerApprovedDocuments]=useState<ServerApprovedDocument[]>([]);
+  const [approvedListError,setApprovedListError]=useState(false);
   const [integrityBusy,setIntegrityBusy]=useState(false);
   const [integrityResult,setIntegrityResult]=useState<"MATCH"|"UNAVAILABLE"|null>(null);
   const [reviewedUpload,setReviewedUpload]=useState<{transactionId:string;file:File}|null>(null);
@@ -101,6 +104,7 @@ export default function ScNewCashPreview() {
     setPendingListError(false);
     setServerVerifiedDocuments([]);
     setVerifiedListError(false);
+    setServerApprovedDocuments([]);setApprovedListError(false);
     setIntegrityResult(null);
     setOwnerReviewConfirmed(false);
     setVoucherCode("");setVoucherError(null);
@@ -178,6 +182,23 @@ export default function ScNewCashPreview() {
         }catch{
           if(!controller.signal.aborted && version===companyRequestVersion.current)
             setVerifiedListError(true);
+        }
+        // Server approval evidence is read-only and never restored from browser storage.
+        try{
+          const approvedResponse=await fetch(ENDPOINT+"/documents/approved",{
+            credentials:"include",cache:"no-store",signal:controller.signal,
+          });
+          const list=await approvedResponse.json().catch(()=>null) as ({mode?:string;companyId?:number;accountId?:number;postingAllowed?:boolean;historicalSheetConfig5?:string;documents?:ServerApprovedDocument[]})|null;
+          if(!approvedResponse.ok || list?.mode!=="ACCOUNT18_APPROVED_SERVER_RECORDS" || list.companyId!==1 || list.accountId!==18 || list.postingAllowed!==false || list.historicalSheetConfig5!=="NOT_USED_NONMIGRATION" || !Array.isArray(list.documents))throw Error("APPROVED_LIST_UNAVAILABLE");
+          const valid=list.documents.filter(doc=>doc?.status==="APPROVED" && /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(doc.transactionId) && /^\d{4}-\d{2}-\d{2}$/.test(doc.date) && (doc.direction==="IN"||doc.direction==="OUT") && /^\d+\.\d{2}$/.test(doc.amount) && Number.isSafeInteger(doc.counterCoaId) && doc.counterCoaId>0 && doc.counterCoaId!==75839 && Number.isFinite(Date.parse(doc.approvedAt))).slice(0,20);
+          if(!controller.signal.aborted && version===companyRequestVersion.current){
+            setServerApprovedDocuments(valid);
+            const ids=new Set(valid.map(doc=>doc.transactionId));
+            setServerVerifiedDocuments(old=>old.filter(doc=>!ids.has(doc.transactionId)));
+            setServerPendingDocuments(old=>old.filter(doc=>!ids.has(doc.transactionId)));
+          }
+        }catch{
+          if(!controller.signal.aborted && version===companyRequestVersion.current)setApprovedListError(true);
         }
       }catch(err){
         if(!controller.signal.aborted && version===companyRequestVersion.current)
@@ -373,6 +394,8 @@ export default function ScNewCashPreview() {
         payload?.status!=="APPROVED" || payload?.postingAllowed!==false)
         throw Error("Persetujuan belum terkonfirmasi (HTTP "+response.status+").");
       setVoucherApproved({transactionId:id,counterCoaId:coaId});setVoucherChallenge(null);
+      setServerVerifiedDocuments(old=>old.filter(doc=>doc.transactionId!==id));
+      setServerPendingDocuments(old=>old.filter(doc=>doc.transactionId!==id));
     }catch(err){
       if(version===companyRequestVersion.current)setVoucherError(err instanceof Error?err.message:"Konfirmasi OTP belum tersedia.");
     }finally{setVoucherCode("");voucherLock.current=false;setVoucherBusy(false);}
@@ -518,7 +541,23 @@ export default function ScNewCashPreview() {
           </CardContent>
         </Card>
       )}
-      {readiness && pendingEvidence && activeCompanyId===1 && (
+      {readiness && activeCompanyId===1 && (
+        <Card className="border-emerald-500/30 bg-slate-800/90 text-white">
+          <CardHeader><CardTitle className="text-base">Voucher APPROVED — persetujuan tercatat</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs text-slate-300">Bukti persetujuan dari server. Tidak memerlukan OTP ulang. Posting jurnal belum diaktifkan.</p>
+            {serverApprovedDocuments.length===0 && <p role="status" className="text-sm text-slate-300">{approvedListError?"Daftar APPROVED belum dapat diambil dari server.":"Tidak ada voucher APPROVED dalam daftar terbaru. Muat ulang untuk memeriksa persetujuan baru."}</p>}
+            {serverApprovedDocuments.map(doc=><div key={doc.transactionId} className="space-y-2 rounded-md border border-slate-600 p-3">
+              <p className="font-mono break-all text-sm">{doc.transactionId}</p>
+              <p className="text-sm">{doc.date} · {doc.direction==="IN"?"Kas masuk":"Kas keluar"} · Rp {money(doc.amount)}</p>
+              <p className="text-sm">COA lawan: {readiness.contraCandidates.find(c=>c.id===doc.counterCoaId)?.code??doc.counterCoaId} · APPROVED</p>
+              <p className="text-xs text-slate-300">Disetujui: {new Date(doc.approvedAt).toLocaleString("id-ID",{timeZone:"Asia/Jakarta"})} WIB</p>
+              <a href={ENDPOINT+"/documents/"+encodeURIComponent(doc.transactionId)+"/download"} className="text-sm underline">Unduh bukti asli</a>
+            </div>)}
+          </CardContent>
+        </Card>
+      )}
+      {readiness && pendingEvidence && activeCompanyId===1 && !serverApprovedDocuments.some(doc=>doc.transactionId===pendingEvidence.transactionId) && (
         <Card className="border-sky-500/40 bg-slate-800/90 text-white">
           <CardContent className="space-y-2 py-4">
             <p role="status" className="text-sm">
