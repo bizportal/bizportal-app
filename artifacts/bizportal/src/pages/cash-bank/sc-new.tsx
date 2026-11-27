@@ -595,7 +595,7 @@ export default function ScNewCashPreview() {
               <Button type="button" variant="outline" disabled={evidenceBusy||integrityBusy||voucherBusy}
                 onClick={()=>{
                   if(voucherLock.current)return;
-                  setVoucherChallenge(null);setVoucherApproved(null);setVoucherCode("");setVoucherCoa("");setVoucherCoaSearch("");setVoucherError(null);
+                  setVoucherChallenge(null);setVoucherApproved(null);setVoucherCode("");setVoucherCoa("");setVoucherCoaSearch("");setVoucherError(null);resetEvidenceReview();
                   setPendingEvidence({transactionId:doc.transactionId,status:"PENDING_VERIFICATION"});
                   setIntegrityResult(null);setReviewedUpload(null);setVerifiedId(null);
                   setOwnerReviewConfirmed(false);
@@ -628,7 +628,7 @@ export default function ScNewCashPreview() {
                 onClick={()=>{
                   if(voucherLock.current)return;
                   setVoucherChallenge(null);setVoucherApproved(null);setVoucherCode("");
-                  setVoucherCoa("");setVoucherError(null);
+                  setVoucherCoa("");setVoucherError(null);resetEvidenceReview();
                   setPendingEvidence({transactionId:doc.transactionId,status:"PENDING_VERIFICATION"});
                   setVerifiedId(doc.transactionId);
                   setIntegrityResult(null);setReviewedUpload(null);
@@ -678,7 +678,7 @@ export default function ScNewCashPreview() {
         <Card className="border-sky-500/40 bg-slate-800/90 text-white">
           <CardContent className="space-y-2 py-4">
             <p role="status" className="text-sm">
-              {verifiedId===pendingEvidence.transactionId?"Bukti VERIFIED oleh server (belum disetujui untuk posting).":"Bukti tersimpan sebagai PENDING_VERIFICATION (belum disetujui)."}
+              {verifiedId===pendingEvidence.transactionId?"Integritas dokumen tercatat VERIFIED (isi transaksi BELUM otomatis dinyatakan sah).":"Bukti tersimpan sebagai PENDING_VERIFICATION (belum disetujui)."}
               ID transaksi: <code className="break-all">{pendingEvidence.transactionId}</code>.
               Tidak ada jurnal keuangan yang diposting.
             </p>
@@ -723,7 +723,10 @@ export default function ScNewCashPreview() {
                   onClick={()=>void verifyEvidence()}>Verifikasi Bukti (tanpa posting)</Button>
               </div>
             )}
-            {verifiedId===pendingEvidence.transactionId && (
+            {verifiedId===pendingEvidence.transactionId && revokedId===pendingEvidence.transactionId && (
+              <p role="alert" className="text-sm text-amber-200">REVOKED — kelayakan bukti dicabut. Approval OTP historis tetap tersimpan, tidak ada posting jurnal.</p>
+            )}
+            {verifiedId===pendingEvidence.transactionId && revokedId!==pendingEvidence.transactionId && (
               <div className="space-y-3 rounded-md border border-slate-600 p-3">
                 <h3 className="font-semibold">Persetujuan voucher Owner</h3>
                 {voucherApproved?.transactionId===verifiedId ? (
@@ -733,16 +736,16 @@ export default function ScNewCashPreview() {
                     <Label htmlFor="sc-voucher-coa-search">COA lawan voucher</Label>
                     <Input id="sc-voucher-coa-search"
                       value={voucherCoaSearch} placeholder="Cari kode atau nama COA (contoh: 1-1023-CST)"
-                      disabled={voucherBusy||!!voucherChallenge}
+                      disabled={voucherBusy||!!voucherChallenge||evidenceReviewed}
                       onChange={e=>setVoucherCoaSearch(e.target.value)}
                       aria-label="Cari COA lawan voucher" />
                     <select
                       aria-label="Daftar COA lawan voucher"
                       value={voucherCoa}
                       size={7}
-                      disabled={voucherBusy||!!voucherChallenge}
+                      disabled={voucherBusy||!!voucherChallenge||evidenceReviewed}
                       onChange={e=>{
-                        if(voucherLock.current||voucherChallenge)return;
+                        if(voucherLock.current||voucherChallenge||evidenceReviewed)return;
                         setVoucherCoa(e.target.value);
                         setVoucherCoaSearch("");
                       }}
@@ -757,7 +760,7 @@ export default function ScNewCashPreview() {
                       COA terpilih: {readiness.contraCandidates.find(c=>String(c.id)===voucherCoa)?.code} — {readiness.contraCandidates.find(c=>String(c.id)===voucherCoa)?.name}
                     </p>}
                     <p className="text-xs text-slate-400">Gulir daftar di atas dengan roda mouse, touchpad, atau tombol panah. Ketik kode/nama untuk mencari.</p>
-                    <Button type="button" disabled={voucherBusy||!voucherCoa} onClick={()=>void requestVoucherOtp()}>
+                    <Button type="button" disabled={voucherBusy||reviewBusy||!voucherCoa||!evidenceReviewed} onClick={()=>void requestVoucherOtp()}>
                       {voucherBusy?"Memproses...":voucherChallenge?"Kirim ulang OTP":"Setujui Transaksi — Kirim OTP"}
                     </Button>
                     {voucherChallenge?.transactionId===verifiedId && (
