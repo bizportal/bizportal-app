@@ -7,7 +7,7 @@ DO $$ BEGIN
  END IF;
 END $$;
 CREATE TABLE public.qa_approval_scenarios (
- id bigint PRIMARY KEY,
+ id integer PRIMARY KEY,
  company_id integer NOT NULL,
  scenario_ref text NOT NULL,
  amount numeric(18,2) NOT NULL,
@@ -17,7 +17,7 @@ CREATE TABLE public.qa_approval_scenarios (
 );
 CREATE TABLE public.qa_approval_audit (
  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
- scenario_id bigint NOT NULL REFERENCES public.qa_approval_scenarios(id),
+ scenario_id integer NOT NULL REFERENCES public.qa_approval_scenarios(id),
  company_id integer NOT NULL,
  actor text NOT NULL,
  action text NOT NULL

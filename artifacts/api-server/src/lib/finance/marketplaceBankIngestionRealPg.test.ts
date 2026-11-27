@@ -110,6 +110,9 @@ afterAll(async () => {
 
 beforeEach(async () => {
   vi.stubEnv("APP_ENV", "development");
+  // Localhost-only test database: honor the current main branch write guard.
+  // Never set this flag in an application runtime or business environment.
+  vi.stubEnv("BANK_SHEET_DEV_WRITES_ENABLED", "true");
   vi.stubEnv("BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV", "false");
   vi.stubEnv("BIZPORTAL_MARKETPLACE_VENDOR_PARENT_LOCK_ENABLED_DEV", "false");
   vi.stubEnv("BIZPORTAL_MARKETPLACE_AP_BANK_STATUS_ADAPTER_DEV", "true");
