@@ -33,11 +33,12 @@ export interface CashApprovalSqlReader {
 const validUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const validFingerprint = /^[a-f0-9]{64}$/;
 
-export const futureCashOtpPurpose = (transactionId: string, fingerprint: string): string => {
-  if (!validUuid.test(transactionId) || !validFingerprint.test(fingerprint)) {
+export const futureCashOtpPurpose = (transactionId: string, fingerprint: string, counterCoaId: number): string => {
+  if (!validUuid.test(transactionId) || !validFingerprint.test(fingerprint) ||
+      !Number.isSafeInteger(counterCoaId) || counterCoaId <= 0 || counterCoaId > 2147483647 || counterCoaId === 75839) {
     throw new Error("INVALID_FUTURE_CASH_APPROVAL_SCOPE");
   }
-  return `sc-cash-voucher:${transactionId}:${fingerprint}`;
+  return `sc-cash-voucher:${transactionId}:${fingerprint}:${counterCoaId}`;
 };
 
 /**
@@ -51,7 +52,7 @@ export async function readPurposeBoundFutureCashApproval(
 ): Promise<TrustedFutureCashApproval | null> {
   try {
     const { sourceFingerprint } = prepareFutureCashSource(source);
-    const purpose = futureCashOtpPurpose(source.transactionId, sourceFingerprint);
+    const purposePrefix = `sc-cash-voucher:${source.transactionId}:${sourceFingerprint}:`;
     const result = await reader.query(
       `select a.company_id,
               a.status, a.approval_type, a.approver_role, a.approved_by,
@@ -67,7 +68,8 @@ export async function readPurposeBoundFutureCashApproval(
          left join lateral (
            select email, verified_at, expires_at, created_at
              from public.bizportal_email_otp_codes
-            where purpose = $4
+            where purpose = $4 || (a.metadata->>'counterCoaId')
+              and id::text = a.metadata->>'otpEvidenceId'
               and verified_at is not null
               and verified_at <= expires_at
               and verified_at >= created_at
@@ -83,7 +85,7 @@ export async function readPurposeBoundFutureCashApproval(
           and a.metadata->>'transactionId'=$2
           and a.metadata->>'sourceFingerprint'=$3
         order by a.updated_at desc, a.id desc limit 2`,
-      [1, source.transactionId, sourceFingerprint, purpose],
+      [1, source.transactionId, sourceFingerprint, purposePrefix],
     );
     // Reject ambiguous/multiple approvals rather than guess which one wins.
     if (result.rows.length !== 1) return null;
