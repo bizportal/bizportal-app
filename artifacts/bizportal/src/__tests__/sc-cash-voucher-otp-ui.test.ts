@@ -24,4 +24,14 @@ describe("Account18 Owner voucher OTP UI — no posting",()=>{
     expect(page).toContain("disabled={voucherBusy||!!voucherChallenge}");
     expect(page).not.toContain('"/journal/post"');
   });
+  it("accepts exactly six numeric OTP digits in both actual confirmation guards",()=>{
+    const guards=[...page.matchAll(/\/(\^[^/\n]+\$)\/\.test\(voucherCode\)/g)];
+    expect(guards).toHaveLength(2);
+    for(const guard of guards){
+      const pattern=new RegExp(guard[1]!);
+      for(const valid of ["123456","000000","012345","999999"]) expect(pattern.test(valid)).toBe(true);
+      for(const invalid of ["","12345","1234567","12345a","abcdef"," 123456","123456 ","123\n456"]) expect(pattern.test(invalid)).toBe(false);
+    }
+  });
+
 });

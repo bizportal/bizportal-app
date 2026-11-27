@@ -322,7 +322,7 @@ export default function ScNewCashPreview() {
       voucherLock.current || evidenceBusy || integrityBusy ||
       voucherApproved?.transactionId===verifiedId || !voucherChallenge ||
       voucherChallenge.transactionId!==verifiedId || String(voucherChallenge.counterCoaId)!==voucherCoa ||
-      !/^\\d{6}$/.test(voucherCode))return;
+      !/^\d{6}$/.test(voucherCode))return;
     const id=voucherChallenge.transactionId;
     const coaId=voucherChallenge.counterCoaId;
     const version=companyRequestVersion.current;
@@ -521,7 +521,7 @@ export default function ScNewCashPreview() {
                         <Label htmlFor="sc-voucher-otp">Kode OTP voucher</Label>
                         <Input id="sc-voucher-otp" type="password" inputMode="numeric" autoComplete="one-time-code" maxLength={6}
                           value={voucherCode} disabled={voucherBusy} onChange={e=>setVoucherCode(e.target.value.replace(/[^0-9]/g,"").slice(0,6))}/>
-                        <Button type="button" disabled={voucherBusy||!/^\\d{6}$/.test(voucherCode)} onClick={()=>void confirmVoucherOtp()}>Konfirmasi OTP</Button>
+                        <Button type="button" disabled={voucherBusy||!/^\d{6}$/.test(voucherCode)} onClick={()=>void confirmVoucherOtp()}>Konfirmasi OTP</Button>
                         <Button type="button" variant="outline" disabled={voucherBusy} onClick={()=>{if(!voucherLock.current){setVoucherChallenge(null);setVoucherCode("");}}}>Ubah COA (wajib OTP baru)</Button>
                       </div>
                     )}
