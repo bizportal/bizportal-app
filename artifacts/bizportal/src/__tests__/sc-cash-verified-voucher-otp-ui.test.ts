@@ -27,6 +27,16 @@ describe("Account18 verified voucher OTP Owner workflow, no posting",()=>{
     expect(page).toContain('data.postingAllowed!==false');
     expect(page).toContain('window.confirm(');
   });
+  it("refreshes the server-owned verified list immediately after explicit Owner verification",()=>{
+    const review=page.slice(page.indexOf("const verifyEvidence=async()=>"),
+      page.indexOf("const sendVoucherOtp=async()=>"));
+    expect(review).toContain('setServerPendingDocuments(docs=>docs.filter(doc=>doc.transactionId!==id))');
+    expect(review).toContain('fetch(ENDPOINT+"/documents/verified"');
+    expect(review).toContain('list?.mode!=="ACCOUNT18_VERIFIED_UNAPPROVED_SERVER_RECORDS"');
+    expect(review).toContain('setServerVerifiedDocuments(verified)');
+    expect(review).toContain('setVerifiedListError(true)');
+    expect(review).not.toContain('"/journal/post"');
+  });
   it("consumes six-digit voucher OTP on explicit Owner action without posting",()=>{
     expect(page).toContain('Kode OTP khusus voucher (6 digit)');
     expect(page).toContain('const confirmVoucherOtp=async()=>');
