@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { createHash, randomUUID, randomInt } from "node:crypto";
-import { hash } from "bcryptjs";
+import { compare, hash } from "bcryptjs";
 import { sendFutureCashVoucherOtpEmail } from "../lib/smtp";
 import { futureCashOtpPurpose } from "../lib/future-cash-purpose-otp-reader";
 import { readVerifiedFutureCashDocument } from "../lib/future-cash-document-registry-read";
@@ -664,6 +664,132 @@ router.post(PATH + "/voucher/otp/send", async (req, res): Promise<void> => {
     } finally { client.release(); }
   } catch {
     res.status(503).json({ code: "SC_CASH_VOUCHER_OTP_UNAVAILABLE" });
+  }
+});
+
+/** Consume the exact voucher OTP and append its approval atomically. No posting. */
+router.post(PATH + "/voucher/otp/confirm", async (req, res): Promise<void> => {
+  if (req.get("origin") !== OWNER_ORIGIN) {
+    res.status(403).json({ code: "SC_CASH_SAME_ORIGIN_REQUIRED" });
+    return;
+  }
+  const body = req.body && typeof req.body === "object" && !Array.isArray(req.body)
+    ? req.body as Record<string, unknown> : {};
+  const allowed = new Set(["companyId", "accountId", "transactionId", "counterCoaId", "code"]);
+  const email = typeof res.locals.scCashOwnerEmail === "string"
+    ? res.locals.scCashOwnerEmail.trim().toLowerCase() : "";
+  const role = res.locals.scCashOwnerRole;
+  const id = body.transactionId;
+  const contraId = body.counterCoaId;
+  const code = body.code;
+  if (Object.keys(body).some(k => !allowed.has(k)) ||
+      body.companyId !== 1 || body.accountId !== 18 ||
+      typeof id !== "string" ||
+      !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id) ||
+      typeof contraId !== "number" || !Number.isSafeInteger(contraId) ||
+      contraId <= 0 || contraId > 2147483647 || contraId === CASH_COA_ID ||
+      typeof code !== "string" || !/^\d{6}$/.test(code) ||
+      !["owner","super_admin"].includes(role) ||
+      email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    res.status(400).json({ code: "SC_CASH_INVALID_VOUCHER_CONFIRMATION" });
+    return;
+  }
+  try {
+    const account = await cashAccount();
+    if (!validAccount(account)) {
+      res.status(409).json({ code: "SC_CASH_ACCOUNT18_BASELINE_INVALID" });
+      return;
+    }
+    const rows = await pool.query<{
+      transaction_id: string; document_sha256: string; source_fingerprint: string;
+      direction: "IN"|"OUT"; transaction_date: string; amount_cents: string;
+    }>(
+      "select transaction_id::text, document_sha256, source_fingerprint, direction, transaction_date::text, amount_cents::text from public.sc_future_cash_documents where transaction_id=$1::uuid and company_id=1 and account_id=18 and cash_coa_id=75839", [id],
+    );
+    const d = rows.rows[0];
+    if (rows.rows.length !== 1 || !d || d.transaction_id !== id) {
+      res.status(404).json({ code: "SC_CASH_DOCUMENT_NOT_FOUND" });
+      return;
+    }
+    const source = {
+      companyId: 1, accountId: 18, cashCoaId: 75839, transactionId: id,
+      sourceDocumentSha256: d.document_sha256, direction: d.direction,
+      date: d.transaction_date, amount: decimal(BigInt(d.amount_cents)),
+    };
+    const { sourceFingerprint } = prepareFutureCashSource(source);
+    const purpose = futureCashOtpPurpose(id, sourceFingerprint, contraId);
+    if (sourceFingerprint !== d.source_fingerprint || source.date < account.created_at.slice(0,10) ||
+        !await verifyPrivateFutureCashReceipt(source, await readVerifiedFutureCashDocument(source, pool), pendingEvidenceStorage)) {
+      res.status(409).json({ code: "SC_CASH_VERIFIED_DOCUMENT_REQUIRED" });
+      return;
+    }
+    const client = await pool.connect();
+    let committed = false;
+    try {
+      await client.query("BEGIN");
+      await client.query("select pg_advisory_xact_lock(hashtextextended($1,0))", ["sc-cash-otp-email:"+email]);
+      await client.query("select pg_advisory_xact_lock(hashtextextended($1,0))", ["sc-cash-otp-source:"+id]);
+      const locked = await client.query(
+        "select transaction_id from public.sc_future_cash_documents where transaction_id=$1::uuid and company_id=1 and account_id=18 and source_fingerprint=$2 for update",
+        [id,sourceFingerprint],
+      );
+      if (locked.rowCount !== 1 || !await readVerifiedFutureCashDocument(source,client))
+        throw Error("SC_CASH_VERIFIED_DOCUMENT_REQUIRED");
+      const contra = await client.query<ContraCoa>(
+        "select id,company_id,code,name,is_active,is_postable,is_header from public.chart_of_accounts where id=$1 and company_id=1 for share",
+        [contraId],
+      );
+      if (!validContra(contra.rows[0])) throw Error("SC_CASH_COUNTER_COA_NOT_ELIGIBLE");
+      const existing = await client.query(
+        "select id from public.approval_requests where company_id=1 and module='cash_bank' and doc_type='sc_future_cash_voucher' and metadata->>'transactionId'=$1 limit 1",
+        [id],
+      );
+      if (existing.rowCount) throw Error("SC_CASH_VOUCHER_ALREADY_EXISTS");
+      // Registry event ID is stable, numeric, unique within this document type.
+      const event = await client.query<{event_id:string}>(
+        "select event_id::text from public.sc_future_cash_document_events where transaction_id=$1::uuid and event_type='VERIFIED' order by event_id desc limit 1",
+        [id],
+      );
+      const docId = Number(event.rows[0]?.event_id);
+      if (!Number.isSafeInteger(docId) || docId <= 0 || docId > 2147483647)
+        throw Error("SC_CASH_VOUCHER_DOC_ID_INVALID");
+      const otps = await client.query<{id:string;code_hash:string}>(
+        "select id::text,code_hash from public.bizportal_email_otp_codes where email=$1 and purpose=$2 and verified_at is null and code_hash is not null and attempts<5 and created_at<=clock_timestamp() and expires_at>clock_timestamp() order by id desc limit 2 for update",
+        [email,purpose],
+      );
+      if (otps.rows.length !== 1) {
+        await client.query("ROLLBACK");
+        res.status(400).json({ code:"SC_CASH_VOUCHER_OTP_INVALID" });
+        return;
+      }
+      const otp=otps.rows[0]!;
+      if (!await compare(code,otp.code_hash)) {
+        await client.query(
+          "update public.bizportal_email_otp_codes set attempts=attempts+1 where id=$1 and purpose=$2 and verified_at is null and attempts<5",
+          [otp.id,purpose],
+        );
+        await client.query("COMMIT"); committed=true;
+        res.status(400).json({ code:"SC_CASH_VOUCHER_OTP_INVALID" });
+        return;
+      }
+      const consumed=await client.query<{id:string;verified_at:Date}>(
+        "update public.bizportal_email_otp_codes set verified_at=clock_timestamp() where id=$1 and email=$2 and purpose=$3 and verified_at is null and attempts<5 and code_hash is not null and expires_at>clock_timestamp() returning id::text,verified_at",
+        [otp.id,email,purpose],
+      );
+      if (consumed.rows.length!==1) throw Error("SC_CASH_OTP_CONSUMPTION_FAILED");
+      const inserted=await client.query<{id:number}>(
+        "insert into public.approval_requests (company_id,module,doc_type,doc_id,doc_number,requested_by,status,approved_by,approved_at,approver_role,approval_type,decided_by,decided_at,metadata) values (1,'cash_bank','sc_future_cash_voucher',$1,$2,$3,'approved',$3,clock_timestamp(),$4,'signed_email_otp',$3,clock_timestamp(),$5::jsonb) returning id",
+        [docId,id,email,role,JSON.stringify({transactionId:id,sourceFingerprint,accountId:18,counterCoaId:contraId,otpEvidenceId:otp.id})],
+      );
+      if (inserted.rows.length!==1) throw Error("SC_CASH_VOUCHER_APPROVAL_FAILED");
+      await client.query("COMMIT"); committed=true;
+      res.status(201).json({transactionId:id,counterCoaId:contraId,status:"APPROVED",postingAllowed:false});
+    } catch {
+      if (!committed) await client.query("ROLLBACK").catch(()=>undefined);
+      res.status(409).json({code:"SC_CASH_VOUCHER_NOT_APPROVED"});
+    } finally { client.release(); }
+  } catch {
+    res.status(503).json({code:"SC_CASH_VOUCHER_CONFIRMATION_UNAVAILABLE"});
   }
 });
 
