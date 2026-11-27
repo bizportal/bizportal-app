@@ -75,6 +75,7 @@ export default function ScNewCashPreview() {
   const [verifiedId,setVerifiedId]=useState<string|null>(null);
   const [ownerReviewConfirmed,setOwnerReviewConfirmed]=useState(false);
   const [voucherCoa,setVoucherCoa]=useState("");
+  const [voucherCoaSearch,setVoucherCoaSearch]=useState("");
   const [voucherCode,setVoucherCode]=useState("");
   const [voucherBusy,setVoucherBusy]=useState(false);
   const voucherLock=useRef(false);
@@ -474,7 +475,7 @@ export default function ScNewCashPreview() {
               <Button type="button" variant="outline" disabled={evidenceBusy||integrityBusy||voucherBusy}
                 onClick={()=>{
                   if(voucherLock.current)return;
-                  setVoucherChallenge(null);setVoucherApproved(null);setVoucherCode("");setVoucherCoa("");setVoucherError(null);
+                  setVoucherChallenge(null);setVoucherApproved(null);setVoucherCode("");setVoucherCoa("");setVoucherCoaSearch("");setVoucherError(null);
                   setPendingEvidence({transactionId:doc.transactionId,status:"PENDING_VERIFICATION"});
                   setIntegrityResult(null);setReviewedUpload(null);setVerifiedId(null);
                   setOwnerReviewConfirmed(false);
@@ -573,12 +574,33 @@ export default function ScNewCashPreview() {
                   <p role="status" className="text-sm text-green-200">APPROVED — persetujuan OTP tercatat di server. Jurnal belum diposting.</p>
                 ):(
                   <>
-                    <Label>COA lawan voucher</Label>
-                    <Select value={voucherCoa} disabled={voucherBusy||!!voucherChallenge}
-                      onValueChange={v=>{if(!voucherLock.current&&!voucherChallenge)setVoucherCoa(v);}}>
-                      <SelectTrigger><SelectValue placeholder="Pilih COA lawan"/></SelectTrigger>
-                      <SelectContent>{readiness.contraCandidates.map(c=><SelectItem key={c.id} value={String(c.id)}>{c.code} — {c.name}</SelectItem>)}</SelectContent>
-                    </Select>
+                    <Label htmlFor="sc-voucher-coa-search">COA lawan voucher</Label>
+                    <Input id="sc-voucher-coa-search"
+                      value={voucherCoaSearch} placeholder="Cari kode atau nama COA (contoh: 1-1023-CST)"
+                      disabled={voucherBusy||!!voucherChallenge}
+                      onChange={e=>setVoucherCoaSearch(e.target.value)}
+                      aria-label="Cari COA lawan voucher" />
+                    <select
+                      aria-label="Daftar COA lawan voucher"
+                      value={voucherCoa}
+                      size={7}
+                      disabled={voucherBusy||!!voucherChallenge}
+                      onChange={e=>{
+                        if(voucherLock.current||voucherChallenge)return;
+                        setVoucherCoa(e.target.value);
+                        setVoucherCoaSearch("");
+                      }}
+                      className="w-full max-w-full min-h-36 overflow-y-auto overscroll-contain rounded-md border border-slate-500 bg-slate-900 px-2 py-1 text-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <option value="">Pilih COA lawan</option>
+                      {readiness.contraCandidates
+                        .filter(c=>(c.code+" "+c.name).toLowerCase().includes(voucherCoaSearch.trim().toLowerCase()))
+                        .map(c=><option key={c.id} value={String(c.id)}>{c.code} — {c.name}</option>)}
+                    </select>
+                    {voucherCoa && <p className="text-xs text-slate-300">
+                      COA terpilih: {readiness.contraCandidates.find(c=>String(c.id)===voucherCoa)?.code} — {readiness.contraCandidates.find(c=>String(c.id)===voucherCoa)?.name}
+                    </p>}
+                    <p className="text-xs text-slate-400">Gulir daftar di atas dengan roda mouse, touchpad, atau tombol panah. Ketik kode/nama untuk mencari.</p>
                     <Button type="button" disabled={voucherBusy||!voucherCoa} onClick={()=>void requestVoucherOtp()}>
                       {voucherBusy?"Memproses...":voucherChallenge?"Kirim ulang OTP":"Setujui Transaksi — Kirim OTP"}
                     </Button>
