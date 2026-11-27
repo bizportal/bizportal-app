@@ -26,7 +26,7 @@ describe("Kas Besar SC pending evidence upload resilience", () => {
     expect(uploadFn).toContain("sessionStorage.setItem(COMPANY1_PENDING_ACK_KEY");
     expect(uploadFn).toContain("setPendingEvidence(ack)");
     expect(page).toContain("sessionStorage.getItem(COMPANY1_PENDING_ACK_KEY)");
-    expect(page).toContain("{readiness && pendingEvidence && activeCompanyId===1 && (");
+    expect(page).toContain("{readiness && pendingEvidence && activeCompanyId===1 && !serverApprovedDocuments.some(doc=>doc.transactionId===pendingEvidence.transactionId) && (");
     expect(page).toContain("sessionStorage.removeItem(COMPANY1_PENDING_ACK_KEY)");
     expect(page).toContain("Buat transaksi baru");
     expect(page).not.toContain("readyForCommit:true");
