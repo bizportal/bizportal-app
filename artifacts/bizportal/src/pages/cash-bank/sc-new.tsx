@@ -26,6 +26,9 @@ type PendingCashAcknowledgement = { transactionId:string;status:"PENDING_VERIFIC
 type ServerPendingDocument = PendingCashAcknowledgement & {
   date:string;direction:"IN"|"OUT";amount:string;
 };
+type ServerVerifiedDocument = {
+  transactionId:string;status:"VERIFIED";date:string;direction:"IN"|"OUT";amount:string;
+};
 const COMPANY1_PENDING_ACK_KEY="cst.account18.pending.evidence.ack.v1";
 function loadCompany1PendingAcknowledgement():PendingCashAcknowledgement|null{
   if(typeof window==="undefined")return null;
@@ -64,6 +67,15 @@ export default function ScNewCashPreview() {
   const [pendingEvidence,setPendingEvidence]=useState<PendingCashAcknowledgement|null>(loadCompany1PendingAcknowledgement);
   const [serverPendingDocuments,setServerPendingDocuments]=useState<ServerPendingDocument[]>([]);
   const [pendingListError,setPendingListError]=useState(false);
+  const [serverVerifiedDocuments,setServerVerifiedDocuments]=useState<ServerVerifiedDocument[]>([]);
+  const [verifiedListError,setVerifiedListError]=useState(false);
+  const [selectedVerifiedId,setSelectedVerifiedId]=useState<string|null>(null);
+  const [voucherContraCoaId,setVoucherContraCoaId]=useState("");
+  const [voucherCode,setVoucherCode]=useState("");
+  const [voucherOtpSent,setVoucherOtpSent]=useState(false);
+  const [voucherBusy,setVoucherBusy]=useState(false);
+  const [voucherError,setVoucherError]=useState<string|null>(null);
+  const [voucherApprovedId,setVoucherApprovedId]=useState<string|null>(null);
   const [integrityBusy,setIntegrityBusy]=useState(false);
   const [integrityResult,setIntegrityResult]=useState<"MATCH"|"UNAVAILABLE"|null>(null);
   const [reviewedUpload,setReviewedUpload]=useState<{transactionId:string;file:File}|null>(null);
@@ -86,6 +98,14 @@ export default function ScNewCashPreview() {
     setReceiptFile(null); // Preserve Company #1 acknowledgement across company changes.
     setServerPendingDocuments([]);
     setPendingListError(false);
+    setServerVerifiedDocuments([]);
+    setVerifiedListError(false);
+    setSelectedVerifiedId(null);
+    setVoucherContraCoaId("");
+    setVoucherCode("");
+    setVoucherOtpSent(false);
+    setVoucherError(null);
+    setVoucherApprovedId(null);
     setIntegrityResult(null);
     setOwnerReviewConfirmed(false);
     if(activeCompanyId!==1){
@@ -135,6 +155,33 @@ export default function ScNewCashPreview() {
         }catch{
           if(!controller.signal.aborted && version===companyRequestVersion.current)
             setPendingListError(true);
+        }
+        // Approved/verified business state is read from the server, never tab storage.
+        try{
+          const response=await fetch(ENDPOINT+"/documents/verified",{
+            credentials:"include",cache:"no-store",signal:controller.signal,
+          });
+          const data=await response.json().catch(()=>null) as ({
+            mode?:string;companyId?:number;accountId?:number;
+            postingAllowed?:boolean;historicalSheetConfig5?:string;
+            documents?:ServerVerifiedDocument[];
+          })|null;
+          if(!response.ok || data?.mode!=="ACCOUNT18_VERIFIED_UNAPPROVED_SERVER_RECORDS" ||
+              data.companyId!==1 || data.accountId!==18 || data.postingAllowed!==false ||
+              data.historicalSheetConfig5!=="NOT_USED_NONMIGRATION" ||
+              !Array.isArray(data.documents))throw Error("VERIFIED_LIST_UNAVAILABLE");
+          const verified=data.documents.filter(d=>
+            d?.status==="VERIFIED" &&
+            /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(d.transactionId) &&
+            /^\d{4}-\d{2}-\d{2}$/.test(d.date) &&
+            (d.direction==="IN"||d.direction==="OUT") &&
+            /^\d+\.\d{2}$/.test(d.amount)
+          ).slice(0,20);
+          if(!controller.signal.aborted && version===companyRequestVersion.current)
+            setServerVerifiedDocuments(verified);
+        }catch{
+          if(!controller.signal.aborted && version===companyRequestVersion.current)
+            setVerifiedListError(true);
         }
       }catch(err){
         if(!controller.signal.aborted && version===companyRequestVersion.current)
@@ -282,6 +329,80 @@ export default function ScNewCashPreview() {
     }finally{setEvidenceBusy(false);}
   };
 
+  const sendVoucherOtp=async()=>{
+    if(activeCompanyId!==1 || !readiness || !selectedVerifiedId || voucherBusy ||
+       voucherOtpSent || voucherApprovedId===selectedVerifiedId)return;
+    const selected=serverVerifiedDocuments.find(d=>d.transactionId===selectedVerifiedId);
+    const contra=readiness.contraCandidates.find(c=>String(c.id)===voucherContraCoaId);
+    if(!selected || !contra)return;
+    if(!window.confirm("Kirim OTP persetujuan untuk dokumen VERIFIED ini dengan COA lawan "+
+      contra.code+"? Ini belum melakukan posting."))return;
+    const id=selected.transactionId;
+    const version=companyRequestVersion.current;
+    setVoucherBusy(true);setVoucherError(null);setVoucherCode("");
+    try{
+      const response=await fetch(ENDPOINT+"/voucher/otp/send",{
+        method:"POST",credentials:"include",cache:"no-store",
+        headers:{"content-type":"application/json"},
+        body:JSON.stringify({companyId:1,accountId:18,transactionId:id,counterCoaId:contra.id}),
+      });
+      const data=await response.json().catch(()=>null) as ({
+        transactionId?:string;counterCoaId?:number;status?:string;
+        expiresInSeconds?:number;postingAllowed?:boolean;code?:string;
+      })|null;
+      if(version!==companyRequestVersion.current || selectedVerifiedId!==id)return;
+      if(response.status!==202 || data?.transactionId!==id ||
+          data.counterCoaId!==contra.id || data.status!=="OTP_SENT" ||
+          data.expiresInSeconds!==300 || data.postingAllowed!==false)
+        throw Error("OTP belum berhasil diterbitkan (HTTP "+response.status+
+          ", "+String(data?.code??"UNAVAILABLE")+").");
+      setVoucherOtpSent(true);
+    }catch(e){
+      if(version===companyRequestVersion.current)
+        setVoucherError(e instanceof Error?e.message:"OTP belum tersedia.");
+    }finally{setVoucherBusy(false);}
+  };
+
+  const confirmVoucherOtp=async()=>{
+    if(activeCompanyId!==1 || !readiness || !selectedVerifiedId || !voucherOtpSent ||
+       voucherBusy || !/^\d{6}$/.test(voucherCode) ||
+       voucherApprovedId===selectedVerifiedId)return;
+    const selected=serverVerifiedDocuments.find(d=>d.transactionId===selectedVerifiedId);
+    const contra=readiness.contraCandidates.find(c=>String(c.id)===voucherContraCoaId);
+    if(!selected || !contra)return;
+    if(!window.confirm("Setujui voucher "+selected.transactionId+
+      " menggunakan OTP khusus voucher? Persetujuan ini tidak memposting jurnal."))return;
+    const id=selected.transactionId;
+    const version=companyRequestVersion.current;
+    setVoucherBusy(true);setVoucherError(null);
+    try{
+      const response=await fetch(ENDPOINT+"/voucher/otp/confirm",{
+        method:"POST",credentials:"include",cache:"no-store",
+        headers:{"content-type":"application/json"},
+        body:JSON.stringify({
+          companyId:1,accountId:18,transactionId:id,counterCoaId:contra.id,code:voucherCode,
+        }),
+      });
+      const data=await response.json().catch(()=>null) as ({
+        transactionId?:string;counterCoaId?:number;status?:string;
+        postingAllowed?:boolean;code?:string;
+      })|null;
+      if(version!==companyRequestVersion.current || selectedVerifiedId!==id)return;
+      if(response.status!==201 || data?.transactionId!==id ||
+          data.counterCoaId!==contra.id || data.status!=="APPROVED" ||
+          data.postingAllowed!==false)
+        throw Error("Persetujuan OTP ditolak (HTTP "+response.status+
+          ", "+String(data?.code??"INVALID")+").");
+      setVoucherApprovedId(id);
+      setVoucherCode("");
+      setVoucherOtpSent(false);
+      setServerVerifiedDocuments(docs=>docs.filter(d=>d.transactionId!==id));
+    }catch(e){
+      if(version===companyRequestVersion.current)
+        setVoucherError(e instanceof Error?e.message:"Persetujuan belum tersedia.");
+    }finally{setVoucherBusy(false);}
+  };
+
   return (
     <div className="space-y-5">
       <div className="flex items-center gap-3">
@@ -384,6 +505,69 @@ export default function ScNewCashPreview() {
                   setPreview(null);
                 }}>Buka audit dokumen</Button>
             </div>)}
+          </CardContent>
+        </Card>
+      )}
+      {readiness && activeCompanyId===1 && (
+        <Card className="border-sky-500/30 bg-slate-800/90 text-white">
+          <CardHeader><CardTitle className="text-base">Dokumen VERIFIED — persetujuan OTP voucher</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs text-slate-300">
+              Pilih dokumen yang sudah VERIFIED di server. OTP email khusus voucher diperlukan
+              untuk satu persetujuan Owner/Super Admin. Tidak ada posting keuangan.
+            </p>
+            {serverVerifiedDocuments.length===0 && <p role="status" className="text-sm">
+              {verifiedListError?"Daftar dokumen VERIFIED belum dapat diambil dari server.":
+                "Tidak ada dokumen VERIFIED yang masih menunggu persetujuan."}
+            </p>}
+            {serverVerifiedDocuments.map(doc=><div key={doc.transactionId}
+              className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-slate-600 p-3">
+              <div className="text-sm">
+                <p className="font-mono break-all">{doc.transactionId}</p>
+                <p className="text-slate-300">{doc.date} · {doc.direction==="IN"?"Kas masuk":"Kas keluar"} · Rp {money(doc.amount)}</p>
+              </div>
+              <Button type="button" variant="outline" disabled={voucherBusy}
+                onClick={()=>{
+                  setSelectedVerifiedId(doc.transactionId);
+                  setVoucherContraCoaId("");
+                  setVoucherCode("");
+                  setVoucherOtpSent(false);
+                  setVoucherError(null);
+                }}>Pilih untuk OTP voucher</Button>
+            </div>)}
+            {selectedVerifiedId && serverVerifiedDocuments.some(d=>d.transactionId===selectedVerifiedId) && (
+              <div className="space-y-3 rounded-md border border-slate-600 p-3">
+                <p className="text-sm">Voucher: <code>{selectedVerifiedId}</code></p>
+                <Label>COA lawan yang telah diperiksa Owner</Label>
+                <Select value={voucherContraCoaId} disabled={voucherBusy||voucherOtpSent}
+                  onValueChange={v=>{setVoucherContraCoaId(v);setVoucherCode("");setVoucherError(null);}}>
+                  <SelectTrigger><SelectValue placeholder="Pilih COA lawan sesuai bukti"/></SelectTrigger>
+                  <SelectContent>{readiness.contraCandidates.map(c=>
+                    <SelectItem key={c.id} value={String(c.id)}>{c.code} — {c.name}</SelectItem>
+                  )}</SelectContent>
+                </Select>
+                <Button type="button" variant="outline" disabled={voucherBusy||voucherOtpSent||!voucherContraCoaId}
+                  onClick={()=>void sendVoucherOtp()}>
+                  {voucherBusy?"Memproses...":"Kirim OTP persetujuan voucher"}
+                </Button>
+                {voucherOtpSent && <div className="space-y-2">
+                  <p className="text-sm">OTP voucher dikirim ke email Owner/Super Admin. Kode berlaku 5 menit.</p>
+                  <Label>Kode OTP khusus voucher (6 digit)</Label>
+                  <Input value={voucherCode} inputMode="numeric" type="password"
+                    autoComplete="one-time-code" maxLength={6}
+                    disabled={voucherBusy} onChange={e=>setVoucherCode(e.target.value.replace(/\D/g,"").slice(0,6))}
+                    placeholder="Masukkan kode OTP"/>
+                  <Button type="button" disabled={voucherBusy||!/^\d{6}$/.test(voucherCode)}
+                    onClick={()=>void confirmVoucherOtp()}>
+                    Setujui voucher dengan OTP (tanpa posting)
+                  </Button>
+                </div>}
+                {voucherError && <p role="alert" className="text-sm text-amber-200">{voucherError}</p>}
+              </div>
+            )}
+            {voucherApprovedId && <p role="status" className="text-sm text-sky-200">
+              Persetujuan OTP tercatat untuk {voucherApprovedId}. Posting jurnal tetap NONAKTIF.
+            </p>}
           </CardContent>
         </Card>
       )}
