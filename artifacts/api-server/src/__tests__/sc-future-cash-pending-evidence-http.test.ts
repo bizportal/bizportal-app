@@ -478,7 +478,7 @@ describe("Account18 pending receipt intake HTTP — no journal or approval", () 
     expect((await sendOtp(id)).status).toBe(409);
     setValidContentReview(id);
     if(!mock.contentReviewMetadata)throw Error("MISSING_REVIEW");
-    mock.contentReviewMetadata={...mock.contentReviewMetadata,counterCoaId:903};
+    mock.contentReviewMetadata={...(mock.contentReviewMetadata as Record<string,unknown>),counterCoaId:903};
     expect((await sendOtp(id)).status).toBe(409);
     setValidContentReview(id);
     if(!mock.pendingDoc)throw Error("MISSING_DOCUMENT");
@@ -500,7 +500,7 @@ describe("Account18 pending receipt intake HTTP — no journal or approval", () 
     expect(mock.contentReviewMetadata).toBeNull();
     const accepted=await review("SIGNED_CASH_RECEIPT");
     expect(accepted.status).toBe(201);
-    expect((await accepted.json()).status).toBe("EVIDENCE_REVIEWED");
+    expect(((await accepted.json()) as {status:string}).status).toBe("EVIDENCE_REVIEWED");
     expect((await review("SIGNED_CASH_RECEIPT")).status).toBe(409);
     expect((await sendOtp(id)).status).toBe(202);
     expect(mock.approvalRows).toHaveLength(0);
@@ -522,7 +522,7 @@ describe("Account18 pending receipt intake HTTP — no journal or approval", () 
     expect(mock.revocationAuditRows).toHaveLength(1);
     const repeated=await revoke();
     expect(repeated.status).toBe(200);
-    expect((await repeated.json()).alreadyRevoked).toBe(true);
+    expect(((await repeated.json()) as {alreadyRevoked:boolean}).alreadyRevoked).toBe(true);
     expect(mock.revocationAuditRows).toHaveLength(1);
     expect((await sendOtp(id)).status).toBe(409);
     expect((await confirmOtp(id,code)).status).toBe(409);
