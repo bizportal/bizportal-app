@@ -22,14 +22,15 @@ const MAX_BYTES = 8 * 1024 * 1024;
  * Owner-authenticated server-side audit for PENDING evidence, with no writer.
  * MATCH certifies stored bytes + source fingerprint, NOT business meaning,
  * reviewer approval, VERIFIED status, or posting permission.
- * Do not expose the object path, hash, uploader, or binary to the HTTP client.
+ * Only authenticated server routes may expose validated bytes as a download;
+ * never include the path, hash, or uploader in JSON audit responses.
  */
-export async function auditPendingFutureCashBytes(
+export async function readPendingFutureCashVerifiedBytes(
   transactionId: string,
   db: PendingCashIntegritySqlReader,
   storage: PrivateCashFileReader,
-): Promise<"MATCH" | "UNAVAILABLE"> {
-  if (!UUID.test(transactionId)) return "UNAVAILABLE";
+): Promise<{bytes: Buffer; extension: string} | null> {
+  if (!UUID.test(transactionId)) return null;
   try {
     const result = await db.query([
       "select d.transaction_id::text, d.company_id, d.account_id, d.cash_coa_id,",
@@ -41,7 +42,7 @@ export async function auditPendingFutureCashBytes(
       "from public.sc_future_cash_documents d",
       "where d.transaction_id=$1::uuid and d.company_id=1 and d.account_id=18 limit 2",
     ].join("\n"), [transactionId]);
-    if (result.rows.length !== 1) return "UNAVAILABLE";
+    if (result.rows.length !== 1) return null;
     const d = result.rows[0]!;
     const expectedLength = Number(d.byte_length);
     if (d.transaction_id !== transactionId || d.company_id !== 1 ||
@@ -52,9 +53,9 @@ export async function auditPendingFutureCashBytes(
         d.event_count.toString() !== "0" ||
         !Number.isSafeInteger(expectedLength) ||
         expectedLength <= 0 || expectedLength > MAX_BYTES ||
-        !/^[0-9]+$/.test(d.amount_cents)) return "UNAVAILABLE";
+        !/^[0-9]+$/.test(d.amount_cents)) return null;
     const cents = BigInt(d.amount_cents);
-    if (cents <= 0n) return "UNAVAILABLE";
+    if (cents <= 0n) return null;
     const amount = (cents / 100n).toString() + "." + (cents % 100n).toString().padStart(2, "0");
     const source: FutureCashSource = {
       transactionId, companyId: 1, accountId: 18, cashCoaId: 75839,
@@ -62,31 +63,39 @@ export async function auditPendingFutureCashBytes(
       direction: d.direction as "IN" | "OUT", date: d.transaction_date, amount,
     };
     if (prepareFutureCashSource(source).sourceFingerprint !== d.source_fingerprint)
-      return "UNAVAILABLE";
+      return null;
 
     const handle = await storage.getObjectEntityFile(d.object_path);
     const reportedSize = await storage.getObjectEntitySize(d.object_path);
     if (handle.bucket !== "private-uploads" ||
         handle.path !== d.object_path.slice("/objects/".length) ||
-        reportedSize !== expectedLength) return "UNAVAILABLE";
+        reportedSize !== expectedLength) return null;
     const bytes = new Uint8Array(await (await storage.downloadObject(handle, 0)).arrayBuffer());
-    if (bytes.byteLength !== expectedLength) return "UNAVAILABLE";
+    if (bytes.byteLength !== expectedLength) return null;
     if (d.object_path.endsWith(".pdf") &&
         Buffer.from(bytes.subarray(0, 5)).toString("ascii") !== "%PDF-")
-      return "UNAVAILABLE";
+      return null;
     if (d.object_path.endsWith(".png") &&
         !Buffer.from(bytes.subarray(0, 8)).equals(Buffer.from([137,80,78,71,13,10,26,10])))
-      return "UNAVAILABLE";
+      return null;
     if (/\.jpe?g$/.test(d.object_path) &&
         !(bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255))
-      return "UNAVAILABLE";
+      return null;
     if (d.object_path.endsWith(".webp") &&
         !(Buffer.from(bytes.subarray(0, 4)).toString("ascii") === "RIFF" &&
           Buffer.from(bytes.subarray(8, 12)).toString("ascii") === "WEBP"))
-      return "UNAVAILABLE";
-    return createHash("sha256").update(bytes).digest("hex") === d.document_sha256
-      ? "MATCH" : "UNAVAILABLE";
+      return null;
+    if (createHash("sha256").update(bytes).digest("hex") !== d.document_sha256) return null;
+    return { bytes: Buffer.from(bytes), extension: d.object_path.split(".").pop()! };
   } catch {
-    return "UNAVAILABLE";
+    return null;
   }
+}
+
+/** Compatibility wrapper for the existing read-only integrity endpoint. */
+export async function auditPendingFutureCashBytes(
+  transactionId: string, db: PendingCashIntegritySqlReader, storage: PrivateCashFileReader,
+): Promise<"MATCH" | "UNAVAILABLE"> {
+  return await readPendingFutureCashVerifiedBytes(transactionId, db, storage)
+    ? "MATCH" : "UNAVAILABLE";
 }
