@@ -35,17 +35,29 @@ describe("Account18 purpose-separated OTP approval reader — SELECT only", () =
       sourceFingerprint: fp, authorizedRole: "owner",
       authenticationMethod: "SIGNED_EMAIL_OTP", counterCoaId: 902 });
     expect(reader.query.mock.calls[0]![1]).toEqual([
-      1, source.transactionId, fp, futureCashOtpPurpose(source.transactionId, fp),
+      1, source.transactionId, fp, `sc-cash-voucher:${source.transactionId}:${fp}:`,
     ]);
     const sql = reader.query.mock.calls[0]![0].trim().toLowerCase();
     expect(sql.startsWith("select")).toBe(true);
     expect(sql).not.toMatch(/\b(insert|update|delete)\b/);
+    expect(sql).toContain("purpose = $4 || (a.metadata->>'countercoaid')");
+    expect(sql).toContain("id::text = a.metadata->>'otpevidenceid'");
     expect(sql).toContain("verified_at is not null");
     expect(sql).toContain("select email, verified_at, expires_at, created_at");
     expect(sql).toContain("verified_at <= expires_at");
     expect(sql).toContain("verified_at >= created_at");
     expect(sql).toContain("attempts < 5");
     expect(sql).not.toContain("code_hash");
+  });
+
+  it("binds the OTP purpose to the exact counter COA and rejects invalid COAs", () => {
+    expect(futureCashOtpPurpose(source.transactionId, fp, 902)).toBe(
+      `sc-cash-voucher:${source.transactionId}:${fp}:902`);
+    expect(futureCashOtpPurpose(source.transactionId, fp, 903)).not.toBe(
+      futureCashOtpPurpose(source.transactionId, fp, 902));
+    for (const id of [0, -1, 1.5, 75839, 2147483648, NaN]) {
+      expect(() => futureCashOtpPurpose(source.transactionId, fp, id)).toThrow();
+    }
   });
 
   it("never promotes a login OTP or missing voucher OTP", async () => {
