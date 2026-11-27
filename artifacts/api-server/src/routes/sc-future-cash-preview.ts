@@ -39,6 +39,12 @@ const cashDocumentUpload = multer({
   limits: { fileSize: cashDocumentUploadLimit, files: 1, fields: 5, parts: 7 },
   fileFilter: makeFileFilter(IMAGE_OR_PDF_ALLOWED_MIME),
 }).single("file");
+// Recovery reads have a separate bounded budget; page refresh must not consume
+// the six-request upload/integrity/download/verification action budget.
+const cashRecoveryRateLimit = rateLimit({
+  windowMs: 10 * 60_000, limit: 30, standardHeaders: "draft-7",
+  legacyHeaders: false, validate: false,
+});
 const cashDocumentRateLimit = rateLimit({
   windowMs: 10 * 60_000, limit: 6, standardHeaders: "draft-7",
   legacyHeaders: false, validate: false,
@@ -164,7 +170,7 @@ router.get(PATH + "/readiness", async (req, res): Promise<void> => {
  * No browser-supplied UUID is trusted; list is limited and read-only.
  * Exposes no private storage path, hash, uploader, or approval capability.
  */
-router.get(PATH + "/documents/pending", cashDocumentRateLimit, async (_req, res): Promise<void> => {
+router.get(PATH + "/documents/pending", cashRecoveryRateLimit, async (_req, res): Promise<void> => {
   try {
     const result = await pool.query<{
       transaction_id: string; direction: "IN" | "OUT";
@@ -202,7 +208,7 @@ router.get(PATH + "/documents/pending", cashDocumentRateLimit, async (_req, res)
  * Signed DEV Owner/Super Admin: list only server-VERIFIED cash evidence
  * not yet approved by voucher OTP. No private hash/path or posting writer.
  */
-router.get(PATH + "/documents/verified", cashDocumentRateLimit, async (_req, res): Promise<void> => {
+router.get(PATH + "/documents/verified", cashRecoveryRateLimit, async (_req, res): Promise<void> => {
   try {
     const result=await pool.query<{
       transaction_id:string;direction:"IN"|"OUT";transaction_date:string;amount_cents:string;
@@ -235,7 +241,7 @@ router.get(PATH + "/documents/verified", cashDocumentRateLimit, async (_req, res
 });
 
 /** Read-only recovery: only server-verified, purpose-bound approved vouchers. */
-router.get(PATH + "/documents/approved", cashDocumentRateLimit, async (_req,res): Promise<void> => {
+router.get(PATH + "/documents/approved", cashRecoveryRateLimit, async (_req,res): Promise<void> => {
   try {
     const result=await pool.query<{
       transaction_id:string; direction:"IN"|"OUT"; transaction_date:string;
