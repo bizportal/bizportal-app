@@ -649,7 +649,7 @@ router.post(PATH + "/voucher/otp/send", async (req, res): Promise<void> => {
         await sendFutureCashVoucherOtpEmail(email, code, id);
       } catch {
         // Disable this specific unsent code, never mark it verified.
-        await pool.query(
+        await client.query(
           "update public.bizportal_email_otp_codes set attempts=5,code_hash=null where id=$1 and verified_at is null and purpose=$2",
           [inserted.rows[0]!.id, purpose],
         ).catch(() => undefined);
