@@ -109,6 +109,10 @@ jobs:
           CASH_QA_PG_URL: postgresql://cash_qa:cash_qa_ci_only@127.0.0.1:55432/cash_qa
         run: pnpm --filter @workspace/api-server exec vitest run src/__tests__/cash-ledger-postgres-disposable.test.ts
 
+      - name: Verify scoped DEV kasbon general list on isolated PostgreSQL 16
+        shell: bash
+        run: bash scripts/dev/test-dev-kasbon-general-read-pg16.sh
+
       - name: BizPortal tests
         run: pnpm --filter @workspace/bizportal test
 
