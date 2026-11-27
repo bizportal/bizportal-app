@@ -323,6 +323,43 @@ export default function ScNewCashPreview() {
          payload?.status!=="VERIFIED" || payload?.postingAllowed!==false)
         throw Error("Verifikasi belum berhasil (HTTP "+response.status+").");
       setVerifiedId(id);setIntegrityResult(null);setOwnerReviewConfirmed(false);
+      setServerPendingDocuments(docs=>docs.filter(doc=>doc.transactionId!==id));
+      try{
+        const previous=window.sessionStorage.getItem(COMPANY1_PENDING_ACK_KEY);
+        if(previous && (JSON.parse(previous) as {transactionId?:string}).transactionId===id)
+          window.sessionStorage.removeItem(COMPANY1_PENDING_ACK_KEY);
+      }catch{/* Browser storage cannot authorize a document or voucher. */}
+      setPendingEvidence(null);
+      // A successful Owner review must immediately appear in the server-owned
+      // VERIFIED list, without requiring page reload or company switching.
+      try{
+        const listResponse=await fetch(ENDPOINT+"/documents/verified",{
+          credentials:"include",cache:"no-store",
+        });
+        const list=await listResponse.json().catch(()=>null) as ({
+          mode?:string;companyId?:number;accountId?:number;postingAllowed?:boolean;
+          historicalSheetConfig5?:string;documents?:ServerVerifiedDocument[];
+        })|null;
+        if(!listResponse.ok ||
+            list?.mode!=="ACCOUNT18_VERIFIED_UNAPPROVED_SERVER_RECORDS" ||
+            list.companyId!==1 || list.accountId!==18 ||
+            list.postingAllowed!==false ||
+            list.historicalSheetConfig5!=="NOT_USED_NONMIGRATION" ||
+            !Array.isArray(list.documents))throw Error("VERIFIED_LIST_UNAVAILABLE");
+        const verified=list.documents.filter(doc=>
+          doc?.status==="VERIFIED" &&
+          /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[0-9a-f]{12}$/.test(doc.transactionId) &&
+          /^\\d{4}-\\d{2}-\\d{2}$/.test(doc.date) &&
+          (doc.direction==="IN"||doc.direction==="OUT") &&
+          /^\\d+\\.\\d{2}$/.test(doc.amount)
+        ).slice(0,20);
+        if(version===companyRequestVersion.current){
+          setServerVerifiedDocuments(verified);
+          setVerifiedListError(false);
+        }
+      }catch{
+        if(version===companyRequestVersion.current)setVerifiedListError(true);
+      }
     }catch(err){
       if(version===companyRequestVersion.current)
         setError(err instanceof Error?err.message:"Verifikasi belum tersedia.");
