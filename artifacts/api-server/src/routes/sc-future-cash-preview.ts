@@ -44,6 +44,10 @@ const cashDocumentRateLimit = rateLimit({
   windowMs: 10 * 60_000, limit: 6, standardHeaders: "draft-7",
   legacyHeaders: false, validate: false,
 });
+const cashRegistryReadRateLimit = rateLimit({
+  windowMs:10 * 60_000,limit:30,standardHeaders:"draft-7",
+  legacyHeaders:false,validate:false,
+});
 
 type CashAccount = {
   id: number; name: string; account_type: string; is_active: boolean;
@@ -165,7 +169,7 @@ router.get(PATH + "/readiness", async (req, res): Promise<void> => {
  * No browser-supplied UUID is trusted; list is limited and read-only.
  * Exposes no private storage path, hash, uploader, or approval capability.
  */
-router.get(PATH + "/documents/pending", cashDocumentRateLimit, async (_req, res): Promise<void> => {
+router.get(PATH + "/documents/pending", cashRegistryReadRateLimit, async (_req, res): Promise<void> => {
   try {
     const result = await pool.query<{
       transaction_id: string; direction: "IN" | "OUT";
@@ -203,7 +207,7 @@ router.get(PATH + "/documents/pending", cashDocumentRateLimit, async (_req, res)
  * Signed DEV Owner/Super Admin: list only server-VERIFIED cash evidence
  * not yet approved by voucher OTP. No private hash/path or posting writer.
  */
-router.get(PATH + "/documents/verified", cashDocumentRateLimit, async (_req, res): Promise<void> => {
+router.get(PATH + "/documents/verified", cashRegistryReadRateLimit, async (_req, res): Promise<void> => {
   try {
     const result=await pool.query<{
       transaction_id:string;direction:"IN"|"OUT";transaction_date:string;amount_cents:string;
@@ -236,7 +240,7 @@ router.get(PATH + "/documents/verified", cashDocumentRateLimit, async (_req, res
 });
 
 /** Signed Owner: discover already approved unposted vouchers so invalid proof can be revoked. */
-router.get(PATH + "/documents/approved",cashDocumentRateLimit,async(_req,res):Promise<void>=>{
+router.get(PATH + "/documents/approved",cashRegistryReadRateLimit,async(_req,res):Promise<void>=>{
   try{
     const found=await pool.query<{
       transaction_id:string;transaction_date:string;direction:"IN"|"OUT";amount_cents:string;
@@ -790,7 +794,7 @@ router.post(PATH + "/documents/revoke", cashDocumentRateLimit, async(req,res):Pr
   }finally{client.release();}
 });
 
-router.get(PATH + "/documents/revoked",cashDocumentRateLimit,async(_req,res):Promise<void>=>{
+router.get(PATH + "/documents/revoked",cashRegistryReadRateLimit,async(_req,res):Promise<void>=>{
   try{
     const rows=await pool.query<{transaction_id:string;transaction_date:string;direction:"IN"|"OUT";amount_cents:string}>(
       "select d.transaction_id::text,d.transaction_date::text,d.direction,d.amount_cents::text "+
