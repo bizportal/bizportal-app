@@ -222,6 +222,8 @@ export default function ScNewCashPreview() {
     }finally{setEvidenceBusy(false);}
   };
 
+  const verifyEvidence=async()=>{
+    if(activeCompanyId!==1 || !readiness || !pendingEvidence || evidenceBusy ||
   const checkPendingIntegrity=async()=>{
     if(activeCompanyId!==1 || !readiness || !pendingEvidence || integrityBusy || evidenceBusy)return;
     const id=pendingEvidence.transactionId;
@@ -271,6 +273,7 @@ export default function ScNewCashPreview() {
       if(response.status!==201 || payload?.transactionId!==id ||
          payload?.status!=="VERIFIED" || payload?.postingAllowed!==false)
         throw Error("Verifikasi belum berhasil (HTTP "+response.status+").");
+      setVerifiedId(id);
       setVerifiedId(id);setIntegrityResult(null);
     }catch(err){
       if(version===companyRequestVersion.current)
@@ -293,6 +296,7 @@ export default function ScNewCashPreview() {
         <CardContent className="flex gap-3 py-4 text-sm text-amber-100">
           <ShieldAlert className="shrink-0" size={18}/>
           <p>Pratinjau debit-kredit hanya dihitung dalam memori. File bukti baru dapat disimpan
+            sebagai PENDING dan diverifikasi oleh Owner. Persetujuan OTP untuk posting belum tersedia.
             sebagai PENDING dan dapat diverifikasi oleh Owner. Persetujuan OTP untuk posting belum tersedia.
             Tidak ada penulisan jurnal atau impor Sheet historis.</p>
         </CardContent>
@@ -390,6 +394,16 @@ export default function ScNewCashPreview() {
               ID transaksi: <code className="break-all">{pendingEvidence.transactionId}</code>.
               Tidak ada jurnal keuangan yang diposting.
             </p>
+            {reviewedUpload?.transactionId===pendingEvidence.transactionId && verifiedId!==pendingEvidence.transactionId && (
+              <div className="space-y-2">
+                <p className="text-sm">Bukti asli: {reviewedUpload.file.name}. Periksa dokumen asli, nominal dan tanggal sebelum konfirmasi.</p>
+                <Button type="button" disabled={evidenceBusy} onClick={()=>void verifyEvidence()}>Verifikasi Bukti (tanpa posting)</Button>
+              </div>
+            )}
+            <Button type="button" variant="outline" disabled={evidenceBusy} onClick={()=>{
+              try{window.sessionStorage.removeItem(COMPANY1_PENDING_ACK_KEY);}
+              catch{/* Storage may be disabled. */}
+              setPendingEvidence(null);setReviewedUpload(null);setVerifiedId(null);
             <Button type="button" variant="outline"
               disabled={integrityBusy||evidenceBusy||verifiedId===pendingEvidence.transactionId}
               onClick={()=>void checkPendingIntegrity()}>
