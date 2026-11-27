@@ -235,6 +235,32 @@ router.get(PATH + "/documents/verified", cashDocumentRateLimit, async (_req, res
   }
 });
 
+/** Signed Owner: discover already approved unposted vouchers so invalid proof can be revoked. */
+router.get(PATH + "/documents/approved",cashDocumentRateLimit,async(_req,res):Promise<void>=>{
+  try{
+    const found=await pool.query<{
+      transaction_id:string;transaction_date:string;direction:"IN"|"OUT";amount_cents:string;
+      counter_coa_id:string;
+    }>([
+      "select d.transaction_id::text,d.transaction_date::text,d.direction,d.amount_cents::text,",
+      "a.metadata->>'counterCoaId' as counter_coa_id",
+      "from public.sc_future_cash_documents d join public.approval_requests a",
+      "on a.company_id=1 and a.module='cash_bank' and a.doc_type='sc_future_cash_voucher'",
+      "and a.metadata->>'transactionId'=d.transaction_id::text and lower(a.status)='approved'",
+      "join lateral (select event_type from public.sc_future_cash_document_events e",
+      "where e.transaction_id=d.transaction_id order by event_id desc limit 1) ev on true",
+      "where d.company_id=1 and d.account_id=18 and d.cash_coa_id=75839",
+      "and ev.event_type='VERIFIED'",
+      "order by a.approved_at desc limit 20",
+    ].join(" "));
+    res.json({mode:"ACCOUNT18_APPROVED_UNPOSTED_EVIDENCE_AUDIT",companyId:1,accountId:18,
+      documents:found.rows.map(d=>({transactionId:d.transaction_id,date:d.transaction_date,
+        direction:d.direction,amount:decimal(BigInt(d.amount_cents)),
+        counterCoaId:Number(d.counter_coa_id),status:"APPROVED_PENDING_POSTING"})),
+      postingAllowed:false});
+  }catch{res.status(503).json({code:"SC_CASH_APPROVED_LIST_UNAVAILABLE",postingAllowed:false});}
+});
+
 router.post(PATH + "/preview", async (req, res): Promise<void> => {
   if (req.get("origin") !== OWNER_ORIGIN) {
     res.status(403).json({ code: "SC_CASH_SAME_ORIGIN_REQUIRED" });
