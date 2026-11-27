@@ -7,6 +7,8 @@ import { once } from "node:events";
 const mock = vi.hoisted(() => ({
   signed: true, enabled: true, actorRole: "owner", actorCompany: 1,
   actorEmail: "owner@example.test", accountValid: true,
+  otpRows: [] as unknown[][], otpInvalidations: [] as string[], smtpCalls: [] as unknown[][],
+  smtpFail: false, recentOtpCount: 0, contraValid: true, approved: false,
   verifiedEvents: 0, pendingDoc: null as Record<string, unknown> | null,
   storageWrites: 0, storageDeletes: [] as string[],
   storageBytes: null as Buffer | null,
@@ -26,8 +28,11 @@ vi.mock("../routes/dev-auth", () => ({
     email: mock.actorEmail,
   }),
 }));
-vi.mock("@workspace/db", () => ({
-  pool: { query: async (sql: string, args: unknown[] = []) => {
+vi.mock("../lib/smtp", () => ({ sendFutureCashVoucherOtpEmail: async (...args: unknown[]) => {
+  mock.smtpCalls.push(args); if (mock.smtpFail) throw Error("SMTP_FAILED");
+} }));
+vi.mock("@workspace/db", () => {
+  const query = async (sql: string, args: unknown[] = []) => {
     mock.queries.push(sql);
     if (sql.includes("from public.company_bank_accounts a")) return { rows: [{
       id: 18, name: "Kas Besar SC", account_type: "cash",
@@ -50,15 +55,36 @@ vi.mock("@workspace/db", () => ({
         transaction_date: doc.transaction_date, amount_cents: doc.amount_cents,
       }] : []};
     }
-    if (sql.includes("from public.sc_future_cash_documents d") && sql.startsWith("select")) return { rows: mock.pendingDoc && mock.pendingDoc.transaction_id === args[0] ? [mock.pendingDoc] : [] };
+    if (sql.includes("from public.sc_future_cash_documents d") && sql.trimStart().toLowerCase().startsWith("select")) return { rows: mock.pendingDoc && mock.pendingDoc.transaction_id === args[0] ? [mock.pendingDoc] : [] };
+    if (sql.includes("from public.sc_future_cash_documents where")) {
+      const match = mock.pendingDoc && mock.pendingDoc.transaction_id === args[0];
+      return { rowCount: match ? 1 : 0, rows: match ? [mock.pendingDoc] : [] };
+    }
+    if (sql.includes("from public.chart_of_accounts where")) return { rows: [{
+      id: args[0], company_id: 1, code: "5-1000", name: "Expense",
+      is_active: mock.contraValid, is_postable: true, is_header: false,
+    }] };
+    if (sql.includes("from public.approval_requests")) return { rowCount: mock.approved ? 1 : 0, rows: [] };
+    if (sql.includes("select count(*)::text as count from public.bizportal_email_otp_codes"))
+      return { rows: [{ count: String(mock.recentOtpCount) }] };
+    if (sql.includes("update public.bizportal_email_otp_codes")) {
+      mock.otpInvalidations.push(sql); return { rowCount: 1, rows: [] };
+    }
+    if (sql.includes("insert into public.bizportal_email_otp_codes")) {
+      mock.otpRows.push(args); return { rowCount: 1, rows: [{ id: "101" }] };
+    }
+    if (["BEGIN", "COMMIT", "ROLLBACK"].includes(sql) || sql.includes("pg_advisory_xact_lock"))
+      return { rows: [] };
     if (sql.includes("insert into public.sc_future_cash_document_events")) {
       if (!mock.pendingDoc || mock.pendingDoc.event_type !== null) return { rowCount: 0, rows: [] };
-      mock.pendingDoc.event_type = "VERIFIED"; mock.verifiedEvents++;
+      mock.pendingDoc.event_type = "VERIFIED"; mock.pendingDoc.event_at = "2026-11-27T00:00:00.000Z";
+      mock.pendingDoc.actor_email = mock.actorEmail; mock.pendingDoc.company_id=1; mock.pendingDoc.account_id=18; mock.pendingDoc.cash_coa_id=75839; mock.verifiedEvents++;
       return { rowCount: 1, rows: [{ event_id: 1 }] };
     }
     throw Error("UNEXPECTED_SQL");
-  } },
-}));
+  };
+  return { pool: { query, connect: async () => ({ query, release: () => undefined }) } };
+});
 vi.mock("../lib/objectStorage", () => ({
   ObjectStorageService: class {
     async uploadFutureCashPrivateEvidence(
@@ -114,6 +140,8 @@ describe("Account18 pending receipt intake HTTP — no journal or approval", () 
     mock.actorEmail = "owner@example.test"; mock.accountValid = true;
     mock.storageWrites = 0; mock.storageBytes = null;
     mock.pendingDoc = null; mock.verifiedEvents = 0;
+    mock.otpRows.length=0; mock.otpInvalidations.length=0; mock.smtpCalls.length=0;
+    mock.smtpFail=false; mock.recentOtpCount=0; mock.contraValid=true; mock.approved=false;
     mock.wrongStoredBytes = false; mock.dbInsertFailure = false;
     mock.storageDeletes.length = 0; mock.queries.length = 0;
   });
@@ -264,6 +292,59 @@ describe("Account18 pending receipt intake HTTP — no journal or approval", () 
     mock.pendingDoc.source_fingerprint = "0".repeat(64);
     expect((await verify(transactionId)).status).toBe(409);
     expect(mock.verifiedEvents).toBe(0);
+  });
+
+  const sendOtp = (transactionId: string, updates: Record<string, unknown> = {}, from = origin) =>
+    fetch(base + "/api/cash-bank/sc-new/voucher/otp/send", {
+      method: "POST", headers: { Origin: from, "Content-Type": "application/json" },
+      body: JSON.stringify({ companyId: 1, accountId: 18, transactionId, counterCoaId: 902, ...updates }),
+    });
+  const verifiedDoc = async () => {
+    const { transactionId } = await (await post()).json() as {transactionId:string};
+    expect((await verify(transactionId)).status).toBe(201);
+    return transactionId;
+  };
+  it("issues hashed scoped OTP to signed Owner only after document verification", async () => {
+    const { transactionId } = await (await post()).json() as {transactionId:string};
+    expect((await sendOtp(transactionId)).status).toBe(409);
+    expect(mock.smtpCalls).toHaveLength(0);
+    expect((await verify(transactionId)).status).toBe(201);
+    const response = await sendOtp(transactionId);
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({transactionId,counterCoaId:902,status:"OTP_SENT",expiresInSeconds:300,postingAllowed:false});
+    expect(mock.otpRows).toHaveLength(1);
+    expect(mock.smtpCalls).toHaveLength(1);
+    expect(mock.smtpCalls[0]![0]).toBe("owner@example.test");
+    expect(mock.smtpCalls[0]![2]).toBe(transactionId);
+    expect(mock.otpRows[0]![2]).toBe("sc-cash-voucher:"+transactionId+":"+mock.pendingDoc?.source_fingerprint+":902");
+    expect(String(mock.otpRows[0]![3])).toMatch(/^\$2[aby]\$/);
+    expect(mock.otpRows[0]![3]).not.toBe(mock.smtpCalls[0]![1]);
+    expect(mock.otpInvalidations.every(q=>!q.includes("set verified_at"))).toBe(true);
+    expect(mock.queries.some(q=>/insert into public\.(approval_requests|accounting_entries|bank_mutations)/.test(q))).toBe(false);
+  });
+  it("rejects unauthorized or forged voucher scope", async () => {
+    const id=await verifiedDoc();
+    expect((await sendOtp(id,{email:"other@example.test"})).status).toBe(400);
+    expect((await sendOtp(id,{counterCoaId:75839})).status).toBe(400);
+    expect((await sendOtp(id,{},"https://malicious.invalid")).status).toBe(403);
+    mock.signed=false; expect((await sendOtp(id)).status).toBe(401);
+    expect(mock.smtpCalls).toHaveLength(0);
+  });
+  it("rejects tampered bytes, unavailable COA, existing approval and rate excess", async () => {
+    const id=await verifiedDoc();
+    mock.wrongStoredBytes=true; expect((await sendOtp(id)).status).toBe(409);
+    mock.wrongStoredBytes=false; mock.contraValid=false; expect((await sendOtp(id)).status).toBe(409);
+    mock.contraValid=true; mock.approved=true; expect((await sendOtp(id)).status).toBe(409);
+    mock.approved=false; mock.recentOtpCount=3; expect((await sendOtp(id)).status).toBe(429);
+    expect(mock.otpRows).toHaveLength(0); expect(mock.smtpCalls).toHaveLength(0);
+  });
+  it("disables failed delivery without marking OTP verified", async () => {
+    const id=await verifiedDoc(); mock.smtpFail=true;
+    expect((await sendOtp(id)).status).toBe(503);
+    expect(mock.otpRows).toHaveLength(1);
+    expect(mock.otpInvalidations).toHaveLength(2);
+    expect(mock.otpInvalidations[1]).toContain("attempts=5,code_hash=null");
+    expect(mock.otpInvalidations.every(q=>!q.includes("set verified_at"))).toBe(true);
   });
 
 });
