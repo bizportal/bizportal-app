@@ -73,7 +73,7 @@ describe("source-level guards for original accounting (not PostgreSQL E2E)",()=>
     expect(section).toContain("period_debit: 0, period_credit: 0, entry_count: 0");
   });
   it("does not swallow financial event insert failure before acknowledging outbox",()=>{
-    const section=outbox.slice(outbox.indexOf("// Write to financial_events (idempotent)"),outbox.indexOf("// Also emit to in-memory event bus"));
+    const section=outbox.slice(outbox.indexOf("// Write to financial_events (idempotent)"),outbox.indexOf("const ack=await delivery.execute"));
     expect(section).toContain("INSERT INTO financial_events");
     expect(section).not.toContain(".catch(");
     expect(outbox).toContain("SET status = 'pending', last_error");
