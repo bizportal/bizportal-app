@@ -6,6 +6,7 @@ import { hash } from "bcryptjs";
 const mock = vi.hoisted(() => ({
   query: vi.fn(),
   userRole: "super_admin",
+  userSystemRole: "super_admin",
   userStatus: "active",
   userActive: true,
   companyId: null as number | null,
@@ -72,6 +73,7 @@ describe("one existing Super Admin password -> signed DEV session (PR81 opt-in o
   beforeEach(() => {
     mock.query.mockReset();
     mock.userRole = "super_admin";
+    mock.userSystemRole = "super_admin";
     mock.userStatus = "active";
     mock.userActive = true;
     mock.companyId = null;
@@ -94,6 +96,7 @@ describe("one existing Super Admin password -> signed DEV session (PR81 opt-in o
         return { rows: mock.duplicateActive ? [] : [{
           user_data: {
             id: ID, email: EMAIL, role: mock.userRole,
+            system_role: mock.userSystemRole,
             status: mock.userStatus, is_active: mock.userActive,
             company_id: mock.companyId, password_hash: passwordHash,
           },
@@ -140,6 +143,8 @@ describe("one existing Super Admin password -> signed DEV session (PR81 opt-in o
 
   it.each([
     ["role demoted", () => { mock.userRole = "admin"; }],
+    ["canonical system role removed", () => { mock.userSystemRole = ""; }],
+    ["canonical system role downgraded", () => { mock.userSystemRole = "admin"; }],
     ["account suspended", () => { mock.userActive = false; }],
     ["status inactive", () => { mock.userStatus = "inactive"; }],
     ["company changed", () => { mock.companyId = 1; }],
@@ -162,6 +167,8 @@ describe("one existing Super Admin password -> signed DEV session (PR81 opt-in o
 
   it.each([
     ["role downgraded", () => { mock.userRole = "admin"; }],
+    ["canonical system role removed", () => { mock.userSystemRole = ""; }],
+    ["canonical system role downgraded", () => { mock.userSystemRole = "finance"; }],
     ["status changed", () => { mock.userStatus = "suspended"; }],
     ["company attached", () => { mock.companyId = 3; }],
     ["account suspended", () => { mock.userActive = false; }],

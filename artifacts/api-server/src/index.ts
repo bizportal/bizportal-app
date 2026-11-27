@@ -1,6 +1,7 @@
 import app from "./app";
 import { registerGracefulShutdown } from "./lib/graceful-shutdown";
 import { logger } from "./lib/logger";
+import { startCustomerPortalSalesInvoiceOutboxDevProcessor } from "./lib/accounting/outboxProcessor";
 import { shouldRunReconciliationSchedulers } from "./lib/reconciliation/backgroundSchedulerPolicy";
 import { runFleetAutoReminderSweep } from "./lib/fleet-wa-reminder";
 import {
@@ -64,6 +65,13 @@ async function initializeProductionSessionSigningInBackground(
 const server = app.listen(port, host, () => {
   logger.info({ port, host }, "Server listening");
 });
+
+// Customer Invoice's strict outbox drain is hosted by the EXISTING API process.
+// It is never started unless APP_ENV=development and all three explicit
+// feature flags are true. The function does not start the legacy global poller.
+const stopCustomerInvoiceOutboxDevProcessor =
+  startCustomerPortalSalesInvoiceOutboxDevProcessor();
+
 
 if (!isDevelopmentEnvironment()) {
   // Do not make process liveness depend on database/Secret Manager availability.
@@ -185,6 +193,7 @@ server.on("error", (err) => {
 
 
 const stopBackgroundTimers = () => {
+  stopCustomerInvoiceOutboxDevProcessor?.();
   if (fleetReminderTimer) clearInterval(fleetReminderTimer);
   if (qrisAutoCandidateTimer) clearInterval(qrisAutoCandidateTimer);
   if (kasScRuleBackfillTimer) clearInterval(kasScRuleBackfillTimer);

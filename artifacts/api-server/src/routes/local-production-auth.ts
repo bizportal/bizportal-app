@@ -25,6 +25,7 @@ type RawUser = {
   id: string;
   email: string;
   role: string;
+  systemRole: string | null;
   status: string | null;
   isActive: boolean;
   firstName: string | null;
@@ -92,6 +93,7 @@ async function findUserByEmail(email: string, exactId?: string): Promise<RawUser
     id: data.id,
     email: data.email,
     role: typeof data.role === "string" ? data.role : "",
+    systemRole: typeof data.system_role === "string" ? data.system_role : null,
     status: typeof data.status === "string"
       ? data.status
       : typeof data.user_status === "string"
@@ -363,6 +365,7 @@ router.post("/auth/email-login", async (
     if (devPassword && (
       !user || user.id !== pinnedId || user.email.trim().toLowerCase() !== pinnedEmail
       || user.role.trim().toLowerCase() !== "super_admin"
+      || user.systemRole?.trim().toLowerCase() !== "super_admin"
       || !user.isActive || user.status?.trim().toLowerCase() !== "active"
       || user.companyId !== null
     )) {
