@@ -45,6 +45,8 @@ export {
   accountingSettingsTable,
   accountingTaxesTable,
   accountingPostingErrorsTable,
+  ledgerEventsTable,
+  financialOutboxEventsTable,
   chartOfAccountsTable,
   costCentersTable,
 } from "./accounting";

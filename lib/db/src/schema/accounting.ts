@@ -1,6 +1,8 @@
 import {
   pgTable,
   serial,
+  bigserial,
+  bigint,
   text,
   integer,
   numeric,
@@ -323,6 +325,8 @@ export const accountingEntriesTable = pgTable("accounting_entries", {
   postedAt: timestamp("posted_at"),
   voidedAt: timestamp("voided_at"),
   voidEntryId: integer("void_entry_id"),
+  checksumHash: text("checksum_hash"),
+  previousEntryId: integer("previous_entry_id"),
   voidedBy: text("voided_by"),
 }, (t) => ({
   uniqAutoSource: uniqueIndex("accounting_entries_source_uniq")
@@ -755,3 +759,35 @@ export const financeOverrideRequestsTable = pgTable("finance_override_requests",
 
 export type FinanceOverrideRequest = typeof financeOverrideRequestsTable.$inferSelect;
 export type InsertFinanceOverrideRequest = typeof financeOverrideRequestsTable.$inferInsert;
+
+/** Existing CST-DEV audit schema, mirrored for isolated PostgreSQL provisioning.
+ * No runtime DDL or business-database migration is performed by this declaration.
+ */
+export const ledgerEventsTable = pgTable("ledger_events", {
+  id: serial("id").primaryKey(),
+  companyId: integer("company_id"),
+  reportId: integer("report_id"),
+  eventType: text("event_type").notNull(),
+  eventData: jsonb("event_data"),
+  actor: text("actor"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  period: text("period").notNull().default(""),
+  ledgerEntryId: bigint("ledger_entry_id", { mode: "bigint" }),
+  payload: jsonb("payload"),
+  governanceCorrelationId: text("governance_correlation_id"),
+  ipAddress: text("ip_address"),
+  userRole: text("user_role"),
+  entryId: integer("entry_id"),
+});
+export const financialOutboxEventsTable = pgTable("financial_outbox_events", {
+  id: bigserial("id", { mode: "bigint" }).primaryKey(),
+  eventType: text("event_type").notNull(),
+  payload: jsonb("payload").notNull(),
+  status: text("status").notNull().default("pending"),
+  entryId: integer("entry_id"),
+  companyId: integer("company_id"),
+  attempt: integer("attempt").notNull().default(0),
+  lastError: text("last_error"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  processedAt: timestamp("processed_at", { withTimezone: true }),
+});
