@@ -124,9 +124,9 @@ export default function ScNewCashPreview() {
           const valid=records.documents.filter(d=>
             d?.status==="PENDING_VERIFICATION" &&
             /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(d.transactionId) &&
-            /^\\d{4}-\\d{2}-\\d{2}$/.test(d.date) &&
+            /^\d{4}-\d{2}-\d{2}$/.test(d.date) &&
             (d.direction==="IN"||d.direction==="OUT") &&
-            /^\\d+\\.\\d{2}$/.test(d.amount)
+            /^\d+\.\d{2}$/.test(d.amount)
           ).slice(0,20);
           if(!controller.signal.aborted && version===companyRequestVersion.current)
             setServerPendingDocuments(valid);
