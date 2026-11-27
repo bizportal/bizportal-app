@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { prepareFutureCashSource, type FutureCashSource } from "../lib/future-cash-source-identity";
-import { futureCashOtpPurpose, readPurposeBoundFutureCashApproval }
+import { futureCashOtpPurpose, readPurposeBoundFutureCashApproval, readFutureCashApprovalBinding }
   from "../lib/future-cash-purpose-otp-reader";
 
 const source: FutureCashSource = {
@@ -20,7 +20,7 @@ const row = {
   otp_expires_at: "2026-11-27 00:06:00+00",
   otp_created_at: "2026-11-27 00:03:00+00",
 };
-type TestRow = Omit<typeof row, "otp_email" | "otp_verified_at" | "otp_expires_at" | "otp_created_at"> & {
+type TestRow = {approval_id?: number} & Omit<typeof row, "otp_email" | "otp_verified_at" | "otp_expires_at" | "otp_created_at"> & {
   otp_email: string | null; otp_verified_at: string | null;
   otp_expires_at: string | null; otp_created_at: string | null;
 };
@@ -108,4 +108,28 @@ describe("Account18 purpose-separated OTP approval reader — SELECT only", () =
     const reader = { query: vi.fn(async () => { throw Error("private database credential"); }) };
     expect(await readPurposeBoundFutureCashApproval(source, reader)).toBeNull();
   });
+  it("retains only the numeric ID of the same validated approval row",async()=>{
+    const reader=db([{...row,approval_id:55}]);
+    const binding=await readFutureCashApprovalBinding(source,reader);
+    expect(binding).toMatchObject({approvalId:55,approval:{transactionId:source.transactionId,sourceFingerprint:fp,counterCoaId:902}});
+    expect(reader.query).toHaveBeenCalledTimes(1);
+    expect(reader.query.mock.calls[0]![0]).toContain("a.id as approval_id");
+    expect(await readPurposeBoundFutureCashApproval(source,db([{...row,approval_id:55}]))).toEqual(binding?.approval);
+    expect(binding?.approval).not.toHaveProperty("approvalId");
+  });
+  it("does not create an accounting source ID from an invalid or absent approval ID",async()=>{
+    for(const id of [undefined,0,-1,1.5,2147483648,NaN]){
+      const binding=await readFutureCashApprovalBinding(source,db([{...row,approval_id:id}]));
+      expect(binding?.approvalId).toBeNull();
+    }
+  });
+  it("rejects absent, ambiguous or invalid approval evidence before binding an ID",async()=>{
+    expect(await readFutureCashApprovalBinding(source,db([]))).toBeNull();
+    expect(await readFutureCashApprovalBinding(source,db([{...row,approval_id:55},{...row,approval_id:56}]))).toBeNull();
+    expect(await readFutureCashApprovalBinding(source,db([{...row,approval_id:55,otp_verified_at:null}]))).toBeNull();
+    const reader=db([]);
+    expect(await readFutureCashApprovalBinding(source,reader)).toBeNull();
+    expect(reader.query.mock.calls[0]![0]).toContain("revoked.event_type='REVOKED'");
+  });
+
 });
