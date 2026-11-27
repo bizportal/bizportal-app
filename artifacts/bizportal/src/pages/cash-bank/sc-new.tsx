@@ -514,6 +514,13 @@ export default function ScNewCashPreview() {
     }finally{setVoucherCode("");voucherLock.current=false;setVoucherBusy(false);}
   };
 
+  // A recovered/revoked document must not inherit the previous VERIFIED
+  // UI state, even when sessionStorage still contains the original UUID.
+  const selectedEvidenceRevoked=!!pendingEvidence && (
+    revokedId===pendingEvidence.transactionId ||
+    serverRevokedDocuments.some(doc=>doc.transactionId===pendingEvidence.transactionId)
+  );
+
   return (
     <div className="space-y-5">
       <div className="flex items-center gap-3">
@@ -703,32 +710,40 @@ export default function ScNewCashPreview() {
         <Card className="border-sky-500/40 bg-slate-800/90 text-white">
           <CardContent className="space-y-2 py-4">
             <p role="status" className="text-sm">
-              {verifiedId===pendingEvidence.transactionId?"Integritas dokumen tercatat VERIFIED (isi transaksi BELUM otomatis dinyatakan sah).":"Bukti tersimpan sebagai PENDING_VERIFICATION (belum disetujui)."}
+              {selectedEvidenceRevoked
+                ? "REVOKED — bukti dinyatakan tidak layak. VERIFIED hanya riwayat integritas lama."
+                : verifiedId===pendingEvidence.transactionId
+                  ? "Integritas dokumen tercatat VERIFIED (isi transaksi BELUM otomatis dinyatakan sah)."
+                  : "Bukti tersimpan sebagai PENDING_VERIFICATION (belum disetujui)."}
               ID transaksi: <code className="break-all">{pendingEvidence.transactionId}</code>.
               Tidak ada jurnal keuangan yang diposting.
             </p>
-            <Button type="button" variant="outline"
+            {!selectedEvidenceRevoked && <Button type="button" variant="outline"
               disabled={integrityBusy||evidenceBusy||verifiedId===pendingEvidence.transactionId}
               onClick={()=>void checkPendingIntegrity()}>
               {integrityBusy?"Memeriksa byte dokumen...":"Periksa integritas PDF (baca-saja)"}
-            </Button>
-            <a
+            </Button>}
+            {!selectedEvidenceRevoked && <a
               href={ENDPOINT+"/documents/"+encodeURIComponent(pendingEvidence.transactionId)+"/download"}
               className="inline-flex min-h-9 items-center rounded-md border border-slate-500 px-3 py-2 text-sm text-slate-100 hover:bg-slate-700"
-            >Unduh bukti asli untuk diperiksa (Owner)</a>
-            <p className="text-xs text-slate-300">
-              File akan diunduh dari server privat setelah otorisasi ulang. Periksa isi
-              dokumen secara manual sebelum memverifikasi; unduhan tidak menyetujui transaksi.
-            </p>
-            {integrityResult==="MATCH" && <p role="status" className="text-sm text-sky-200">
+            >Unduh bukti asli untuk diperiksa (Owner)</a>}
+            {selectedEvidenceRevoked ? (
+              <p className="text-xs text-amber-200">Dokumen REVOKED hanya untuk arsip audit. Tidak dapat diverifikasi ulang, digunakan untuk OTP, atau diposting.</p>
+            ) : (
+              <p className="text-xs text-slate-300">
+                File akan diunduh dari server privat setelah otorisasi ulang. Periksa isi
+                dokumen secara manual sebelum memverifikasi; unduhan tidak menyetujui transaksi.
+              </p>
+            )}
+            {!selectedEvidenceRevoked && integrityResult==="MATCH" && <p role="status" className="text-sm text-sky-200">
               Integritas file privat PASS: byte, ukuran, dan SHA-256 cocok. Dokumen tetap
               PENDING_VERIFICATION; persetujuan dan posting belum diaktifkan.
             </p>}
-            {integrityResult==="UNAVAILABLE" && <p role="alert" className="text-sm text-amber-200">
+            {!selectedEvidenceRevoked && integrityResult==="UNAVAILABLE" && <p role="alert" className="text-sm text-amber-200">
               Integritas belum dapat dikonfirmasi. Periksa sesi Owner, file privat,
               dan catatan server. Tidak ada perubahan pada status dokumen atau jurnal.
             </p>}
-            {verifiedId!==pendingEvidence.transactionId && (
+            {!selectedEvidenceRevoked && verifiedId!==pendingEvidence.transactionId && (
               <div className="space-y-2">
                 <p className="text-sm">
                   {reviewedUpload?.transactionId===pendingEvidence.transactionId
@@ -748,10 +763,10 @@ export default function ScNewCashPreview() {
                   onClick={()=>void verifyEvidence()}>Verifikasi Bukti (tanpa posting)</Button>
               </div>
             )}
-            {verifiedId===pendingEvidence.transactionId && revokedId===pendingEvidence.transactionId && (
+            {selectedEvidenceRevoked && (
               <p role="alert" className="text-sm text-amber-200">REVOKED — kelayakan bukti dicabut. Approval OTP historis tetap tersimpan, tidak ada posting jurnal.</p>
             )}
-            {verifiedId===pendingEvidence.transactionId && revokedId!==pendingEvidence.transactionId && (
+            {verifiedId===pendingEvidence.transactionId && !selectedEvidenceRevoked && (
               <div className="space-y-3 rounded-md border border-slate-600 p-3">
                 <h3 className="font-semibold">Persetujuan voucher Owner</h3>
                 {voucherApproved?.transactionId===verifiedId ? (
