@@ -13,6 +13,7 @@ import { useCompany } from "@/contexts/CompanyContext";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Plus, Trash2, Eye, ChevronLeft, ChevronRight, Send, CheckCircle, FileText, Bot, Banknote, RotateCcw, RefreshCw, Wrench, Split } from "lucide-react";
 import { toast } from "sonner";
+import { canOfferVendorInvoicePayShortcut } from "@/lib/vendorInvoiceDisbursementGuard";
 import {
   canonicalAmountPaid,
   canonicalGrandTotal,
@@ -672,7 +673,7 @@ export function VendorInvoicesListPage() {
                                 {recoveringId === Number(vi.id) ? "..." : "Pulihkan Jurnal"}
                               </Button>
                             )}
-                            {(vi.status === "posted" || vi.status === "matched") && outstandingNetPayment(vi) > 0.01 && Number(vi.postedDisbursementAmount ?? 0) <= 0 && (
+                            {canOfferVendorInvoicePayShortcut(vi.status, outstandingNetPayment(vi), vi.postedDisbursementAmount) && (
                               <Link href={`/accounting/bank-disbursements?mode=vendor_invoice&invoiceIds=${vi.id}`}>
                                 <Button size="sm" variant="outline" className="h-7 px-2 text-xs gap-1 text-orange-600 border-orange-300 hover:bg-orange-50">
                                   <Banknote className="h-3 w-3" />Bayar
