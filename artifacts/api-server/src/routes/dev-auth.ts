@@ -363,7 +363,9 @@ interface FinanceCompanyScope {
 export function isFinanceGlobalScopeDevEnabled(): boolean {
   return isSignedOtpDevEnabled()
     && (process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV === "true"
-      || process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV === "true")
+      || process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV === "true"
+      || (process.env.BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV === "true"
+        && process.env.BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV === "true"))
     && process.env.BIZPORTAL_FINANCE_GLOBAL_SCOPE_ENABLED_DEV === "true";
 }
 
@@ -405,6 +407,13 @@ export function setFinanceCompanyScopeCookie(
   response.append("Set-Cookie",
     FINANCE_SCOPE_COOKIE + "=" + value + "; Max-Age=" + maxAge
     + "; Path=/api/mkt/admin; HttpOnly; Secure; SameSite=Strict");
+  if (process.env.BIZPORTAL_MARKETPLACE_AP_BANK_STATUS_ADAPTER_DEV === "true") {
+    // Bank reconciliation runs under a separate API path; never broaden the
+    // Finance scope cookie to every unrelated /api endpoint.
+    response.append("Set-Cookie",
+      FINANCE_SCOPE_COOKIE + "=" + value + "; Max-Age=" + maxAge
+      + "; Path=/api/bank-reconciliation; HttpOnly; Secure; SameSite=Strict");
+  }
   if (process.env.BIZPORTAL_CUSTOMER_AR_PREVIEW_ENABLED_DEV === "true") {
     // Keep the Marketplace cookie's original path. A second copy of the same
     // signed scope is sent only to the Customer AR preview's exact GET path.

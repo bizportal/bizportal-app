@@ -37,8 +37,13 @@ export function onMarketplaceFinanceCommit(session: object, action: PostCommitAc
 export async function resolveMarketplaceFinanceDevDatabaseUrl(
   secretReader: (secretName: string) => Promise<string> = readSecret,
 ): Promise<string> {
+  const writerEnabled = process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV === "true";
+  const readerEnabled = process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV === "true";
+  const approvalEnabled =
+    process.env.BIZPORTAL_MARKETPLACE_PAYMENT_APPROVAL_ENABLED_DEV === "true" &&
+    process.env.BIZPORTAL_MARKETPLACE_FINANCE_COMPANY_ROLES_ENABLED_DEV === "true";
   if (process.env.APP_ENV?.trim().toLowerCase() !== "development" ||
-      process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV !== "true") {
+      (!writerEnabled && !readerEnabled && !approvalEnabled)) {
     throw new Error("DEV_FINANCE_DISABLED");
   }
   const direct = process.env.BIZPORTAL_MARKETPLACE_FINANCE_DATABASE_URL_DEV?.trim();
@@ -158,6 +163,11 @@ export async function withMarketplaceFinanceDevTransaction<T>(
   if (options.readOnly !== true && !approvalOnly &&
       process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV !== "true") {
     throw new Error("DEV_FINANCE_WRITER_DISABLED");
+  }
+  if (options.readOnly === true && !approvalOnly &&
+      process.env.BIZPORTAL_MARKETPLACE_CANONICAL_FINANCE_ENABLED_DEV !== "true" &&
+      process.env.BIZPORTAL_MARKETPLACE_FINANCE_READONLY_ENABLED_DEV !== "true") {
+    throw new Error("DEV_FINANCE_READER_DISABLED");
   }
   if (!Number.isSafeInteger(companyId) || companyId <= 0) {
     throw new Error("DEV_FINANCE_COMPANY_INVALID");

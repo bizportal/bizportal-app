@@ -1,7 +1,12 @@
 import { Router, type Request, type Response } from "express";
 import { db, withMarketplaceFinanceDevTransaction } from "@workspace/db";
 import { sql } from "drizzle-orm";
-import { getProductionSession, getProductionUser, isDevelopmentEnvironment } from "./dev-auth";
+import {
+  getProductionSession, getProductionUser, isDevelopmentEnvironment,
+  getFinanceCompanyScope, isFinanceGlobalScopeDevEnabled,
+  isApprovedFinanceGlobalSuperAdmin, isApprovedFinanceGlobalCompany,
+  setFinanceCompanyScopeCookie,
+} from "./dev-auth";
 // Load canonical services only after the DEV flag and verified session pass.
 // Startup of PROD must not initialize Marketplace finance dependencies.
 const invoiceService = () => import("../lib/services/mktVendorInvoiceService.js");
@@ -16,6 +21,52 @@ const validId = (s: string): number | null => /^[1-9]\d{0,9}$/.test(s) ? Number(
 
 type VerifiedFinanceActor = { email: string; companyId: number };
 
+// A company selector in the UI is not an authorization grant. Issue the
+// session-bound Finance scope only for an explicitly allowlisted company.
+router.post("/mkt/admin/finance-company-selection", async (req, res) => {
+  if (!isDevelopmentEnvironment() || process.env.APP_ENV?.trim().toLowerCase() !== "development"
+    || !isFinanceGlobalScopeDevEnabled()) {
+    res.status(404).json({ error: "Not found" }); return;
+  }
+  const session = getProductionSession(req);
+  if (!session) { res.status(401).json({ error: "Unauthorized" }); return; }
+  const body: unknown = req.body;
+  if (!body || typeof body !== "object" || Array.isArray(body)
+    || Object.keys(body).length !== 1
+    || !Number.isSafeInteger((body as { companyId?: unknown }).companyId)
+    || (body as { companyId: number }).companyId <= 0) {
+    res.status(422).json({ error: "INVALID_FINANCE_COMPANY" }); return;
+  }
+  const companyId = (body as { companyId: number }).companyId;
+  const origin = req.header("origin");
+  const fetchSite = req.header("sec-fetch-site");
+  let validOrigin = false;
+  if (origin) {
+    try {
+      const url = new URL(origin);
+      validOrigin = url.origin === origin && url.protocol === "https:"
+        && url.host.toLowerCase() === req.header("host")?.toLowerCase();
+    } catch { validOrigin = false; }
+  }
+  if (!validOrigin || fetchSite === "cross-site" || !req.is("application/json")) {
+    res.status(403).json({ error: "SAME_ORIGIN_JSON_REQUIRED" }); return;
+  }
+  try {
+    const user = await getProductionUser(session);
+    if (!user || user.role.toLowerCase() !== "super_admin"
+      || !isApprovedFinanceGlobalCompany(companyId)
+      || (user.companyId === null
+        ? !isApprovedFinanceGlobalSuperAdmin(user.email)
+        : user.companyId !== companyId)) {
+      res.status(403).json({ error: "FINANCE_COMPANY_FORBIDDEN" }); return;
+    }
+    setFinanceCompanyScopeCookie(res, session, companyId);
+    res.json({ ok: true, companyId });
+  } catch (error) {
+    req.log?.error({ error }, "Finance company scope verification unavailable");
+    res.status(503).json({ error: "FINANCE_COMPANY_SCOPE_UNAVAILABLE" });
+  }
+});
 
 async function authorize(req: Request, res: Response, readOnly = false,
   approvalOnly = false): Promise<VerifiedFinanceActor | null> {
@@ -39,7 +90,11 @@ async function authorize(req: Request, res: Response, readOnly = false,
     }
     // Never authorize finance access through a role-only or unscoped identity.
     // Super Admin approvals remain single-step, but must belong to a verified company.
-    const companyId = user.companyId;
+    let companyId = user.companyId;
+    if (companyId === null && isApprovedFinanceGlobalSuperAdmin(user.email)) {
+      const scoped = getFinanceCompanyScope(req, session);
+      if (scoped !== null && isApprovedFinanceGlobalCompany(scoped)) companyId = scoped;
+    }
     if (typeof companyId !== "number" || !Number.isSafeInteger(companyId) || companyId <= 0) {
       res.status(403).json({ error: "Company scope not verified" }); return null;
     }
