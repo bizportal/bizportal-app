@@ -22,7 +22,7 @@ describe("Account18 pending receipt server recovery",()=>{
     expect(page).toContain('Periksa integritas PDF (baca-saja)');
   });
   it("server uses protected SELECT and never sends private file or authorization",()=>{
-    expect(api).toContain('router.get(PATH + "/documents/pending", cashDocumentRateLimit');
+    expect(api).toContain('router.get(PATH + "/documents/pending", cashRegistryReadRateLimit');
     expect(api).toContain('public.sc_future_cash_documents d');
     expect(api).toContain('public.sc_future_cash_document_events e');
     expect(api).toContain('limit 20');
