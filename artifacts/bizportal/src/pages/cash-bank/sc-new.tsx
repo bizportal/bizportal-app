@@ -69,6 +69,13 @@ export default function ScNewCashPreview() {
   const [reviewedUpload,setReviewedUpload]=useState<{transactionId:string;file:File}|null>(null);
   const [verifiedId,setVerifiedId]=useState<string|null>(null);
   const [ownerReviewConfirmed,setOwnerReviewConfirmed]=useState(false);
+  const [voucherCoa,setVoucherCoa]=useState("");
+  const [voucherCode,setVoucherCode]=useState("");
+  const [voucherBusy,setVoucherBusy]=useState(false);
+  const voucherLock=useRef(false);
+  const [voucherChallenge,setVoucherChallenge]=useState<{transactionId:string;counterCoaId:number}|null>(null);
+  const [voucherApproved,setVoucherApproved]=useState<{transactionId:string;counterCoaId:number}|null>(null);
+  const [voucherError,setVoucherError]=useState<string|null>(null);
   const companyRequestVersion=useRef(0);
   const draftRequestVersion=useRef(0);
   const invalidateDraft=()=>{
@@ -88,6 +95,7 @@ export default function ScNewCashPreview() {
     setPendingListError(false);
     setIntegrityResult(null);
     setOwnerReviewConfirmed(false);
+    setVoucherCode("");setVoucherError(null);
     if(activeCompanyId!==1){
       setError("Khusus PT Cahaya Sejati Teknologi (Company #1), Account #18.");
       return ()=>controller.abort();
@@ -276,10 +284,63 @@ export default function ScNewCashPreview() {
          payload?.status!=="VERIFIED" || payload?.postingAllowed!==false)
         throw Error("Verifikasi belum berhasil (HTTP "+response.status+").");
       setVerifiedId(id);setIntegrityResult(null);setOwnerReviewConfirmed(false);
+      setVoucherCoa(counterCoaId);setVoucherChallenge(null);setVoucherApproved(null);setVoucherCode("");
+      setServerPendingDocuments(old=>old.filter(d=>d.transactionId!==id));
     }catch(err){
       if(version===companyRequestVersion.current)
         setError(err instanceof Error?err.message:"Verifikasi belum tersedia.");
     }finally{setEvidenceBusy(false);}
+  };
+
+  const requestVoucherOtp=async()=>{
+    if(activeCompanyId!==1 || !readiness || !pendingEvidence || verifiedId!==pendingEvidence.transactionId ||
+      voucherLock.current || evidenceBusy || integrityBusy || voucherApproved?.transactionId===verifiedId)return;
+    const id=pendingEvidence.transactionId;
+    const coa=readiness.contraCandidates.find(c=>String(c.id)===voucherCoa);
+    if(!coa)return;
+    if(!window.confirm("Setujui pengiriman OTP untuk voucher "+id+" dengan COA "+coa.code+" — "+coa.name+"? Posting jurnal tetap diblokir."))return;
+    const version=companyRequestVersion.current;
+    voucherLock.current=true;setVoucherBusy(true);setVoucherError(null);setVoucherCode("");setVoucherChallenge(null);
+    try{
+      const response=await fetch(ENDPOINT+"/voucher/otp/send",{
+        method:"POST",credentials:"include",cache:"no-store",
+        headers:{"content-type":"application/json"},
+        body:JSON.stringify({companyId:1,accountId:18,transactionId:id,counterCoaId:coa.id}),
+      });
+      const payload=await response.json().catch(()=>null);
+      if(response.status!==202 || payload?.transactionId!==id || payload?.counterCoaId!==coa.id ||
+        payload?.status!=="OTP_SENT" || payload?.expiresInSeconds!==300 || payload?.postingAllowed!==false)
+        throw Error("OTP belum berhasil dikirim (HTTP "+response.status+").");
+      setVoucherChallenge({transactionId:id,counterCoaId:coa.id});
+    }catch(err){
+      if(version===companyRequestVersion.current)setVoucherError(err instanceof Error?err.message:"Pengiriman OTP belum tersedia.");
+    }finally{voucherLock.current=false;setVoucherBusy(false);}
+  };
+
+  const confirmVoucherOtp=async()=>{
+    if(activeCompanyId!==1 || !readiness || !pendingEvidence || verifiedId!==pendingEvidence.transactionId ||
+      voucherLock.current || evidenceBusy || integrityBusy ||
+      voucherApproved?.transactionId===verifiedId || !voucherChallenge ||
+      voucherChallenge.transactionId!==verifiedId || String(voucherChallenge.counterCoaId)!==voucherCoa ||
+      !/^\\d{6}$/.test(voucherCode))return;
+    const id=voucherChallenge.transactionId;
+    const coaId=voucherChallenge.counterCoaId;
+    const version=companyRequestVersion.current;
+    voucherLock.current=true;setVoucherBusy(true);setVoucherError(null);
+    try{
+      const response=await fetch(ENDPOINT+"/voucher/otp/confirm",{
+        method:"POST",credentials:"include",cache:"no-store",
+        headers:{"content-type":"application/json"},
+        body:JSON.stringify({companyId:1,accountId:18,transactionId:id,counterCoaId:coaId,code:voucherCode}),
+      });
+      const payload=await response.json().catch(()=>null);
+      if(response.status!==201 || payload?.transactionId!==id || payload?.counterCoaId!==coaId ||
+        payload?.status!=="APPROVED" || payload?.postingAllowed!==false)
+        throw Error("Persetujuan belum terkonfirmasi (HTTP "+response.status+").");
+      setVoucherApproved({transactionId:id,counterCoaId:coaId});setVoucherChallenge(null);
+    }catch(err){
+      if(version===companyRequestVersion.current)setVoucherError(err instanceof Error?err.message:"Konfirmasi OTP belum tersedia.");
+    }finally{setVoucherCode("");voucherLock.current=false;setVoucherBusy(false);}
   };
 
   return (
@@ -297,7 +358,7 @@ export default function ScNewCashPreview() {
         <CardContent className="flex gap-3 py-4 text-sm text-amber-100">
           <ShieldAlert className="shrink-0" size={18}/>
           <p>Pratinjau debit-kredit hanya dihitung dalam memori. File bukti baru dapat disimpan
-            sebagai PENDING dan dapat diverifikasi oleh Owner. Persetujuan OTP untuk posting belum tersedia.
+            sebagai PENDING dan dapat diverifikasi oleh Owner. Persetujuan voucher memakai OTP email, tanpa posting jurnal.
             Tidak ada penulisan jurnal atau impor Sheet historis.</p>
         </CardContent>
       </Card>
@@ -352,7 +413,7 @@ export default function ScNewCashPreview() {
               {busy?"Menghitung...":"Uji pratinjau saja (tanpa posting)"}
             </Button>
             <p className="text-xs text-slate-400">
-              Tidak ada tombol persetujuan atau posting jurnal. Penyimpanan file hanya menghasilkan
+              Tidak ada tombol posting jurnal. Penyimpanan file hanya menghasilkan
               bukti PENDING yang harus diverifikasi kembali oleh server dan Owner/Super Admin.
             </p>
           </CardContent>
@@ -376,8 +437,10 @@ export default function ScNewCashPreview() {
                 <p className="font-mono break-all">{doc.transactionId}</p>
                 <p className="text-slate-300">{doc.date} · {doc.direction==="IN"?"Kas masuk":"Kas keluar"} · Rp {money(doc.amount)}</p>
               </div>
-              <Button type="button" variant="outline" disabled={evidenceBusy||integrityBusy}
+              <Button type="button" variant="outline" disabled={evidenceBusy||integrityBusy||voucherBusy}
                 onClick={()=>{
+                  if(voucherLock.current)return;
+                  setVoucherChallenge(null);setVoucherApproved(null);setVoucherCode("");setVoucherCoa("");setVoucherError(null);
                   setPendingEvidence({transactionId:doc.transactionId,status:"PENDING_VERIFICATION"});
                   setIntegrityResult(null);setReviewedUpload(null);setVerifiedId(null);
                   setOwnerReviewConfirmed(false);
@@ -436,7 +499,40 @@ export default function ScNewCashPreview() {
                   onClick={()=>void verifyEvidence()}>Verifikasi Bukti (tanpa posting)</Button>
               </div>
             )}
-            <Button type="button" variant="outline" disabled={evidenceBusy||integrityBusy} onClick={()=>{
+            {verifiedId===pendingEvidence.transactionId && (
+              <div className="space-y-3 rounded-md border border-slate-600 p-3">
+                <h3 className="font-semibold">Persetujuan voucher Owner</h3>
+                {voucherApproved?.transactionId===verifiedId ? (
+                  <p role="status" className="text-sm text-green-200">APPROVED — persetujuan OTP tercatat di server. Jurnal belum diposting.</p>
+                ):(
+                  <>
+                    <Label>COA lawan voucher</Label>
+                    <Select value={voucherCoa} disabled={voucherBusy||!!voucherChallenge}
+                      onValueChange={v=>{if(!voucherLock.current&&!voucherChallenge)setVoucherCoa(v);}}>
+                      <SelectTrigger><SelectValue placeholder="Pilih COA lawan"/></SelectTrigger>
+                      <SelectContent>{readiness.contraCandidates.map(c=><SelectItem key={c.id} value={String(c.id)}>{c.code} — {c.name}</SelectItem>)}</SelectContent>
+                    </Select>
+                    <Button type="button" disabled={voucherBusy||!voucherCoa} onClick={()=>void requestVoucherOtp()}>
+                      {voucherBusy?"Memproses...":voucherChallenge?"Kirim ulang OTP":"Setujui Transaksi — Kirim OTP"}
+                    </Button>
+                    {voucherChallenge?.transactionId===verifiedId && (
+                      <div className="space-y-2">
+                        <p className="text-sm">OTP dikirim ke email akun Owner/Super Admin yang aktif. Berlaku 5 menit.</p>
+                        <Label htmlFor="sc-voucher-otp">Kode OTP voucher</Label>
+                        <Input id="sc-voucher-otp" type="password" inputMode="numeric" autoComplete="one-time-code" maxLength={6}
+                          value={voucherCode} disabled={voucherBusy} onChange={e=>setVoucherCode(e.target.value.replace(/[^0-9]/g,"").slice(0,6))}/>
+                        <Button type="button" disabled={voucherBusy||!/^\\d{6}$/.test(voucherCode)} onClick={()=>void confirmVoucherOtp()}>Konfirmasi OTP</Button>
+                        <Button type="button" variant="outline" disabled={voucherBusy} onClick={()=>{if(!voucherLock.current){setVoucherChallenge(null);setVoucherCode("");}}}>Ubah COA (wajib OTP baru)</Button>
+                      </div>
+                    )}
+                  </>
+                )}
+                {voucherError && <p role="alert" className="text-sm text-red-300">{voucherError}</p>}
+              </div>
+            )}
+            <Button type="button" variant="outline" disabled={evidenceBusy||integrityBusy||voucherBusy} onClick={()=>{
+              if(voucherLock.current)return;
+              setVoucherChallenge(null);setVoucherApproved(null);setVoucherCode("");setVoucherCoa("");setVoucherError(null);
               try{window.sessionStorage.removeItem(COMPANY1_PENDING_ACK_KEY);}
               catch{/* Storage may be disabled. */}
               setPendingEvidence(null);setReviewedUpload(null);setVerifiedId(null);
