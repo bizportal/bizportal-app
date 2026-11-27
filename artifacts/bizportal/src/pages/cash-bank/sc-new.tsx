@@ -830,6 +830,27 @@ export default function ScNewCashPreview() {
                   </>
                 )}
                 {voucherError && <p role="alert" className="text-sm text-red-300">{voucherError}</p>}
+                <div className="space-y-2 rounded-md border border-red-500/40 p-3">
+                  <p className="text-sm font-semibold text-red-200">Bukti tidak sesuai? Cabut kelayakan tanpa menghapus audit</p>
+                  <p className="text-xs text-slate-300">Gunakan untuk NPWP/KTP, nominal/tanggal berbeda, atau COA yang salah. Event VERIFIED dan approval OTP lama tetap tersimpan. Tidak ada posting jurnal.</p>
+                  <Label htmlFor="sc-cash-revoke-reason-code">Alasan pencabutan</Label>
+                  <select id="sc-cash-revoke-reason-code" value={revokeReasonCode}
+                    disabled={revokeBusy||voucherBusy} onChange={e=>setRevokeReasonCode(e.target.value)}
+                    className="w-full rounded border border-slate-500 bg-slate-900 px-2 py-2 text-white">
+                    <option value="WRONG_DOCUMENT_TYPE">Jenis dokumen salah (misal NPWP)</option>
+                    <option value="TRANSACTION_MISMATCH">Tanggal/nominal/transaksi tidak sesuai</option>
+                    <option value="COA_MISMATCH">COA lawan tidak sesuai</option>
+                    <option value="OTHER_INVALID_EVIDENCE">Alasan bukti tidak sah lainnya</option>
+                  </select>
+                  <Label htmlFor="sc-cash-revoke-reason">Catatan audit (minimal 12 karakter; jangan tulis data NPWP)</Label>
+                  <Input id="sc-cash-revoke-reason" value={revokeReason} disabled={revokeBusy||voucherBusy}
+                    placeholder="Contoh: Lampiran adalah kartu NPWP, bukan bukti uang masuk"
+                    onChange={e=>setRevokeReason(e.target.value)}/>
+                  <Button type="button" variant="outline" disabled={revokeBusy||voucherBusy||reviewBusy||revokeReason.trim().length<12}
+                    onClick={()=>void revokeInvalidEvidence()}>
+                    {revokeBusy?"Mencabut kelayakan...":"Cabut bukti (REVOKED, tanpa posting)"}
+                  </Button>
+                </div>
               </div>
             )}
             <Button type="button" variant="outline" disabled={evidenceBusy||integrityBusy||voucherBusy} onClick={()=>{
