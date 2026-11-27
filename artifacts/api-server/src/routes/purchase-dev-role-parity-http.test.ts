@@ -7,6 +7,7 @@ const mock = vi.hoisted(() => ({
   legacy: vi.fn(),
   signed: vi.fn(),
   user: vi.fn(),
+  signedOtp: vi.fn(),
   query: vi.fn(),
 }));
 vi.mock("./dev-auth", () => ({
@@ -14,6 +15,7 @@ vi.mock("./dev-auth", () => ({
   getDevSession: mock.legacy,
   getProductionSession: mock.signed,
   getProductionUser: mock.user,
+  isSignedOtpDevEnabled: mock.signedOtp,
 }));
 vi.mock("@workspace/db", () => ({ pool: { query: mock.query } }));
 import purchaseRouter from "./purchase-workflow";
@@ -43,20 +45,21 @@ describe("Purchase Workflow: preserve active DEV admin-only authorization", () =
     mock.legacy.mockReturnValue(null);
     mock.signed.mockReturnValue(null);
     mock.user.mockResolvedValue(null);
+    mock.signedOtp.mockReturnValue(true);
   });
-  function call() {
+  function call(path = "/purchase-workflow/unmatched-read-only-test-path", method = "GET") {
     const address = server.address();
     if (!address || typeof address === "string") throw Error("Missing test server");
     return new Promise<{status: number; body: string}>((resolve, reject) => {
-      const request = http.get({
-        hostname: "127.0.0.1", port: address.port,
-        path: "/purchase-workflow/unmatched-read-only-test-path",
+      const request = http.request({
+        hostname: "127.0.0.1", port: address.port, method, path,
       }, response => {
         let body = "";
         response.on("data", chunk => body += chunk.toString());
         response.on("end", () => resolve({status:response.statusCode ?? 0, body}));
       });
       request.on("error", reject);
+      request.end();
     });
   }
 
@@ -103,6 +106,66 @@ describe("Purchase Workflow: preserve active DEV admin-only authorization", () =
     const result = await call();
     expect(result.status).toBe(403);
     expect(result.body).toContain("COMPANY_SCOPE_MISSING");
+    expect(mock.query).not.toHaveBeenCalled();
+  });
+
+  it.each(["super_admin", "owner"] as const)(
+    "allows signed, database-verified %s to read a specified company without any writer access", async role => {
+      mock.signed.mockReturnValue({ id: "otp-owner-1", email: "owner@qa.invalid" });
+      mock.user.mockResolvedValue({ id: "otp-owner-1", email: "owner@qa.invalid", role, companyId: null });
+      mock.query.mockResolvedValue({ rows: [] });
+      const response = await call("/purchase-workflow/vendor-invoices?company=1&page=1&pageSize=50");
+      expect(response.status).toBe(200);
+      expect(JSON.parse(response.body)).toMatchObject({ data: [], total: 0 });
+      expect(mock.query).toHaveBeenCalledOnce();
+      const [statement, params] = mock.query.mock.calls[0]!;
+      expect(statement).toContain("where vi.company_id = $1");
+      expect(params).toEqual([1, 50, 0]);
+    },
+  );
+
+  it("blocks an unsigned DEV super_admin and a signed session without OTP gate", async () => {
+    mock.query.mockResolvedValue({ rows: [] });
+    mock.legacy.mockReturnValue({ id: "legacy-owner", role: "super_admin", companyId: null });
+    expect((await call("/purchase-workflow/vendor-invoices?company=1")).status).toBe(403);
+    mock.legacy.mockReturnValue(null);
+    mock.signed.mockReturnValue({ id: "otp-owner-1" });
+    mock.user.mockResolvedValue({ id: "otp-owner-1", role: "super_admin", companyId: null });
+    mock.signedOtp.mockReturnValue(false);
+    expect((await call("/purchase-workflow/vendor-invoices?company=1")).status).toBe(403);
+    expect(mock.query).not.toHaveBeenCalled();
+  });
+
+  it("rejects a signed Super Admin with no company parameter or an invalid company", async () => {
+    mock.signed.mockReturnValue({ id: "otp-owner-1" });
+    mock.user.mockResolvedValue({ id: "otp-owner-1", role: "super_admin", companyId: null });
+    expect((await call("/purchase-workflow/vendor-invoices")).status).toBe(400);
+    expect((await call("/purchase-workflow/vendor-invoices?company=0")).status).toBe(400);
+    expect((await call("/purchase-workflow/vendor-invoices?company=all")).status).toBe(400);
+    expect(mock.query).not.toHaveBeenCalled();
+  });
+
+  it("rejects cross-company reads for a scoped Super Admin", async () => {
+    mock.signed.mockReturnValue({ id: "otp-owner-1" });
+    mock.user.mockResolvedValue({ id: "otp-owner-1", role: "super_admin", companyId: 1 });
+    expect((await call("/purchase-workflow/vendor-invoices?company=3")).status).toBe(400);
+    expect(mock.query).not.toHaveBeenCalled();
+  });
+
+  it("never lets a signed Super Admin cross the Purchase writer boundary", async () => {
+    mock.signed.mockReturnValue({ id: "otp-owner-1" });
+    mock.user.mockResolvedValue({ id: "otp-owner-1", role: "super_admin", companyId: null });
+    expect((await call("/purchase-workflow/vendor-invoices", "POST")).status).toBe(403);
+    expect((await call("/purchase-workflow/vendor-invoices/9", "PUT")).status).toBe(403);
+    expect((await call("/purchase-workflow/vendor-invoices/9/post", "POST")).status).toBe(403);
+    expect((await call("/purchase-workflow/unmatched-read-only-test-path")).status).toBe(403);
+    expect(mock.query).not.toHaveBeenCalled();
+  });
+
+  it("does not broaden signed admin access when its DB company binding is missing", async () => {
+    mock.signed.mockReturnValue({ id: "otp-admin-1" });
+    mock.user.mockResolvedValue({ id: "otp-admin-1", role: "admin", companyId: null });
+    expect((await call("/purchase-workflow/vendor-invoices?company=1")).status).toBe(403);
     expect(mock.query).not.toHaveBeenCalled();
   });
 

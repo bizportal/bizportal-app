@@ -1,6 +1,6 @@
 import { Router, type IRouter, type NextFunction, type Request, type Response } from "express";
 import { pool } from "@workspace/db";
-import { getDevSession, getProductionSession, getProductionUser, isDevelopmentEnvironment, type DevAuthUser } from "./dev-auth";
+import { getDevSession, getProductionSession, getProductionUser, isDevelopmentEnvironment, isSignedOtpDevEnabled, type DevAuthUser } from "./dev-auth";
 
 const router: IRouter = Router();
 
@@ -176,9 +176,9 @@ async function authenticatePurchaseUser(
 ): Promise<void> {
   if (isDevelopmentEnvironment()) {
     try {
-      // Preserve the already-running DEV Purchase Workflow contract:
-      // only an admin may cross this route boundary. Owner and Super Admin
-      // remain disallowed until a separately reviewed role-policy change.
+      // Preserve DEV Purchase Workflow writer authorization (admin only).
+      // The existing Owner/Super Admin signed OTP may read vendor invoices,
+      // but can never use it to enable purchase mutations or unrelated routes.
       const legacy = getDevSession(req);
       const signedSession = legacy ? null : getProductionSession(req);
       const verifiedSignedUser = signedSession ? await getProductionUser(signedSession) : null;
@@ -187,13 +187,23 @@ async function authenticatePurchaseUser(
         res.status(401).json({ error: "Unauthorized" });
         return;
       }
-      if (user.role.trim().toLowerCase() !== "admin") {
+      const role = user.role.trim().toLowerCase();
+      const adminWriter = role === "admin";
+      const signedOwnerInvoiceRead = Boolean(signedSession)
+        && req.method === "GET"
+        && (req.path === "/purchase-workflow/vendor-invoices"
+          || req.path.startsWith("/purchase-workflow/vendor-invoices/"))
+        && (role === "owner" || role === "super_admin")
+        && isSignedOtpDevEnabled();
+      if (!adminWriter && !signedOwnerInvoiceRead) {
         res.status(403).json({ error: "Forbidden" });
         return;
       }
-      // For opted-in signed OTP, the verified database tenant must be bound:
-      // legacy DEV sessions retain their existing behavior until migrated.
-      if (signedSession && !(Number.isSafeInteger(user.companyId) && (user.companyId ?? 0) > 0)) {
+      // A DEV admin's signed session always needs its pinned company.
+      // A signed global Owner/Super Admin may choose only an explicit company
+      // through existing parseCompanyId(): no default/all-company result.
+      if (signedSession && adminWriter
+        && !(Number.isSafeInteger(user.companyId) && (user.companyId ?? 0) > 0)) {
         res.status(403).json({ error: "Verified company required", code: "COMPANY_SCOPE_MISSING" });
         return;
       }
