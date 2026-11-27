@@ -611,6 +611,32 @@ router.post(PATH + "/documents/verify", cashDocumentRateLimit, async (req, res):
 
 
 /** Explicit signed Owner review of financial content. Does NOT infer contents from SHA-256. */
+/** Only signed Owner/Super Admin can recover an existing server-side content review. */
+router.get(PATH + "/documents/:transactionId/review-status",cashRegistryReadRateLimit,async(req,res):Promise<void>=>{
+  const id=String(req.params.transactionId??"");
+  if(!/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id)){
+    res.status(400).json({code:"SC_CASH_INVALID_DOCUMENT_ID",postingAllowed:false});return;
+  }
+  try{
+    const result=await pool.query<{metadata:unknown}>(
+      "select a.metadata from public.approval_requests a "+
+      "join public.sc_future_cash_documents d on d.transaction_id::text=a.metadata->>'transactionId' "+
+      "join lateral (select event_type from public.sc_future_cash_document_events e "+
+      "where e.transaction_id=d.transaction_id order by event_id desc limit 1) ev on true "+
+      "where d.transaction_id=$1::uuid and d.company_id=1 and d.account_id=18 and d.cash_coa_id=75839 "+
+      "and ev.event_type='VERIFIED' and a.company_id=1 and a.module='cash_bank' "+
+      "and a.doc_type='sc_future_cash_evidence_review' and a.status='confirmed' "+
+      "order by a.id desc limit 2",[id],
+    );
+    const raw=result.rows[0]?.metadata;
+    const parsed=raw && typeof raw==="object" && !Array.isArray(raw) ? raw as Record<string,unknown>:null;
+    const coa=typeof parsed?.counterCoaId==="number" && Number.isSafeInteger(parsed.counterCoaId)
+      ? parsed.counterCoaId:null;
+    res.json({transactionId:id,status:result.rows.length===1 && coa!==null?"EVIDENCE_REVIEWED":"NOT_REVIEWED",
+      counterCoaId:result.rows.length===1?coa:null,postingAllowed:false});
+  }catch{res.status(503).json({code:"SC_CASH_REVIEW_STATUS_UNAVAILABLE",postingAllowed:false});}
+});
+
 router.post(PATH + "/documents/review", cashDocumentRateLimit, async (req, res): Promise<void> => {
   if (req.get("origin") !== OWNER_ORIGIN) {
     res.status(403).json({code:"SC_CASH_SAME_ORIGIN_REQUIRED",postingAllowed:false});
