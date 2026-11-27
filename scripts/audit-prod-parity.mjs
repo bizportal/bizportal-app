@@ -44,7 +44,37 @@ const contracts = [
   { area: "Kasbon", name: "Historical balance labeled unverified", path: web + "finance/advance-management.tsx",
     markers: ["Tercatat Belum Terverifikasi"] },
   { area: "Finance", name: "Read-only Rule AI preview API present", path: api + "recon-classification.ts",
-    markers: ['/ai-rules/preview'] }
+    markers: ['/ai-rules/preview'] },
+  // Accounting/Cash & Bank source-level gap report, 2026-11-27.
+  // Match the visible frontend HTTP contract against the mounted standalone
+  // API source. A missing marker is a cutover investigation, NOT a reason to
+  // build a second posting engine or turn on financial writers.
+  { area: "Accounting", name: "Existing journal catalog GET", path: api + "accounting.ts",
+    markers: ['router.get("/accounting/journals"'] },
+  { area: "Accounting", name: "Journal catalog POST required by Accounting UI", path: api + "accounting.ts",
+    markers: ['router.post("/accounting/journals"'] },
+  { area: "Accounting", name: "Existing Accounting entries GET", path: api + "accounting.ts",
+    markers: ['router.get("/accounting/entries"'] },
+  { area: "Accounting", name: "Accounting entries POST required by manual journal UI", path: api + "accounting.ts",
+    markers: ['router.post("/accounting/entries"'] },
+  { area: "Accounting", name: "Accounting entry status PATCH required by UI", path: api + "accounting.ts",
+    markers: ['router.patch("/accounting/entries/:id/status"'] },
+  { area: "Accounting", name: "Accounting reversal POST required by UI", path: api + "accounting.ts",
+    markers: ['router.post("/accounting/entries/:id/reverse"'] },
+  { area: "Accounting", name: "Other transactions POST required by UI", path: api + "accounting.ts",
+    markers: ['router.post("/accounting/other-transactions"'] },
+  { area: "Accounting", name: "Existing bank mutation canonical posting function", path: api + "bank-reconciliation.ts",
+    markers: ["async function postBankMutationCanonical(", "update public.accounting_entries set status='posted'"] },
+  { area: "Cash & Bank", name: "Existing cash-bank accounts GET", path: api + "cash-bank-read-parity.ts",
+    markers: ['router.get("/cash-bank/accounts"'] },
+  { area: "Cash & Bank", name: "Petty Cash list GET required by UI", path: api + "cash-bank-read-parity.ts",
+    markers: ['router.get("/cash-bank/petty-cash"'] },
+  { area: "Cash & Bank", name: "Petty Cash create POST required by UI", path: api + "cash-bank-read-parity.ts",
+    markers: ['router.post("/cash-bank/petty-cash"'] },
+  { area: "Cash & Bank", name: "Petty Cash status PATCH required by UI", path: api + "cash-bank-read-parity.ts",
+    markers: ['router.patch("/cash-bank/petty-cash/:id"'] },
+  { area: "Cash & Bank", name: "Kas Besar SC still DEV-only and posting disabled", path: api + "sc-future-cash-preview.ts",
+    markers: ['router.post(PATH + "/preview"', 'postingAllowed: false', 'process.env.APP_ENV !== "development"'] }
 ];
 
 const checks = contracts.map(({ area, name, path, markers = [] }) => {
