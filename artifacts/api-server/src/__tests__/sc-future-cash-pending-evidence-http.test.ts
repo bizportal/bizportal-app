@@ -9,6 +9,8 @@ const mock = vi.hoisted(() => ({
   actorEmail: "owner@example.test", accountValid: true,
   otpRows: [] as unknown[][], otpInvalidations: [] as string[], smtpCalls: [] as unknown[][],
   smtpFail: false, recentOtpCount: 0, contraValid: true, approved: false,
+  otpConsumed: false, otpAttempts: 0, otpExpired: false, otpDisabled: false,
+  approvalFail: false, approvalRows: [] as unknown[][],
   verifiedEvents: 0, pendingDoc: null as Record<string, unknown> | null,
   storageWrites: 0, storageDeletes: [] as string[],
   storageBytes: null as Buffer | null,
@@ -32,6 +34,7 @@ vi.mock("../lib/smtp", () => ({ sendFutureCashVoucherOtpEmail: async (...args: u
   mock.smtpCalls.push(args); if (mock.smtpFail) throw Error("SMTP_FAILED");
 } }));
 vi.mock("@workspace/db", () => {
+  let snapshot: { consumed:boolean; attempts:number; approved:boolean; count:number } | null = null;
   const query = async (sql: string, args: unknown[] = []) => {
     mock.queries.push(sql);
     if (sql.includes("from public.company_bank_accounts a")) return { rows: [{
@@ -67,14 +70,43 @@ vi.mock("@workspace/db", () => {
     if (sql.includes("from public.approval_requests")) return { rowCount: mock.approved ? 1 : 0, rows: [] };
     if (sql.includes("select count(*)::text as count from public.bizportal_email_otp_codes"))
       return { rows: [{ count: String(mock.recentOtpCount) }] };
+    if (sql.includes("select event_id::text from public.sc_future_cash_document_events"))
+      return { rows: mock.pendingDoc?.event_type === "VERIFIED" ? [{ event_id: "1" }] : [] };
+    if (sql.includes("select id::text,code_hash from public.bizportal_email_otp_codes")) {
+      const otp = mock.otpRows.at(-1);
+      return { rows: otp && otp[0] === args[0] && otp[2] === args[1] &&
+        !mock.otpConsumed && !mock.otpExpired && !mock.otpDisabled && mock.otpAttempts < 5
+        ? [{ id:"101", code_hash:otp[3] }] : [] };
+    }
+    if (sql.includes("set attempts=attempts+1")) {
+      mock.otpAttempts++; return {rowCount:1,rows:[]};
+    }
+    if (sql.includes("set verified_at=clock_timestamp()")) {
+      if (mock.otpConsumed || mock.otpExpired || mock.otpDisabled) return {rowCount:0,rows:[]};
+      mock.otpConsumed=true; return {rowCount:1,rows:[{id:"101",verified_at:new Date()}]};
+    }
+    if (sql.includes("insert into public.approval_requests")) {
+      if(mock.approvalFail) throw Error("APPROVAL_INSERT_FAILED");
+      mock.approvalRows.push(args); mock.approved=true;
+      return {rowCount:1,rows:[{id:55}]};
+    }
     if (sql.includes("update public.bizportal_email_otp_codes")) {
-      mock.otpInvalidations.push(sql); return { rowCount: 1, rows: [] };
+      mock.otpInvalidations.push(sql); mock.otpDisabled=true; return { rowCount: 1, rows: [] };
     }
     if (sql.includes("insert into public.bizportal_email_otp_codes")) {
-      mock.otpRows.push(args); return { rowCount: 1, rows: [{ id: "101" }] };
+      mock.otpRows.push(args); mock.otpDisabled=false; mock.otpConsumed=false; mock.otpAttempts=0; return { rowCount: 1, rows: [{ id: "101" }] };
     }
-    if (["BEGIN", "COMMIT", "ROLLBACK"].includes(sql) || sql.includes("pg_advisory_xact_lock"))
-      return { rows: [] };
+    if (sql==="BEGIN") {
+      snapshot={consumed:mock.otpConsumed,attempts:mock.otpAttempts,approved:mock.approved,count:mock.approvalRows.length};
+      return {rows:[]};
+    }
+    if (sql==="ROLLBACK") {
+      if(snapshot){mock.otpConsumed=snapshot.consumed;mock.otpAttempts=snapshot.attempts;
+        mock.approved=snapshot.approved;mock.approvalRows.length=snapshot.count;}
+      snapshot=null;return {rows:[]};
+    }
+    if (sql==="COMMIT") {snapshot=null;return {rows:[]};}
+    if (sql.includes("pg_advisory_xact_lock")) return {rows:[]};
     if (sql.includes("insert into public.sc_future_cash_document_events")) {
       if (!mock.pendingDoc || mock.pendingDoc.event_type !== null) return { rowCount: 0, rows: [] };
       mock.pendingDoc.event_type = "VERIFIED"; mock.pendingDoc.event_at = "2026-11-27T00:00:00.000Z";
@@ -150,6 +182,8 @@ describe("Account18 pending receipt intake HTTP — no journal or approval", () 
     mock.pendingDoc = null; mock.verifiedEvents = 0;
     mock.otpRows.length=0; mock.otpInvalidations.length=0; mock.smtpCalls.length=0;
     mock.smtpFail=false; mock.recentOtpCount=0; mock.contraValid=true; mock.approved=false;
+    mock.otpConsumed=false;mock.otpAttempts=0;mock.otpExpired=false;mock.otpDisabled=false;
+    mock.approvalFail=false;mock.approvalRows.length=0;
     mock.wrongStoredBytes = false; mock.dbInsertFailure = false;
     mock.storageDeletes.length = 0; mock.queries.length = 0;
   });
@@ -364,6 +398,60 @@ describe("Account18 pending receipt intake HTTP — no journal or approval", () 
     expect(mock.otpInvalidations).toHaveLength(2);
     expect(mock.otpInvalidations[1]).toContain("attempts=5,code_hash=null");
     expect(mock.otpInvalidations.every(q=>!q.includes("set verified_at"))).toBe(true);
+  });
+
+  const confirmOtp = (transactionId:string, code:string, updates:Record<string,unknown>={}, from=origin) =>
+    fetch(base+"/api/cash-bank/sc-new/voucher/otp/confirm",{
+      method:"POST",headers:{Origin:from,"Content-Type":"application/json"},
+      body:JSON.stringify({companyId:1,accountId:18,transactionId,counterCoaId:902,code,...updates}),
+    });
+  const issuedVoucher=async()=>{
+    const id=await verifiedDoc();
+    expect((await sendOtp(id)).status).toBe(202);
+    return {id,code:String(mock.smtpCalls[0]![1])};
+  };
+  it("consumes exact voucher OTP and records one scoped approval without posting",async()=>{
+    const {id,code}=await issuedVoucher();
+    const response=await confirmOtp(id,code);
+    expect(response.status).toBe(201);
+    expect(await response.json()).toEqual({transactionId:id,counterCoaId:902,status:"APPROVED",postingAllowed:false});
+    expect(mock.otpConsumed).toBe(true);
+    expect(mock.approvalRows).toHaveLength(1);
+    expect(mock.approvalRows[0]!.slice(0,4)).toEqual([1,id,"owner@example.test","owner"]);
+    expect(JSON.parse(String(mock.approvalRows[0]![4]))).toEqual({
+      transactionId:id,sourceFingerprint:mock.pendingDoc?.source_fingerprint,accountId:18,counterCoaId:902,otpEvidenceId:"101",
+    });
+    expect((await confirmOtp(id,code)).status).toBe(409);
+    expect(mock.approvalRows).toHaveLength(1);
+    expect(mock.queries.some(q=>/insert into public\.(accounting_entries|bank_mutations)/.test(q))).toBe(false);
+  });
+  it("rejects wrong COA, forged fields, foreign origin and unauthorized caller",async()=>{
+    const {id,code}=await issuedVoucher();
+    expect((await confirmOtp(id,code,{counterCoaId:903})).status).toBe(400);
+    expect((await confirmOtp(id,code,{approvedBy:"forged"})).status).toBe(400);
+    expect((await confirmOtp(id,code,{},"https://malicious.invalid")).status).toBe(403);
+    mock.signed=false;expect((await confirmOtp(id,code)).status).toBe(401);
+    mock.signed=true;mock.actorRole="finance";expect((await confirmOtp(id,code)).status).toBe(403);
+    expect(mock.otpConsumed).toBe(false);expect(mock.approvalRows).toHaveLength(0);
+  });
+  it("counts wrong attempts, rejects locked or expired OTP",async()=>{
+    const {id,code}=await issuedVoucher();
+    const wrong=code==="000000"?"111111":"000000";
+    expect((await confirmOtp(id,wrong)).status).toBe(400);
+    expect(mock.otpAttempts).toBe(1);
+    mock.otpAttempts=5;expect((await confirmOtp(id,code)).status).toBe(400);
+    mock.otpAttempts=0;mock.otpExpired=true;expect((await confirmOtp(id,code)).status).toBe(400);
+    expect(mock.otpConsumed).toBe(false);expect(mock.approvalRows).toHaveLength(0);
+  });
+  it("rolls back consumed OTP when approval insert fails and allows retry",async()=>{
+    const {id,code}=await issuedVoucher();
+    mock.approvalFail=true;
+    expect((await confirmOtp(id,code)).status).toBe(409);
+    expect(mock.queries.at(-1)).toBe("ROLLBACK");
+    expect(mock.otpConsumed).toBe(false);expect(mock.approvalRows).toHaveLength(0);
+    mock.approvalFail=false;
+    expect((await confirmOtp(id,code)).status).toBe(201);
+    expect(mock.approvalRows).toHaveLength(1);
   });
 
 });
