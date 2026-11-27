@@ -50,6 +50,14 @@ vi.mock("@workspace/db", () => {
       mock.pendingDoc = { transaction_id: args[0], object_bucket: "private-uploads", object_path: args[1], document_sha256: args[2], source_fingerprint: args[3], direction: args[4], transaction_date: args[5], amount_cents: args[6], byte_length: args[7], event_type: null };
       return { rowCount: 1, rows: [] };
     }
+    if (sql.includes("ev.event_type='VERIFIED'") &&
+        sql.includes("order by d.uploaded_at")) {
+      const doc=mock.pendingDoc;
+      return { rows: doc && doc.event_type==="VERIFIED" && !mock.approved ? [{
+        transaction_id:doc.transaction_id,direction:doc.direction,
+        transaction_date:doc.transaction_date,amount_cents:doc.amount_cents,
+      }] : [] };
+    }
     if (sql.includes("from public.sc_future_cash_documents d") &&
         sql.includes("and not exists") && sql.includes("order by d.uploaded_at")) {
       const doc = mock.pendingDoc;
@@ -248,6 +256,45 @@ describe("Account18 pending receipt intake HTTP — no journal or approval", () 
     expect((await fetch(base+endpoint)).status).toBe(403);
     mock.actorRole="owner";mock.actorCompany=3;
     expect((await fetch(base+endpoint)).status).toBe(403);
+    expect(mock.queries).toHaveLength(0);
+  });
+  it("lists only VERIFIED and unapproved vouchers from signed Owner registry", async () => {
+    const id="25088529-6fa1-4ddb-80bf-390c157e64d4";
+    mock.pendingDoc={
+      transaction_id:id,event_type:"VERIFIED",direction:"IN",
+      transaction_date:"2026-11-27",amount_cents:"1000000",
+    };
+    const url=base+"/api/cash-bank/sc-new/documents/verified";
+    const response=await fetch(url);
+    expect(response.status).toBe(200);
+    const data=await response.json() as {
+      mode:string;companyId:number;accountId:number;postingAllowed:boolean;
+      documents:Array<{transactionId:string;status:string;date:string;direction:string;amount:string}>;
+    };
+    expect(data).toMatchObject({
+      mode:"ACCOUNT18_VERIFIED_UNAPPROVED_SERVER_RECORDS",
+      companyId:1,accountId:18,postingAllowed:false,
+    });
+    expect(data.documents).toEqual([{
+      transactionId:id,status:"VERIFIED",date:"2026-11-27",
+      direction:"IN",amount:"10000.00",
+    }]);
+    expect(JSON.stringify(data)).not.toMatch(/document_sha256|object_path|uploaded_by|otpEvidenceId/);
+    mock.approved=true;
+    expect((await (await fetch(url)).json()).documents).toEqual([]);
+    mock.approved=false;
+    mock.pendingDoc.event_type=null;
+    expect((await (await fetch(url)).json()).documents).toEqual([]);
+    expect(mock.queries.some(q=>q.includes("insert into"))).toBe(false);
+  });
+  it("denies unsigned, finance, and foreign-company verified voucher lists", async()=>{
+    const url=base+"/api/cash-bank/sc-new/documents/verified";
+    mock.signed=false;
+    expect((await fetch(url)).status).toBe(401);
+    mock.signed=true;mock.actorRole="finance";
+    expect((await fetch(url)).status).toBe(403);
+    mock.actorRole="owner";mock.actorCompany=2;
+    expect((await fetch(url)).status).toBe(403);
     expect(mock.queries).toHaveLength(0);
   });
   it("accepts exactly five fields plus one file at multipart boundary", async () => {
