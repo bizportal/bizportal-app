@@ -27,7 +27,7 @@ describe("persisted Payroll summary must not make missing wages look like Rp0",(
     const s=summarizePersistedPayrollItems([
       {item:{grossSalary:"99999999999999999999999999999.00",kasbonDeduction:"0",netSalary:"99999999999999999999999999999.00"}},
     ]);
-    // A value outside JS exact currency bounds must never be treated as Rp0.
-    expect(s.gross).not.toBe(0);
+    // An unsafe approximation must not be printed as a confirmed payroll total.
+    expect(s).toEqual({itemCount:1,gross:null,advances:null,net:null});
   });
 });
