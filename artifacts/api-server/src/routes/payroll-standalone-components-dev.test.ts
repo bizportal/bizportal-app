@@ -2,7 +2,7 @@ import {afterEach,beforeEach,describe,expect,it,vi} from "vitest";
 import express from "express";
 import {once} from "node:events";
 import {createServer} from "node:http";
-const state=vi.hoisted(()=>({dev:true,role:"super_admin",sql:[] as {sql:string;args:unknown[]}[],shared:0,failWrite:false}));
+const state=vi.hoisted(()=>({dev:true,role:"super_admin",sql:[] as {sql:string;args:unknown[]}[],shared:0,failWrite:false,hasVersions:false}));
 vi.mock("./dev-auth",()=>({isDevelopmentEnvironment:()=>state.dev,getProductionSession:()=>null,getProductionUser:async()=>null,
   getDevSession:()=>state.role?{id:"qa",email:"qa@example.invalid",role:state.role,companyId:1}:null}));
 vi.mock("@workspace/db",()=>({
@@ -26,7 +26,18 @@ vi.mock("@workspace/db",()=>({
           .map(e=>listing?{id:e.id,firstName:e.firstName,lastName:e.lastName}:
             {id:e.id,masterSalary:e.masterSalary}));
       }
-      if(sql.includes("FROM public.payroll_salary_profiles")||sql.includes("FROM public.payroll_deduction_settings"))return rows([]);
+      if(sql.includes("FROM public.payroll_salary_profiles")){
+        if(!state.hasVersions)return rows([]);
+        const versions=[
+          {effectiveFrom:"2026-12-01",baseSalary:"6000000.00",allowance:"0.00",notes:"Fixture December"},
+          {effectiveFrom:"2026-11-01",baseSalary:"5000000.00",allowance:"100000.00",notes:"Fixture November"},
+        ];
+        return rows(versions.filter(v=>args[2]==null||v.effectiveFrom===args[2]).slice(0,1));
+      }
+      if(sql.includes("FROM public.payroll_deduction_settings")){
+        if(!state.hasVersions)return rows([]);
+        return rows(["bpjs_jht_employee","bpjs_kes_employee","pph21","other_deductions","kasbon_deduction"].map(code=>({code,amount:"0.00",notes:"Fixture"})));
+      }
       if(sql.includes("INSERT INTO public.payroll_salary_profiles"))return rows([]);
       if(sql.includes("INSERT INTO public.payroll_deduction_settings")){if(state.failWrite)throw Error("FIXTURE_FAILURE");return rows([]);}
       throw Error("UNEXPECTED_QUERY");
@@ -34,7 +45,7 @@ vi.mock("@workspace/db",()=>({
   })}),
 }));
 describe("restored DEV Payroll components",()=>{
-  beforeEach(()=>{state.dev=true;state.role="super_admin";state.sql=[];state.shared=0;state.failWrite=false;
+  beforeEach(()=>{state.dev=true;state.role="super_admin";state.sql=[];state.shared=0;state.failWrite=false;state.hasVersions=false;
     vi.stubEnv("APP_ENV","development");
     vi.stubEnv("PAYROLL_DATABASE_URL_DEV","postgresql://bizportal_payroll_dev.xssrfshdrtdfupgqwfdw:fixture@127.0.0.1:65432/payroll_ci");
     vi.stubEnv("PAYROLL_DEV_COMPONENTS_ENABLED","");});
@@ -84,6 +95,22 @@ describe("restored DEV Payroll components",()=>{
     // No production session is supplied by this fixture.
     expect((await request("components/employees?companyId=1")).status).toBe(401);
     expect(state.sql).toHaveLength(0);
+  });
+  it("reads the exact effective-date version instead of a newer salary profile",async()=>{
+    state.hasVersions=true;
+    const latest=await request("components/21?companyId=1");
+    expect(latest.status).toBe(200);
+    expect(latest.data).toMatchObject({effectiveFrom:"2026-12-01",values:{baseSalary:"6000000.00"}});
+    const saved=await request("components/21?companyId=1&effectiveFrom=2026-11-01");
+    expect(saved.status).toBe(200);
+    expect(saved.data).toMatchObject({employeeId:21,companyId:1,effectiveFrom:"2026-11-01",complete:true,values:{baseSalary:"5000000.00",allowance:"100000.00"}});
+    expect(state.sql.some(q=>q.sql.includes("FROM public.payroll_salary_profiles")&&q.sql.includes("effective_from=$3::date")&&q.args[2]==="2026-11-01")).toBe(true);
+    expect(state.sql.some(q=>q.sql.includes("FROM public.payroll_deduction_settings")&&q.args[2]==="2026-11-01")).toBe(true);
+    const missing=await request("components/21?companyId=1&effectiveFrom=2026-10-01");
+    expect(missing.status).toBe(200);expect(missing.data).toMatchObject({effectiveFrom:null,complete:false});
+    state.sql=[];
+    expect((await request("components/21?companyId=1&effectiveFrom=2026-11-31")).status).toBe(400);
+    expect(state.sql).toHaveLength(0);expect(state.shared).toBe(0);
   });
   it("keeps writes disabled by default",async()=>{
     expect((await request("components/21?companyId=1","PUT",fixture)).status).toBe(501);
