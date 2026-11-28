@@ -137,9 +137,9 @@ suite("DEV Payroll seven-component HTTP routes on disposable PostgreSQL",()=>{
     expect((await save()).status).toBe(200);
     expect((await save({...fixture,baseSalary:"6000000",effectiveFrom:"2026-12-01"})).status).toBe(200);
     expect((await save()).status).toBe(200);
-    expect((await read("2026-11-01")).data.values.baseSalary).toBe("5000000.00");
-    expect((await read("2026-12-01")).data.values.baseSalary).toBe("6000000.00");
-    expect((await request("components/21?companyId=1")).data.effectiveFrom).toBe("2026-12-01");
+    expect((await read("2026-11-01")).data).toMatchObject({values:{baseSalary:"5000000.00"}});
+    expect((await read("2026-12-01")).data).toMatchObject({values:{baseSalary:"6000000.00"}});
+    expect((await request("components/21?companyId=1")).data).toMatchObject({effectiveFrom:"2026-12-01"});
     expect(await counts()).toEqual({profiles:2,deductions:10,items:0,journals:0,advances:0});
   });
   it("rolls back profile and every deduction when a later deduction fails",async()=>{
@@ -147,7 +147,7 @@ suite("DEV Payroll seven-component HTTP routes on disposable PostgreSQL",()=>{
     expect(await counts()).toEqual({profiles:0,deductions:0,items:0,journals:0,advances:0});
     expect((await save()).status).toBe(200);
     expect((await save({...fixture,baseSalary:"8000000",notes:"Synthetic forced failure"})).status).toBe(503);
-    expect((await read("2026-11-01")).data.values.baseSalary).toBe("5000000.00");
+    expect((await read("2026-11-01")).data).toMatchObject({values:{baseSalary:"5000000.00"}});
     expect(await counts()).toEqual({profiles:1,deductions:5,items:0,journals:0,advances:0});
   });
   it("enforces app authorization, tenant and inactive-employee rejection",async()=>{
