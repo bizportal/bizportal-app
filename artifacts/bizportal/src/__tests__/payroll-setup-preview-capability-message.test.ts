@@ -11,6 +11,9 @@ describe("Payroll DEV setup preview capability is explicit",()=>{
     expect(payrollPage).toContain("draft && !canPreviewSetup && detail.run.companyId === companyId");
     expect(payrollPage).toContain("Pratinjau Payroll baca-saja belum tersedia pada runtime ini.");
     expect(payrollPage).toContain("Periksa koneksi Payroll DEV khusus dan konfigurasi APP_ENV.");
+    expect(payrollPage).toContain("Reader Payroll DEV belum dikonfigurasi pada aplikasi.");
+    expect(payrollPage).toContain("Konfigurasi reader Payroll DEV tidak valid.");
+    expect(payrollPage).toContain("previewSetupStatus === \"dedicated_reader_not_configured\"");
   });
   it("keeps preview gated and Calculate disabled",()=>{
     expect(payrollPage).toContain("draft && canPreviewSetup && detail.run.companyId === companyId");

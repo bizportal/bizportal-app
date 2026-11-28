@@ -3,7 +3,7 @@ import { pool } from "@workspace/db";
 import { getPayrollPool, payrollScopedQuery, setPayrollCompanyScope } from "./payroll-db";
 import { authorizePayrollCompany } from "./payroll-access";
 import { registerPayrollSetupReadinessRoutes } from "./payroll-setup-readiness";
-import { registerEffectiveSetupPreviewRoutes, canPreviewEffectiveSetup } from "./payroll-setup-effective-routes";
+import { registerEffectiveSetupPreviewRoutes, canPreviewEffectiveSetup, payrollPreviewAvailability } from "./payroll-setup-effective-routes";
 import { registerPayrollProdConnectionPreflightRoutes } from "./payroll-prod-connection-preflight";
 import { readPayrollSuperAdminApprovalReceipt } from "./payroll-super-admin-approval-receipt";
 import { getDevSession, getProductionSession, getProductionUser, isDevelopmentEnvironment, type DevAuthUser } from "./dev-auth";
@@ -145,6 +145,7 @@ router.get("/payroll/capabilities", (req: PayrollRequest, res) => {
       && process.env.PAYROLL_DEV_ITEM_EDIT_ENABLED === "true"
       && ["admin", "owner", "super_admin"].includes(req.payrollActor?.role.toLowerCase() ?? ""),
     canPreviewSetup: canPreviewEffectiveSetup(req.payrollActor?.role),
+    previewSetupStatus: payrollPreviewAvailability(req.payrollActor?.role),
     canCalculate: false,
     canApprove: false,
     canPay: false,

@@ -6,12 +6,28 @@ import {loadEffectivePayrollSetupPreview} from "./payroll-setup-effective-read";
 
 type ScopedRequest=Request&{payrollCompanyId?:number;payrollActor?:{role:string}};
 const allowed=(role?:string)=>["admin","owner","super_admin"].includes(role?.toLowerCase()??"");
+export type PayrollPreviewAvailability =
+  "ready" | "dev_only" | "role_not_allowed" |
+  "dedicated_reader_not_configured" | "dedicated_reader_config_invalid";
+
+/**
+ * Public status code only. Never include the database URL, username,
+ * connection error text, or other secret-bearing configuration in API output.
+ */
+export function payrollPreviewAvailability(role?:string):PayrollPreviewAvailability{
+  if(!isDevelopmentEnvironment())return "dev_only";
+  if(!allowed(role))return "role_not_allowed";
+  try{
+    return payrollDedicatedEnabled()?"ready":"dedicated_reader_not_configured";
+  }catch{
+    return "dedicated_reader_config_invalid";
+  }
+}
 function dedicatedReady():boolean{
-  try{return isDevelopmentEnvironment()&&payrollDedicatedEnabled();}
-  catch{return false;}
+  return payrollPreviewAvailability("super_admin")==="ready";
 }
 export function canPreviewEffectiveSetup(role?:string):boolean{
-  return allowed(role)&&dedicatedReady();
+  return payrollPreviewAvailability(role)==="ready";
 }
 
 /** Mounted only behind the existing authenticated Payroll company scope.
