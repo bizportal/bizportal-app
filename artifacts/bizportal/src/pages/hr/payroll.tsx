@@ -1,5 +1,6 @@
 import React from "react";
 import { PayrollSetupPreview } from "./PayrollSetupPreview";
+import PayrollStandaloneComponents from "./payroll-components";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/layout/AppShell";
 import { useCompany } from "@/contexts/CompanyContext";
@@ -62,6 +63,8 @@ export default function PayrollWorkspace() {
   const [canGenerate, setCanGenerate] = useState(false);
   const [canEditItems, setCanEditItems] = useState(false);
   const [canPreviewSetup, setCanPreviewSetup] = useState(false);
+  const [canReviewComponents, setCanReviewComponents] = useState(false);
+  const [showComponents, setShowComponents] = useState(false);
   const [previewSetupStatus, setPreviewSetupStatus] = useState<string | null>(null);
   const [editingItemId, setEditingItemId] = useState<number | null>(null);
   const [editValues, setEditValues] = useState<Record<string, string>>({});
@@ -91,6 +94,8 @@ export default function PayrollWorkspace() {
     setCanGenerate(false);
     setCanEditItems(false);
     setCanPreviewSetup(false);
+    setCanReviewComponents(false);
+    setShowComponents(false);
     setPreviewSetupStatus(null);
     setEditingItemId(null);
     setEditValues({});
@@ -103,7 +108,7 @@ export default function PayrollWorkspace() {
     setLoading(true);
     Promise.all([
       api<{ runs: PayrollRun[] }>(`/api/payroll/runs?companyId=${companyId}`),
-      api<{ companyId: number; canCreateDraft: boolean; canGenerate: boolean; canEditItems: boolean; canPreviewSetup?: boolean; previewSetupStatus?: string }>(`/api/payroll/capabilities?companyId=${companyId}`),
+      api<{ companyId: number; canCreateDraft: boolean; canGenerate: boolean; canEditItems: boolean; canPreviewSetup?: boolean; canReviewComponents?: boolean; previewSetupStatus?: string }>(`/api/payroll/capabilities?companyId=${companyId}`),
     ])
       .then(([{ runs: result }, capabilities]) => {
         if (cancelled) return;
@@ -112,6 +117,7 @@ export default function PayrollWorkspace() {
         setCanGenerate(capabilities.companyId === companyId && capabilities.canGenerate === true);
         setCanEditItems(capabilities.companyId === companyId && capabilities.canEditItems === true);
         setCanPreviewSetup(capabilities.companyId === companyId && capabilities.canPreviewSetup === true);
+        setCanReviewComponents(capabilities.companyId === companyId && capabilities.canReviewComponents === true);
         setPreviewSetupStatus(capabilities.companyId === companyId ? (capabilities.previewSetupStatus ?? null) : null);
       })
       .catch((e) => { if (!cancelled) setError(e.message); })
@@ -248,6 +254,10 @@ export default function PayrollWorkspace() {
       {notice && <div role="status" className="rounded-lg border p-3 text-sm">{notice}</div>}
 
       {companyId != null && <>
+        {canReviewComponents && <>
+          <Button variant="outline" onClick={()=>setShowComponents(v=>!v)}>{showComponents?"Tutup":"Buka"} Gaji, Tunjangan dan Potongan</Button>
+          {showComponents && <PayrollStandaloneComponents key={companyId} companyId={companyId}/>}
+        </>}
         <Card><CardHeader><CardTitle className="text-lg">Buat Periode Payroll</CardTitle></CardHeader>
           <CardContent className="flex flex-wrap items-end gap-3">
             <label className="text-sm">Bulan

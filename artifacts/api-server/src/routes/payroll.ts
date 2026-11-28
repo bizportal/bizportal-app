@@ -5,6 +5,7 @@ import { authorizePayrollCompany } from "./payroll-access";
 import { registerPayrollSetupReadinessRoutes } from "./payroll-setup-readiness";
 import { registerEffectiveSetupPreviewRoutes, canPreviewEffectiveSetup, payrollPreviewAvailability } from "./payroll-setup-effective-routes";
 import { registerPayrollProdConnectionPreflightRoutes } from "./payroll-prod-connection-preflight";
+import {registerStandalonePayrollComponents,canReviewDevPayrollComponents,canWriteDevPayrollComponents} from "./payroll-standalone-components";
 import { readPayrollSuperAdminApprovalReceipt } from "./payroll-super-admin-approval-receipt";
 import { getDevSession, getProductionSession, getProductionUser, isDevelopmentEnvironment, type DevAuthUser } from "./dev-auth";
 
@@ -68,6 +69,7 @@ router.use("/payroll", authorize);
 // Stage-one PROD readiness: aggregate-only, default OFF; no payroll writers.
 registerPayrollSetupReadinessRoutes(router);
 registerEffectiveSetupPreviewRoutes(router);
+registerStandalonePayrollComponents(router);
 // Port exact legacy read-only scoped PROD connection diagnostic; write paths remain disabled.
 registerPayrollProdConnectionPreflightRoutes(router);
 
@@ -145,6 +147,8 @@ router.get("/payroll/capabilities", (req: PayrollRequest, res) => {
       && process.env.PAYROLL_DEV_ITEM_EDIT_ENABLED === "true"
       && ["admin", "owner", "super_admin"].includes(req.payrollActor?.role.toLowerCase() ?? ""),
     canPreviewSetup: canPreviewEffectiveSetup(req.payrollActor?.role),
+    canReviewComponents: canReviewDevPayrollComponents(req.payrollActor?.role),
+    canEditComponents: canWriteDevPayrollComponents(req.payrollActor?.role),
     previewSetupStatus: payrollPreviewAvailability(req.payrollActor?.role),
     canCalculate: false,
     canApprove: false,
