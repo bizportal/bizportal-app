@@ -1,8 +1,10 @@
 import {describe,expect,it} from "vitest";
 import {readFileSync} from "node:fs";
-import {fileURLToPath} from "node:url";
+import {resolve} from "node:path";
 
-const payrollPage=readFileSync(fileURLToPath(new URL("../pages/hr/payroll.tsx",import.meta.url)),"utf8");
+// The BizPortal package test runner sets cwd to artifacts/bizportal.
+// Avoid import.meta.url: Vitest transforms it into a non-file URL under jsdom.
+const payrollPage=readFileSync(resolve(process.cwd(),"src/pages/hr/payroll.tsx"),"utf8");
 
 describe("Payroll DEV setup preview capability is explicit",()=>{
   it("shows a non-actionable explanation when the authenticated API disables preview",()=>{
