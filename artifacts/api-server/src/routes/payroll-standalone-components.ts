@@ -85,6 +85,10 @@ export function registerStandalonePayrollComponents(router: IRouter): void {
     if (!canRead(req)) {res.status(403).json({message:"Tidak berwenang melihat gaji."});return;}
     const id=employeeIdFrom(req.params.employeeId);
     if(!id){res.status(400).json({message:"ID karyawan tidak valid."});return;}
+    const requestedEffectiveFrom=req.query.effectiveFrom;
+    if(requestedEffectiveFrom!==undefined&&!validDate(requestedEffectiveFrom)){
+      res.status(400).json({message:"Tanggal konfigurasi tidak valid."});return;
+    }
     const companyId=req.payrollCompanyId!;
     let c;
     try {
@@ -97,8 +101,10 @@ export function registerStandalonePayrollComponents(router: IRouter): void {
         `SELECT effective_from::text AS "effectiveFrom",base_salary::text AS "baseSalary",
           allowance::text AS "allowance",notes
          FROM public.payroll_salary_profiles
-        WHERE company_id=$1 AND employee_id=$2 ORDER BY effective_from DESC,id DESC LIMIT 1`,
-        [companyId,id]);
+        WHERE company_id=$1 AND employee_id=$2
+          AND ($3::date IS NULL OR effective_from=$3::date)
+        ORDER BY effective_from DESC,id DESC LIMIT 1`,
+        [companyId,id,requestedEffectiveFrom??null]);
       let deductions: Array<{code:string;amount:string;notes:string}>=[];
       if(s.rowCount){
         const dd=await c.query(
