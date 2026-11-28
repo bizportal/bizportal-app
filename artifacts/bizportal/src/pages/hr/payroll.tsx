@@ -62,6 +62,7 @@ export default function PayrollWorkspace() {
   const [canGenerate, setCanGenerate] = useState(false);
   const [canEditItems, setCanEditItems] = useState(false);
   const [canPreviewSetup, setCanPreviewSetup] = useState(false);
+  const [previewSetupStatus, setPreviewSetupStatus] = useState<string | null>(null);
   const [editingItemId, setEditingItemId] = useState<number | null>(null);
   const [editValues, setEditValues] = useState<Record<string, string>>({});
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -90,6 +91,7 @@ export default function PayrollWorkspace() {
     setCanGenerate(false);
     setCanEditItems(false);
     setCanPreviewSetup(false);
+    setPreviewSetupStatus(null);
     setEditingItemId(null);
     setEditValues({});
     setSelectedId(null);
@@ -101,7 +103,7 @@ export default function PayrollWorkspace() {
     setLoading(true);
     Promise.all([
       api<{ runs: PayrollRun[] }>(`/api/payroll/runs?companyId=${companyId}`),
-      api<{ companyId: number; canCreateDraft: boolean; canGenerate: boolean; canEditItems: boolean; canPreviewSetup?: boolean }>(`/api/payroll/capabilities?companyId=${companyId}`),
+      api<{ companyId: number; canCreateDraft: boolean; canGenerate: boolean; canEditItems: boolean; canPreviewSetup?: boolean; previewSetupStatus?: string }>(`/api/payroll/capabilities?companyId=${companyId}`),
     ])
       .then(([{ runs: result }, capabilities]) => {
         if (cancelled) return;
@@ -110,6 +112,7 @@ export default function PayrollWorkspace() {
         setCanGenerate(capabilities.companyId === companyId && capabilities.canGenerate === true);
         setCanEditItems(capabilities.companyId === companyId && capabilities.canEditItems === true);
         setCanPreviewSetup(capabilities.companyId === companyId && capabilities.canPreviewSetup === true);
+        setPreviewSetupStatus(capabilities.companyId === companyId ? (capabilities.previewSetupStatus ?? null) : null);
       })
       .catch((e) => { if (!cancelled) setError(e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -308,6 +311,9 @@ export default function PayrollWorkspace() {
                   <div role="status" className="rounded-md border border-amber-500/40 p-3 text-sm text-amber-700">
                     Pratinjau Payroll baca-saja belum tersedia pada runtime ini.
                     Periksa koneksi Payroll DEV khusus dan konfigurasi APP_ENV.
+                    {previewSetupStatus === "dedicated_reader_not_configured" && <p>Reader Payroll DEV belum dikonfigurasi pada aplikasi.</p>}
+                    {previewSetupStatus === "dedicated_reader_config_invalid" && <p>Konfigurasi reader Payroll DEV tidak valid.</p>}
+                    {previewSetupStatus === "role_not_allowed" && <p>Peran pengguna tidak memiliki akses pratinjau.</p>}
                     Tidak ada pemotongan kasbon atau transaksi yang dijalankan.
                   </div>
                 )}
