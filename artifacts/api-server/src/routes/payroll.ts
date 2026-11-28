@@ -6,6 +6,7 @@ import { registerPayrollSetupReadinessRoutes } from "./payroll-setup-readiness";
 import { registerEffectiveSetupPreviewRoutes, canPreviewEffectiveSetup, payrollPreviewAvailability } from "./payroll-setup-effective-routes";
 import { registerPayrollProdConnectionPreflightRoutes } from "./payroll-prod-connection-preflight";
 import {registerStandalonePayrollComponents,canReviewDevPayrollComponents,canWriteDevPayrollComponents} from "./payroll-standalone-components";
+import { registerPayrollKasbonAutoRoutes } from "./payroll-kasbon-automatic-routes";
 import { readPayrollSuperAdminApprovalReceipt } from "./payroll-super-admin-approval-receipt";
 import { getDevSession, getProductionSession, getProductionUser, isDevelopmentEnvironment, type DevAuthUser } from "./dev-auth";
 
@@ -70,6 +71,7 @@ router.use("/payroll", authorize);
 registerPayrollSetupReadinessRoutes(router);
 registerEffectiveSetupPreviewRoutes(router);
 registerStandalonePayrollComponents(router);
+registerPayrollKasbonAutoRoutes(router);
 // Port exact legacy read-only scoped PROD connection diagnostic; write paths remain disabled.
 registerPayrollProdConnectionPreflightRoutes(router);
 
