@@ -3,6 +3,7 @@ import type {PayrollDbClient} from "@workspace/db";
 import {getPayrollPool,payrollDedicatedEnabled,setPayrollCompanyScope} from "./payroll-db";
 import {isDevelopmentEnvironment} from "./dev-auth";
 import {loadEffectivePayrollSetupPreview} from "./payroll-setup-effective-read";
+import {payrollDevReaderSafeReason,payrollDevReaderTransport} from "./payroll-dev-reader-safe-error";
 
 type ScopedRequest=Request&{payrollCompanyId?:number;payrollActor?:{role:string}};
 const allowed=(role?:string)=>["admin","owner","super_admin"].includes(role?.toLowerCase()??"");
@@ -71,9 +72,12 @@ export function registerEffectiveSetupPreviewRoutes(router:IRouter):void{
       res.json(result.preview);
     }catch(error){
       if(started&&client)try{await client.query("ROLLBACK");}catch{}
-      req.log?.error?.({error,companyId,runId,stage},"Payroll DEV effective setup preview failed");
-      // Fixed failure stages contain no SQL, credentials, employee information or exception text.
-      res.status(503).json({message:"Pratinjau tidak dapat dihitung. Tidak ada data yang diubah.",previewFailureStage:stage});
+      const previewFailureReason=payrollDevReaderSafeReason(error);
+      const previewReaderTransport=payrollDevReaderTransport(process.env.PAYROLL_DATABASE_URL_DEV);
+      // Never log the original driver exception or the configured connection string.
+      req.log?.error?.({companyId,runId,stage,previewFailureReason,previewReaderTransport},"Payroll DEV effective setup preview failed");
+      res.status(503).json({message:"Pratinjau tidak dapat dihitung. Tidak ada data yang diubah.",
+        previewFailureStage:stage,previewFailureReason,previewReaderTransport});
     }finally{client?.release();}
   });
 }
