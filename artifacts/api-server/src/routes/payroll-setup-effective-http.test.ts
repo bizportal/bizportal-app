@@ -4,12 +4,12 @@ import {createServer,type Server} from "node:http";
 import {once} from "node:events";
 
 const state=vi.hoisted(()=>({environment:"development",actor:null as null|{id:string;email:string;role:string;companyId:number|null},
-  sql:[] as Array<{sql:string;args:unknown[]}>,runStatus:"draft",released:0,fail:false,shared:0,pendingKasbon:false}));
+  sql:[] as Array<{sql:string;args:unknown[]}>,runStatus:"draft",released:0,fail:false,shared:0,pendingKasbon:false,connectFailureCode:""}));
 vi.mock("./dev-auth",()=>({isDevelopmentEnvironment:()=>state.environment==="development",
   getProductionSession:()=>null,getProductionUser:async()=>null,getDevSession:()=>state.actor}));
 vi.mock("@workspace/db",()=>({
   pool:{query:async()=>{state.shared++;throw Error("SHARED_POOL_FORBIDDEN");},connect:async()=>{state.shared++;throw Error("SHARED_POOL_FORBIDDEN");}},
-  createDedicatedPayrollPool:()=>({end:async()=>{},connect:async()=>({
+  createDedicatedPayrollPool:()=>({end:async()=>{},connect:async()=>{if(state.connectFailureCode)throw Object.assign(new Error("never expose private database endpoint or credential"),{code:state.connectFailureCode});return ({
     release:()=>{state.released++;},
     query:async(sql:string,args:unknown[]=[])=>{
       state.sql.push({sql,args});
@@ -32,7 +32,7 @@ vi.mock("@workspace/db",()=>({
       if(sql.includes("FROM public.payroll_kasbon_auto_reservations"))return rows([]);
       throw Error("UNEXPECTED_QUERY");
     },
-  })}),
+  });}}),
 }));
 
 describe("Payroll effective setup GET behind canonical authorization",()=>{
@@ -47,7 +47,7 @@ describe("Payroll effective setup GET behind canonical authorization",()=>{
     root="http://127.0.0.1:"+address.port+"/api";
   });
   beforeEach(()=>{
-    state.environment="development";state.actor=actor;state.sql=[];state.released=0;state.runStatus="draft";state.fail=false;state.shared=0;state.pendingKasbon=false;
+    state.environment="development";state.actor=actor;state.sql=[];state.released=0;state.runStatus="draft";state.fail=false;state.shared=0;state.pendingKasbon=false;state.connectFailureCode="";
     vi.stubEnv("APP_ENV","development");
     vi.stubEnv("PAYROLL_DATABASE_URL_DEV","postgresql://bizportal_payroll_dev.xssrfshdrtdfupgqwfdw:ci_only@127.0.0.1:65432/payroll_ci");
   });
@@ -80,6 +80,16 @@ describe("Payroll effective setup GET behind canonical authorization",()=>{
     expect(JSON.stringify(rejected)).not.toContain("placeholder");
     expect(JSON.stringify(rejected)).not.toContain("wrong_role");
     expect(state.sql).toHaveLength(0);expect(state.shared).toBe(0);
+  });
+  it("classifies a dedicated reader login failure without exposing secret-bearing error details",async()=>{
+    state.connectFailureCode="28P01";
+    const failed=await get();expect(failed.status).toBe(503);
+    const body=await failed.json() as Record<string,unknown>;
+    expect(body).toMatchObject({previewFailureStage:"reader_connect",readerConnectionFailure:"authentication_failed"});
+    expect(JSON.stringify(body)).not.toContain("private database endpoint");
+    expect(state.sql).toHaveLength(0);expect(state.shared).toBe(0);
+    state.connectFailureCode="ENOTFOUND";
+    expect(await (await get()).json()).toMatchObject({readerConnectionFailure:"hostname_unresolved"});
   });
   it("exposes an explicitly read-only DEV capability and GET projection in one scoped snapshot",async()=>{
     const cap=await fetch(root+"/payroll/capabilities?companyId=1");expect(await cap.json()).toMatchObject({canPreviewSetup:true,canCalculate:false,canApprove:false,canPay:false});
