@@ -10,6 +10,7 @@ on:
     branches:
       - main
       - develop
+      - dev/ai-task-kasbon-main-0a7a0fc7
   workflow_dispatch:
 
 permissions:
