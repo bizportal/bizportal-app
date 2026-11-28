@@ -1,6 +1,7 @@
 import React from "react";
 import { PayrollSetupPreview } from "./PayrollSetupPreview";
 import PayrollStandaloneComponents from "./payroll-components";
+import { summarizePersistedPayrollItems } from "./payroll-summary";
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/layout/AppShell";
 import { useCompany } from "@/contexts/CompanyContext";
@@ -220,11 +221,8 @@ export default function PayrollWorkspace() {
       setBusy(false);
     }
   }
-  const totals = detail?.items.reduce((sum, { item }) => ({
-    gross: sum.gross + Number(item.grossSalary || 0),
-    advances: sum.advances + Number(item.kasbonDeduction || 0),
-    net: sum.net + Number(item.netSalary || 0),
-  }), { gross: 0, advances: 0, net: 0 }) ?? { gross: 0, advances: 0, net: 0 };
+  const totals = summarizePersistedPayrollItems(detail?.items ?? []);
+  const storedAmount = (value:number|null) => value===null ? "Belum dihitung" : money(value);
 
   return <AppShell>
     <div className="mx-auto max-w-7xl space-y-5 p-4 md:p-6">
@@ -310,9 +308,10 @@ export default function PayrollWorkspace() {
                   <Badge variant="outline">Posting: {detail.run.postingStatus || "pending"}</Badge>
                 </div>
                 <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-                  {[[ "Karyawan", detail.items.length.toString() ], [ "Gaji Kotor", money(totals.gross) ], [ "Kasbon", money(totals.advances) ], [ "Gaji Bersih", money(totals.net) ]].map(([label, value]) =>
+                  {[[ "Item Gaji", totals.itemCount.toString() ], [ "Gaji Kotor", storedAmount(totals.gross) ], [ "Kasbon", storedAmount(totals.advances) ], [ "Gaji Bersih", storedAmount(totals.net) ]].map(([label, value]) =>
                     <div key={label} className="rounded-md border p-3"><p className="text-xs text-muted-foreground">{label}</p><p className="font-semibold">{value}</p></div>)}
                 </div>
+                {detail.items.length === 0 && <p role="status" className="text-sm text-muted-foreground">Belum ada item gaji tersimpan pada periode ini. Nominal belum dihitung, bukan Rp0. Jumlah karyawan aktif tersedia melalui pratinjau baca-saja.</p>}
                 {draft && <div className="flex flex-wrap gap-2">
                   <Button variant="outline" disabled={!canGenerate || busy} title={canGenerate ? "Muat karyawan aktif ke Draft DEV" : "Menunggu verifikasi backend DEV"} onClick={() => perform("generate")}><Users className="mr-2 h-4 w-4" />Muat Karyawan Aktif</Button>
                   <Button variant="outline" disabled title="Menunggu verifikasi alokasi kasbon" onClick={() => perform("calculate")}><Calculator className="mr-2 h-4 w-4" />Hitung Payroll</Button>
