@@ -1,91 +1,64 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {afterAll,afterEach,beforeAll,beforeEach,describe,expect,it,vi} from "vitest";
 import express from "express";
-import { createServer, type Server } from "node:http";
-import { once } from "node:events";
-
-const mock = vi.hoisted(() => ({
-  role: "admin", companyId: null as number | null, exists: true, status: "draft",
-  invalid: 0, added: 2, queries: [] as string[], released: 0,
+import {createServer,type Server} from "node:http";
+import {once} from "node:events";
+type Actor={id:string;email:string;role:string;companyId:number|null};
+const state=vi.hoisted(()=>({dev:true,actor:null as Actor|null,dbCalls:0}));
+vi.mock("./dev-auth",()=>({
+  isDevelopmentEnvironment:()=>state.dev,
+  getDevSession:()=>state.dev?state.actor:null,
+  getProductionSession:()=>state.dev?null:state.actor,
+  getProductionUser:async()=>state.actor,
 }));
-vi.mock("./dev-auth", () => ({
-  isDevelopmentEnvironment: () => true,
-  getDevSession: () => ({ id: "dev", email: "test@example.test", firstName: null, lastName: null, role: mock.role, companyId: mock.companyId }),
-  getProductionSession: () => null,
-  getProductionUser: async () => null,
-}));
-vi.mock("@workspace/db", () => ({
-  pool: {
-    connect: async () => ({
-      query: async (sql: string) => {
-        mock.queries.push(sql);
-        if (sql.includes("FROM public.payroll_runs WHERE id =")) return mock.exists
-          ? { rowCount: 1, rows: [{ id: 20, status: mock.status }] }
-          : { rowCount: 0, rows: [] };
-        if (sql.includes("invalid_count FROM public.employees")) return { rowCount: 1, rows: [{ invalid_count: mock.invalid }] };
-        if (sql.startsWith("INSERT INTO public.payroll_items")) return { rowCount: mock.added, rows: Array.from({ length: mock.added }, (_, i) => ({ id: i + 1 })) };
-        return { rowCount: 0, rows: [] };
-      },
-      release: () => { mock.released++; },
-    }),
-    query: async () => { throw new Error("Unexpected pool query"); },
+vi.mock("@workspace/db",()=>({
+  pool:{
+    connect:async()=>{state.dbCalls++;throw Error("RETIRED_GENERATE_MUST_NOT_CONNECT");},
+    query:async()=>{state.dbCalls++;throw Error("RETIRED_GENERATE_MUST_NOT_QUERY");},
   },
+  createDedicatedPayrollPool:()=>{state.dbCalls++;throw Error("RETIRED_GENERATE_MUST_NOT_CREATE_POOL");},
 }));
-
-describe("DEV payroll generation", () => {
-  let server: Server, base: string;
-  beforeAll(async () => {
-    const { default: router } = await import("./payroll");
-    const app = express(); app.use(express.json()); app.use("/api", router);
-    server = createServer(app); server.listen(0, "127.0.0.1"); await once(server, "listening");
-    const addr = server.address(); if (!addr || typeof addr === "string") throw Error("No port");
-    base = `http://127.0.0.1:${addr.port}/api/payroll/runs/20/generate-items?companyId=1`;
+describe("retired legacy Payroll master salary generation",()=>{
+  let server:Server,root:string;
+  beforeAll(async()=>{
+    const {default:router}=await import("./payroll");
+    const app=express();app.use(express.json());app.use("/api",router);
+    server=createServer(app);server.listen(0,"127.0.0.1");await once(server,"listening");
+    const address=server.address();if(!address||typeof address==="string")throw Error("NO_TEST_PORT");
+    root="http://127.0.0.1:"+address.port+"/api/payroll";
   });
-  afterAll(async () => { await new Promise<void>((resolve, reject) => server.close(e => e ? reject(e) : resolve())); });
-  beforeEach(() => {
-    mock.role = "admin"; mock.companyId = null; mock.exists = true; mock.status = "draft";
-    mock.invalid = 0; mock.added = 2; mock.queries = []; mock.released = 0;
-    delete process.env.PAYROLL_DEV_GENERATE_ENABLED;
+  afterAll(async()=>{await new Promise<void>((resolve,reject)=>server.close(e=>e?reject(e):resolve()));});
+  beforeEach(()=>{
+    state.dev=true;state.actor={id:"fixture",email:"qa@example.invalid",role:"super_admin",companyId:1};state.dbCalls=0;
+    vi.stubEnv("APP_ENV","development");vi.stubEnv("PAYROLL_DEV_GENERATE_ENABLED","");
+    vi.stubEnv("PAYROLL_DATABASE_URL_DEV","postgresql://bizportal_payroll_dev.xssrfshdrtdfupgqwfdw:fixture@127.0.0.1:65432/payroll_ci");
+    vi.stubEnv("PAYROLL_DEV_COMPONENTS_ENABLED","true");
   });
-  afterEach(() => { delete process.env.PAYROLL_DEV_GENERATE_ENABLED; });
-  const send = () => fetch(base, { method: "POST" });
-
-  it("defaults closed without SQL", async () => {
+  afterEach(()=>vi.unstubAllEnvs());
+  const send=(company=1)=>fetch(root+"/runs/20/generate-items?companyId="+company,{method:"POST"});
+  it.each(["","false","true"])("retains HTTP 410 and no SQL regardless of legacy flag %s",async flag=>{
+    vi.stubEnv("PAYROLL_DEV_GENERATE_ENABLED",flag);
+    const r=await send();expect(r.status).toBe(410);
+    expect(r.headers.get("cache-control")).toBe("no-store");
+    expect(await r.json()).toMatchObject({code:"PAYROLL_LEGACY_GENERATE_RETIRED"});
+    const cap=await fetch(root+"/capabilities?companyId=1");
+    expect(await cap.json()).toMatchObject({canGenerate:false,canPreviewSetup:true,canEditComponents:true,canCalculate:false,canApprove:false,canPay:false});
+    expect(state.dbCalls).toBe(0);
+  });
+  it.each(["admin","owner","super_admin"])("never copies unverified salary for %s",async role=>{
+    state.actor={...state.actor!,role};
+    vi.stubEnv("PAYROLL_DEV_GENERATE_ENABLED","true");
+    expect((await send()).status).toBe(410);expect(state.dbCalls).toBe(0);
+  });
+  it("rejects anonymous and unauthorized finance/accounting sessions before database access",async()=>{
+    const actor=state.actor!;state.actor=null;expect((await send()).status).toBe(401);
+    for(const role of ["finance","accounting"]){state.actor={...actor,role};expect((await send()).status).toBe(403);}
+    state.actor={...actor,role:"admin",companyId:1};expect((await send(2)).status).toBe(403);
+    expect(state.dbCalls).toBe(0);
+  });
+  it("preserves the closed PROD contract even if legacy flag is true",async()=>{
+    state.dev=false;vi.stubEnv("APP_ENV","production");vi.stubEnv("PAYROLL_DEV_GENERATE_ENABLED","true");
     expect((await send()).status).toBe(501);
-    expect(mock.queries).toHaveLength(0);
-  });
-  it("rejects finance even with flag", async () => {
-    process.env.PAYROLL_DEV_GENERATE_ENABLED = "true"; mock.role = "finance"; mock.companyId = 1;
-    expect((await send()).status).toBe(403);
-    expect(mock.queries).toHaveLength(0);
-  });
-  it("rejects foreign or non-draft run and releases lock", async () => {
-    process.env.PAYROLL_DEV_GENERATE_ENABLED = "true";
-    mock.exists = false;
-    expect((await send()).status).toBe(404);
-    expect(mock.queries.some(q => q.startsWith("INSERT"))).toBe(false);
-    mock.queries = []; mock.exists = true; mock.status = "approved";
-    expect((await send()).status).toBe(409);
-    expect(mock.queries.some(q => q.startsWith("INSERT"))).toBe(false);
-    expect(mock.released).toBe(2);
-  });
-  it("fails atomically when active employee salary is missing", async () => {
-    process.env.PAYROLL_DEV_GENERATE_ENABLED = "true"; mock.invalid = 1;
-    expect((await send()).status).toBe(409);
-    expect(mock.queries.some(q => q.startsWith("INSERT"))).toBe(false);
-    expect(mock.queries.at(-1)).toBe("ROLLBACK");
-  });
-  it("only inserts missing scoped employees in draft without touching accounting", async () => {
-    process.env.PAYROLL_DEV_GENERATE_ENABLED = "true";
-    const response = await send();
-    expect(response.status).toBe(200);
-    expect((await response.json() as { added: number; companyId: number }).added).toBe(2);
-    const sql = mock.queries.join("\n");
-    expect(sql).toContain("e.company_id = $2");
-    expect(sql).toContain("NOT EXISTS");
-    expect(sql).toContain("FOR UPDATE");
-    expect(mock.queries.some(q => /^\\s*(?:UPDATE|DELETE)\\s/i.test(q))).toBe(false);
-    expect(sql).not.toMatch(/accounting_entries|cash_advances|salary_payments/);
-    expect(mock.queries.at(-1)).toBe("COMMIT");
-    expect(mock.released).toBe(1);
+    expect(await (await fetch(root+"/capabilities?companyId=1")).json()).toMatchObject({canGenerate:false,canEditComponents:false,canCalculate:false,canApprove:false,canPay:false});
+    expect(state.dbCalls).toBe(0);
   });
 });

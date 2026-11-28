@@ -61,7 +61,6 @@ export default function PayrollWorkspace() {
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [statusFilter, setStatusFilter] = useState<"all" | "draft" | "reviewed" | "approved" | "paid">("all");
   const [canCreateDraft, setCanCreateDraft] = useState(false);
-  const [canGenerate, setCanGenerate] = useState(false);
   const [canEditItems, setCanEditItems] = useState(false);
   const [canPreviewSetup, setCanPreviewSetup] = useState(false);
   const [canReviewComponents, setCanReviewComponents] = useState(false);
@@ -92,7 +91,6 @@ export default function PayrollWorkspace() {
   useEffect(() => {
     setRuns([]);
     setCanCreateDraft(false);
-    setCanGenerate(false);
     setCanEditItems(false);
     setCanPreviewSetup(false);
     setCanReviewComponents(false);
@@ -109,13 +107,12 @@ export default function PayrollWorkspace() {
     setLoading(true);
     Promise.all([
       api<{ runs: PayrollRun[] }>(`/api/payroll/runs?companyId=${companyId}`),
-      api<{ companyId: number; canCreateDraft: boolean; canGenerate: boolean; canEditItems: boolean; canPreviewSetup?: boolean; canReviewComponents?: boolean; previewSetupStatus?: string }>(`/api/payroll/capabilities?companyId=${companyId}`),
+      api<{ companyId: number; canCreateDraft: boolean; canEditItems: boolean; canPreviewSetup?: boolean; canReviewComponents?: boolean; previewSetupStatus?: string }>(`/api/payroll/capabilities?companyId=${companyId}`),
     ])
       .then(([{ runs: result }, capabilities]) => {
         if (cancelled) return;
         setRuns(result.filter((r) => r.companyId === companyId));
         setCanCreateDraft(capabilities.companyId === companyId && capabilities.canCreateDraft === true);
-        setCanGenerate(capabilities.companyId === companyId && capabilities.canGenerate === true);
         setCanEditItems(capabilities.companyId === companyId && capabilities.canEditItems === true);
         setCanPreviewSetup(capabilities.companyId === companyId && capabilities.canPreviewSetup === true);
         setCanReviewComponents(capabilities.companyId === companyId && capabilities.canReviewComponents === true);
@@ -136,7 +133,7 @@ export default function PayrollWorkspace() {
     return () => { cancelled = true; };
   }, [companyId, selectedId]);
 
-  async function perform(action: "create" | "generate" | "calculate") {
+  async function perform(action: "create" | "calculate") {
     if (companyId === null || busy) return;
     if (action !== "create" && (!selectedId || detail?.run.companyId !== companyId)) return;
     setBusy(true); setError(""); setNotice("");
@@ -151,10 +148,9 @@ export default function PayrollWorkspace() {
         await refresh(companyId, result.run.id);
         setNotice("Periode payroll draft berhasil dibuat.");
       } else {
-        const suffix = action === "generate" ? "/generate-items" : "/calculate";
-        await api(runUrl(selectedId!, suffix), { method: "POST" });
+        await api(runUrl(selectedId!, "/calculate"), { method: "POST" });
         await refresh(companyId, selectedId);
-        setNotice(action === "generate" ? "Karyawan aktif dimuat ke draft." : "Perhitungan payroll diperbarui.");
+        setNotice("Perhitungan payroll diperbarui.");
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Operasi gagal.");
@@ -313,7 +309,7 @@ export default function PayrollWorkspace() {
                 </div>
                 {detail.items.length === 0 && <p role="status" className="text-sm text-muted-foreground">Belum ada item gaji tersimpan pada periode ini. Nominal belum dihitung, bukan Rp0. Jumlah karyawan aktif tersedia melalui pratinjau baca-saja.</p>}
                 {draft && <div className="flex flex-wrap gap-2">
-                  <Button variant="outline" disabled={!canGenerate || busy} title={canGenerate ? "Muat karyawan aktif ke Draft DEV" : "Menunggu verifikasi backend DEV"} onClick={() => perform("generate")}><Users className="mr-2 h-4 w-4" />Muat Karyawan Aktif</Button>
+                  <Button variant="outline" disabled title="Impor gaji master lama dinonaktifkan. Gunakan konfigurasi Gaji, Tunjangan dan Potongan serta pratinjau."><Users className="mr-2 h-4 w-4" />Muat Karyawan Aktif</Button>
                   <Button variant="outline" disabled title="Menunggu verifikasi alokasi kasbon" onClick={() => perform("calculate")}><Calculator className="mr-2 h-4 w-4" />Hitung Payroll</Button>
                 </div>}
                 {draft && !canPreviewSetup && detail.run.companyId === companyId && (
@@ -345,7 +341,7 @@ export default function PayrollWorkspace() {
                         <Button size="sm" variant="outline" disabled={busy} onClick={() => setEditingItemId(null)}>Batal</Button></div>
                     </td></tr>}</React.Fragment>)}</tbody>
                 </table></div>
-                <p className="flex items-center gap-2 text-xs text-muted-foreground"><FileText className="h-4 w-4" />Pembuatan Draft dan memuat karyawan hanya tersedia di DEV saat diizinkan server. Edit komponen hanya aktif di DEV. Perhitungan kasbon otomatis, persetujuan, pembayaran, dan slip gaji masih dinonaktifkan.</p>
+                <p className="flex items-center gap-2 text-xs text-muted-foreground"><FileText className="h-4 w-4" />Pembuatan Draft hanya tersedia di DEV saat diizinkan server. Impor gaji master lama tidak tersedia; gunakan konfigurasi efektif dan pratinjau. Edit komponen hanya aktif di DEV. Perhitungan kasbon otomatis, persetujuan, pembayaran, dan slip gaji masih dinonaktifkan.</p>
               </>}
             </CardContent>
           </Card>
