@@ -30,6 +30,31 @@ export function canPreviewEffectiveSetup(role?:string):boolean{
   return payrollPreviewAvailability(role)==="ready";
 }
 
+export type PayrollReaderConnectionFailure =
+  "authentication_failed" | "hostname_unresolved" | "network_unreachable" |
+  "connection_refused" | "connection_timeout" | "tls_failure" | "unknown";
+
+/** Whitelisted error categories only; never serialize an Error object or message. */
+export function classifyPayrollReaderConnectionError(error:unknown):PayrollReaderConnectionFailure{
+  const codeOf=(value:unknown):string|undefined=>{
+    if(!value||typeof value!=="object"||!("code" in value))return undefined;
+    return typeof value.code==="string"?value.code:undefined;
+  };
+  const code=codeOf(error)??(
+    error&&typeof error==="object"&&"cause" in error?codeOf(error.cause):undefined
+  );
+  switch(code){
+    case "28P01": case "28000": return "authentication_failed";
+    case "ENOTFOUND": case "EAI_AGAIN": return "hostname_unresolved";
+    case "ENETUNREACH": case "EHOSTUNREACH": return "network_unreachable";
+    case "ECONNREFUSED": return "connection_refused";
+    case "ETIMEDOUT": case "ETIMEOUT": case "ECONNRESET": return "connection_timeout";
+    case "CERT_HAS_EXPIRED": case "UNABLE_TO_VERIFY_LEAF_SIGNATURE":
+    case "DEPTH_ZERO_SELF_SIGNED_CERT": case "ERR_TLS_CERT_ALTNAME_INVALID": return "tls_failure";
+    default:return "unknown";
+  }
+}
+
 /** Mounted only behind the existing authenticated Payroll company scope.
  * No shared-pool fallback, no PROD, no financial writes or sample roster. */
 export function registerEffectiveSetupPreviewRoutes(router:IRouter):void{
@@ -73,7 +98,7 @@ export function registerEffectiveSetupPreviewRoutes(router:IRouter):void{
       if(started&&client)try{await client.query("ROLLBACK");}catch{}
       req.log?.error?.({error,companyId,runId,stage},"Payroll DEV effective setup preview failed");
       // Fixed failure stages contain no SQL, credentials, employee information or exception text.
-      res.status(503).json({message:"Pratinjau tidak dapat dihitung. Tidak ada data yang diubah.",previewFailureStage:stage});
+      res.status(503).json({message:"Pratinjau tidak dapat dihitung. Tidak ada data yang diubah.",previewFailureStage:stage,...(stage==="reader_connect"?{readerConnectionFailure:classifyPayrollReaderConnectionError(error)}:{})});
     }finally{client?.release();}
   });
 }
