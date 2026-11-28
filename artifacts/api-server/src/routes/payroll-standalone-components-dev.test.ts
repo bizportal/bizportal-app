@@ -11,7 +11,21 @@ vi.mock("@workspace/db",()=>({
     release:()=>{},query:async(sql:string,args:unknown[]=[])=>{
       state.sql.push({sql,args});const rows=(rows:unknown[])=>({rows,rowCount:rows.length});
       if(/^(BEGIN|ROLLBACK|COMMIT|SELECT set_config|SELECT pg_advisory_xact_lock)/.test(sql))return rows([]);
-      if(sql.includes("FROM public.employees"))return rows([{id:21,firstName:"Fixture",lastName:"Employee",masterSalary:"5000000"}]);
+      if(sql.includes("FROM public.employees")){
+        const roster=[
+          {id:21,companyId:1,firstName:"Fixture",lastName:"CST",masterSalary:"5000000"},
+          {id:22,companyId:2,firstName:"Fixture",lastName:"Other Company",masterSalary:"6000000"},
+        ];
+        // The fixture must honor the query's tenant and employee predicates.
+        // Otherwise a globally authorized Owner appears to read unrelated rows.
+        const listing=sql.includes("ORDER BY first_name");
+        const idFirst=sql.includes("WHERE id=$1 AND company_id=$2");
+        const companyId=Number(args[idFirst?1:0]);
+        const employeeId=listing?null:Number(args[idFirst?0:1]);
+        return rows(roster.filter(e=>e.companyId===companyId&&(listing||e.id===employeeId))
+          .map(e=>listing?{id:e.id,firstName:e.firstName,lastName:e.lastName}:
+            {id:e.id,masterSalary:e.masterSalary}));
+      }
       if(sql.includes("FROM public.payroll_salary_profiles")||sql.includes("FROM public.payroll_deduction_settings"))return rows([]);
       if(sql.includes("INSERT INTO public.payroll_salary_profiles"))return rows([]);
       if(sql.includes("INSERT INTO public.payroll_deduction_settings")){if(state.failWrite)throw Error("FIXTURE_FAILURE");return rows([]);}
@@ -39,10 +53,36 @@ describe("restored DEV Payroll components",()=>{
     expect(r.status).toBe(200);expect(r.data).toMatchObject({employeeId:21,masterSalaryCandidate:"5000000",complete:false,values:{baseSalary:null,allowance:null,kasbonDeduction:null}});
     expect(state.sql.some(x=>x.sql==="BEGIN READ ONLY")).toBe(true);expect(state.shared).toBe(0);
   });
-  it("requires signed Owner/Super Admin scope and rejects cross-company access",async()=>{
+  it("requires a signed Owner or Super Admin and rejects restricted roles before SQL",async()=>{
     state.role="";expect((await request("components/employees?companyId=1")).status).toBe(401);
-    state.role="owner";expect((await request("components/employees?companyId=2")).status).toBe(403);
-    state.role="admin";expect((await request("components/employees?companyId=1")).status).toBe(403);
+    state.role="finance";expect((await request("components/employees?companyId=2")).status).toBe(403);
+    state.role="accounting";expect((await request("components/employees?companyId=2")).status).toBe(403);
+    state.role="admin";expect((await request("components/employees?companyId=2")).status).toBe(403);
+    expect((await request("components/employees?companyId=1")).status).toBe(403);
+    expect(state.sql).toHaveLength(0);expect(state.shared).toBe(0);
+  });
+  it.each(["owner","super_admin"])("permits %s to select an explicit company without leaking another company's employees",async role=>{
+    state.role=role;
+    const result=await request("components/employees?companyId=2");
+    expect(result.status).toBe(200);
+    expect(result.data).toEqual({companyId:2,employees:[{id:22,firstName:"Fixture",lastName:"Other Company"}],canEdit:false});
+    expect(state.sql.some(q=>q.sql.includes("set_config")&&q.args[0]==="2")).toBe(true);
+    expect(state.sql.some(q=>q.sql.includes("FROM public.employees")&&q.sql.includes("company_id=$1")&&q.args[0]===2)).toBe(true);
+    const own=await request("components/22?companyId=2");
+    expect(own.status).toBe(200);
+    expect(own.data).toMatchObject({companyId:2,employeeId:22,masterSalaryCandidate:"6000000"});
+    const foreign=await request("components/21?companyId=2");
+    expect(foreign.status).toBe(404);
+    vi.stubEnv("PAYROLL_DEV_COMPONENTS_ENABLED","true");
+    expect((await request("components/21?companyId=2","PUT",fixture)).status).toBe(404);
+    expect(state.sql.some(q=>q.sql.includes("INSERT INTO"))).toBe(false);
+    expect(state.shared).toBe(0);
+  });
+  it("never enables the restored component routes in PROD or without an explicit company",async()=>{
+    expect((await request("components/employees?companyId=all")).status).toBe(403);
+    state.dev=false;vi.stubEnv("APP_ENV","production");vi.stubEnv("PAYROLL_DEV_COMPONENTS_ENABLED","true");
+    // No production session is supplied by this fixture.
+    expect((await request("components/employees?companyId=1")).status).toBe(401);
     expect(state.sql).toHaveLength(0);
   });
   it("keeps writes disabled by default",async()=>{
