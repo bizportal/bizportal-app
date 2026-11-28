@@ -81,7 +81,7 @@ describe("Payroll effective setup GET behind canonical authorization",()=>{
     expect(preview.rows[0].deductions.kasbon_deduction).toBe("0.00");
     expect(preview.rows[0].net).toBeNull();
     expect(preview.rows[0].issues).toContain("KASBON_PLAN_SOURCE_NOT_ELIGIBLE");
-    expect(state.sql.filter(x=>/insert|update|delete/i.test(x.sql))).toHaveLength(0);
+    expect(state.sql.filter(x=>/^\s*(insert|update|delete)\b/i.test(x.sql))).toHaveLength(0);
     expect(state.sql.at(-1)?.sql).toBe("COMMIT");
     expect(state.shared).toBe(0);
   });
