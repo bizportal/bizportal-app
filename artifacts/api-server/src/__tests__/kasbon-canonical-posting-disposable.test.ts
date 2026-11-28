@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createRequire } from "node:module";
 import { calculateKasbonAutoDeduction, type KasbonAdvance, type KasbonPlan } from "../routes/payroll-kasbon-automatic";
 import { loadAutoKasbonSources } from "../routes/payroll-kasbon-draft-db";
+import { loadEffectivePayrollSetupPreview } from "../routes/payroll-setup-effective-read";
 import { overlayAutomaticKasbon, finalizeAutomaticKasbonPreview } from "../routes/payroll-kasbon-draft-overlay";
 import { buildEffectiveSetupPreview, type EffectiveDeductionRow } from "../routes/payroll-setup-effective-preview";
 
@@ -76,6 +77,8 @@ suite("Canonical kasbon finalization + Payroll preview on disposable PostgreSQL"
         choice text,installment_amount numeric,first_period date,updated_at timestamptz,PRIMARY KEY(company_id,advance_id));
       CREATE TABLE public.payroll_kasbon_auto_reservations(company_id integer,employee_id integer,advance_id integer,
         run_id integer,period date,amount numeric,balance_at_preparation numeric,state text);
+      CREATE TABLE public.payroll_salary_profiles(id integer PRIMARY KEY,company_id integer,employee_id integer,base_salary numeric,allowance numeric,effective_from date);
+      CREATE TABLE public.payroll_deduction_settings(id integer PRIMARY KEY,company_id integer,employee_id integer,code text,amount numeric,effective_from date,notes text);
       CREATE TABLE public.payroll_items(id integer PRIMARY KEY,run_id integer,employee_id integer,net_salary numeric,is_paid boolean);
       INSERT INTO public.company_bank_accounts VALUES(301,1,202,true,'fixture-bank');
       INSERT INTO public.accounting_settings(company_id,default_bank_account_id) VALUES(1,301);
@@ -95,7 +98,7 @@ suite("Canonical kasbon finalization + Payroll preview on disposable PostgreSQL"
       TRUNCATE public.bank_mutations,public.accounting_entries,public.accounting_entry_lines,
         public.bank_reconciliation_matches,public.chart_of_accounts,public.cash_advances,public.bank_reconciliation_audit,public.journal_sequences,
         public.vendor_invoices,public.payment_allocations,public.payment_matching_groups,public.recon_rules,
-        public.payroll_items,public.payroll_runs,public.employees,public.payroll_kasbon_auto_plans,public.payroll_kasbon_auto_reservations;
+        public.payroll_items,public.payroll_runs,public.employees,public.payroll_kasbon_auto_plans,public.payroll_kasbon_auto_reservations,public.payroll_salary_profiles,public.payroll_deduction_settings;
       INSERT INTO public.chart_of_accounts(id,company_id,code,is_active,is_postable,name) VALUES(101,1,'1-1032-CST',true,true,'Piutang Karyawan'),(202,1,'FIXTURE-BANK',true,true,'Bank QA');
       INSERT INTO public.cash_advances(id,company_id,employee_id,type,advance_type,status,lifecycle_status,currency,amount,
         paid_amount,settled_amount,remaining_amount,approved_at,approved_by,posting_status)
@@ -405,6 +408,44 @@ suite("Canonical kasbon finalization + Payroll preview on disposable PostgreSQL"
     const nextPeriod=await effectiveDraftPreview(2026,12,53);
     expect(nextPeriod.preview.rows[0].net).toBeNull();
     expect(nextPeriod.preview.rows[0].issues).toContain("POTONGAN_PERIODE_LAIN_BELUM_DIKONFIRMASI");
+    expect((await advance()).remainingAmount).toBe("500000");
+  });
+
+  async function readSetup(companyId=1,runId=51){
+    const client=await db.connect();
+    try{
+      await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      const result=await loadEffectivePayrollSetupPreview((sql,args)=>client.query(sql,args),companyId,runId);
+      await client.query("COMMIT");return result;
+    }catch(e){await client.query("ROLLBACK");throw e;}finally{client.release();}
+  }
+  it("reads missing effective setup as unknown, never invented zero salary",async()=>{
+    await seedPayrollPlan();
+    await db.query("INSERT INTO public.payroll_runs VALUES(51,1,11,2026,'draft','pending')");
+    const result=await readSetup();
+    expect(result).toMatchObject({kind:"ok",preview:{companyId:1,runId:51,employeeCount:1,configuredCount:0,missingSalaryCount:1,readOnly:true,persisted:false,canMaterialize:false}});
+    if(result.kind!=="ok")throw Error("PREVIEW_MISSING");
+    expect(result.preview.rows[0]).toMatchObject({employeeId:21,gross:null,net:null});
+    expect(result.preview.rows[0].issues).toContain("STRUKTUR_GAJI_BELUM_ADA");
+    expect(result.preview.rows[0].issues).toContain("KASBON_PLAN_SOURCE_NOT_ELIGIBLE");
+    await assertUnposted();
+  });
+  it("rejects foreign and non-Draft runs before reading salary sources",async()=>{
+    await db.query("INSERT INTO public.payroll_runs VALUES(51,1,11,2026,'draft','pending'),(52,1,11,2026,'approved','posted')");
+    expect(await readSetup(2,51)).toEqual({kind:"missing"});
+    expect(await readSetup(1,52)).toEqual({kind:"not_draft"});
+  });
+  it("reads persisted effective salary and posted kasbon in one snapshot, excludes future and foreign profiles",async()=>{
+    await seedPayrollPlan();await finalize();
+    await db.query("INSERT INTO public.payroll_runs VALUES(51,1,11,2026,'draft','pending')");
+    await db.query("INSERT INTO public.payroll_salary_profiles VALUES(1,1,21,4000000,0,'2026-10-01'),(2,1,21,5000000,1000000,'2026-11-01'),(3,1,21,9000000,0,'2026-12-01'),(4,2,22,8000000,0,'2026-11-01')");
+    await db.query("INSERT INTO public.payroll_deduction_settings SELECT ordinality::int,1,21,code,0,'2026-11-01',NULL FROM unnest(ARRAY['bpjs_jht_employee','bpjs_kes_employee','pph21','other_deductions','kasbon_deduction']) WITH ORDINALITY AS u(code,ordinality)");
+    const result=await readSetup();
+    expect(result).toMatchObject({kind:"ok",preview:{companyId:1,runId:51,employeeCount:1,configuredCount:1,missingSalaryCount:0,missingDeductionConfigCount:0,readOnly:true,persisted:false,readyForPayment:false}});
+    if(result.kind!=="ok")throw Error("PREVIEW_MISSING");
+    expect(result.preview.rows[0]).toMatchObject({employeeId:21,gross:"6000000.00",deductions:{kasbon_deduction:"500000.00"},net:"5500000.00",issues:[]});
+    expect((await db.query("SELECT count(*)::int n FROM public.payroll_items")).rows[0].n).toBe(0);
+    expect((await db.query("SELECT count(*)::int n FROM public.payroll_kasbon_auto_reservations")).rows[0].n).toBe(0);
     expect((await advance()).remainingAmount).toBe("500000");
   });
 });

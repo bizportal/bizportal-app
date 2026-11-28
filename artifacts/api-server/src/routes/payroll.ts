@@ -3,6 +3,7 @@ import { pool } from "@workspace/db";
 import { getPayrollPool, payrollScopedQuery, setPayrollCompanyScope } from "./payroll-db";
 import { authorizePayrollCompany } from "./payroll-access";
 import { registerPayrollSetupReadinessRoutes } from "./payroll-setup-readiness";
+import { registerEffectiveSetupPreviewRoutes, canPreviewEffectiveSetup } from "./payroll-setup-effective-routes";
 import { registerPayrollProdConnectionPreflightRoutes } from "./payroll-prod-connection-preflight";
 import { readPayrollSuperAdminApprovalReceipt } from "./payroll-super-admin-approval-receipt";
 import { getDevSession, getProductionSession, getProductionUser, isDevelopmentEnvironment, type DevAuthUser } from "./dev-auth";
@@ -66,6 +67,7 @@ function serializeRun(row: Record<string, unknown>) {
 router.use("/payroll", authorize);
 // Stage-one PROD readiness: aggregate-only, default OFF; no payroll writers.
 registerPayrollSetupReadinessRoutes(router);
+registerEffectiveSetupPreviewRoutes(router);
 // Port exact legacy read-only scoped PROD connection diagnostic; write paths remain disabled.
 registerPayrollProdConnectionPreflightRoutes(router);
 
@@ -142,6 +144,7 @@ router.get("/payroll/capabilities", (req: PayrollRequest, res) => {
     canEditItems: isDevelopmentEnvironment()
       && process.env.PAYROLL_DEV_ITEM_EDIT_ENABLED === "true"
       && ["admin", "owner", "super_admin"].includes(req.payrollActor?.role.toLowerCase() ?? ""),
+    canPreviewSetup: canPreviewEffectiveSetup(req.payrollActor?.role),
     canCalculate: false,
     canApprove: false,
     canPay: false,
