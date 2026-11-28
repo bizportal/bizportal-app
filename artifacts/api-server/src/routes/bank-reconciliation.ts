@@ -3541,7 +3541,8 @@ export async function approveCanonicalSettlementLink(
   return { ok: true, status: "approved", settlement_id: settlementId, journal_entry_id: null, idempotent: false };
 }
 
-async function approveBankMutation(
+// Internal canonical approval service; the HTTP route still owns authorization.
+export async function approveBankMutation(
   client: ApprovalClient,
   mutationId: number,
   body: ApprovalBody,
