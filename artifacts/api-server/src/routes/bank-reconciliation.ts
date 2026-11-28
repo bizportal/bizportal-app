@@ -4282,6 +4282,7 @@ export async function postBankMutationCanonical(
             set status=case when upper(coalesce(status,''))='DRAFT' then 'active' else status end,
                 lifecycle_status='disbursed',
                 disbursed_at=coalesce(disbursed_at,now()),
+                disbursed_by=coalesce(nullif(btrim(disbursed_by::text),''),$5),
                 receivable_account_id=coalesce(receivable_account_id,$3),
                 accounting_entry_id=coalesce(accounting_entry_id,$2),
                 entry_id=coalesce(entry_id,$2),
@@ -4292,7 +4293,7 @@ export async function postBankMutationCanonical(
             and upper(coalesce(advance_type,''))='EMPLOYEE'
             and lower(coalesce(status,'')) not in ('repaid','void','voided','cancelled','canceled')
           returning id`,
-        [selected.candidate_id, entryId, kasbonCoaId, mutation.company_id],
+        [selected.candidate_id, entryId, kasbonCoaId, mutation.company_id, actor.email],
       );
       if (!advanceUpdate.rows[0]) {
         throw new ApprovalError(
