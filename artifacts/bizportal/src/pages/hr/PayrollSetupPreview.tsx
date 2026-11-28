@@ -1,5 +1,6 @@
 import React,{useEffect,useState} from "react";
 import {Button} from "@/components/ui/button";
+import {buildPayrollSetupBlankCsv} from "./payroll-setup-template";
 
 type PreviewRow={employeeId:number;employeeName:string;gross:string|null;net:string|null;
   deductions:{kasbon_deduction:string|null};issues:string[]};
@@ -56,6 +57,18 @@ export function PayrollSetupPreview(props:Props){
       .finally(()=>{if(active)setLoading(false);});
     return ()=>{active=false;controller.abort();};
   },[attempt,companyId,runId,year,month]);
+  function downloadBlankTemplate() {
+    if (!result || !validPreview(result,{companyId,runId,year,month})) return;
+    const content = buildPayrollSetupBlankCsv(companyId,year,month,
+      result.rows.map(({employeeId,employeeName})=>({employeeId,employeeName})));
+    const url = URL.createObjectURL(new Blob([content],{type:"text/csv;charset=utf-8"}));
+    try {
+      const link = document.createElement("a");
+      link.href=url;
+      link.download="payroll-setup-blank-company-"+companyId+"-"+year+"-"+String(month).padStart(2,"0")+".csv";
+      link.click();
+    } finally { URL.revokeObjectURL(url); }
+  }
   return <section aria-label="Pratinjau gaji dan kasbon" className="space-y-3 rounded-md border p-3">
     <div className="flex flex-wrap items-center justify-between gap-2">
       <div><h3 className="font-semibold">Pratinjau Gaji &amp; Kasbon</h3>
@@ -65,6 +78,10 @@ export function PayrollSetupPreview(props:Props){
     {error&&<p role="alert" className="text-sm text-red-500">{error}</p>}
     {result&&result.companyId===companyId&&result.runId===runId&&result.year===year&&result.month===month&&<>
       <p role="status" className="text-sm">{result.configuredCount}/{result.employeeCount} karyawan memiliki struktur gaji efektif. {result.missingSalaryCount} belum memiliki struktur gaji; {result.missingDeductionConfigCount} belum lengkap potongannya.</p>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button variant="outline" onClick={downloadBlankTemplate}>Unduh template gaji &amp; potongan (kosong)</Button>
+        <p className="text-xs text-muted-foreground">Hanya file CSV lokal; semua nominal sengaja dikosongkan. Tidak mengunggah atau menyimpan data ke Payroll.</p>
+      </div>
       <div className="overflow-x-auto"><table className="w-full text-left text-sm">
         <thead><tr className="border-b"><th className="p-2">Karyawan</th><th className="p-2 text-right">Gaji kotor</th><th className="p-2 text-right">Usulan kasbon</th><th className="p-2 text-right">Usulan bersih</th><th className="p-2">Kesiapan</th></tr></thead>
         <tbody>{result.rows.map(row=><tr key={row.employeeId} className="border-b">
