@@ -2,6 +2,10 @@ import { useState, useCallback, useRef } from "react";
 import { Link } from "wouter";
 import { DatePicker } from "@/components/ui/date-picker";
 import { AppShell } from "@/components/layout/AppShell";
+import { AiTaskKasbonReadPanel } from "@/components/expense/ai-task-kasbon-read-panel";
+import { DevCstKasbonHistoryPage, isDevCstKasbonHistoryScope } from "@/components/expense/dev-cst-kasbon-history";
+import { useSupabaseAuth } from "@/contexts/SupabaseAuthContext";
+import { parseKasbonListResponse, kasbonListReadState } from "@/lib/kasbon-list-read-state";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -150,15 +154,28 @@ async function apiFetch(url: string, opts?: RequestInit) {
 }
 
 export default function KasbonPage() {
+  const { user, isLoading } = useSupabaseAuth();
+  const { activeCompanyId, isConsolidated } = useCompany();
+  const host = typeof window === "undefined" ? "" : window.location.hostname;
+  if (host === "dev-bizportal.cstlogistic.co.id" && isLoading) return <AppShell><p className="p-6">Memuat sesi…</p></AppShell>;
+  if (isDevCstKasbonHistoryScope(host, user?.role, activeCompanyId, isConsolidated)) return <DevCstKasbonHistoryPage />;
+  return <LegacyKasbonPage />;
+}
+
+function LegacyKasbonPage() {
   const { toast } = useToast();
   const qc = useQueryClient();
   const { activeCompanyId, isConsolidated } = useCompany();
   const cq = !isConsolidated && activeCompanyId ? `?company=${activeCompanyId}` : "";
 
-  const { data: list = [], isLoading, refetch } = useQuery({
-    queryKey: ["advances", "kasbon", activeCompanyId],
-    queryFn: () => apiFetch(`/api/advances?type=employee_kasbon${!isConsolidated && activeCompanyId ? `&company=${activeCompanyId}` : ""}`).then((r) => r.data ?? r),
+  const listQuery = useQuery({
+    queryKey: ["advances", "kasbon", activeCompanyId, isConsolidated],
+    queryFn: () => apiFetch(`/api/advances?type=employee_kasbon${!isConsolidated && activeCompanyId ? `&company=${activeCompanyId}` : ""}`).then(parseKasbonListResponse),
   });
+  const { refetch } = listQuery;
+  // An unavailable read must never be rendered as a verified empty list.
+  // Do not offer stale rows for financial actions after a failed refresh.
+  const list = listQuery.isSuccess ? listQuery.data : [];
   const { data: paymentAccounts = [] } = useQuery({
     queryKey: ["expense-payment-accounts", activeCompanyId],
     queryFn: () => apiFetch(`/api/expenses/payment-accounts${!isConsolidated && activeCompanyId ? `?company=${activeCompanyId}` : ""}`),
@@ -475,6 +492,7 @@ export default function KasbonPage() {
     }
     return true;
   });
+  const listReadState = kasbonListReadState(listQuery.status, list.length, filteredList.length);
 
   return (
     <AppShell>
@@ -523,6 +541,8 @@ export default function KasbonPage() {
             </Button>
           </Link>
         </div>
+
+        <AiTaskKasbonReadPanel />
 
         {/* Create Form */}
         {showForm && (
@@ -797,15 +817,26 @@ export default function KasbonPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {isLoading && (
+                {listReadState === "loading" && (
                   <TableRow><TableCell colSpan={9} className="text-center py-10 text-muted-foreground">Memuat...</TableCell></TableRow>
                 )}
-                {!isLoading && filteredList.length === 0 && (
-                  <TableRow><TableCell colSpan={9} className="text-center py-10 text-muted-foreground">
-                    {(list as any[]).length === 0 ? "Belum ada kasbon." : "Tidak ada kasbon yang cocok dengan pencarian/filter."}
+                {listReadState === "unavailable" && (
+                  <TableRow><TableCell colSpan={9} className="py-6">
+                    <Alert variant="destructive" role="alert" data-testid="kasbon-list-unavailable">
+                      <AlertCircle className="h-4 w-4" />
+                      <AlertDescription>
+                        Daftar kasbon umum tidak dapat dimuat. Ini bukan berarti tidak ada kasbon.
+                        Periksa akses perusahaan atau sesi, lalu gunakan Refresh.
+                      </AlertDescription>
+                    </Alert>
                   </TableCell></TableRow>
                 )}
-                {filteredList.map((row: any) => (
+                {(listReadState === "empty" || listReadState === "filtered-empty") && (
+                  <TableRow><TableCell colSpan={9} className="text-center py-10 text-muted-foreground">
+                    {listReadState === "empty" ? "Belum ada kasbon." : "Tidak ada kasbon yang cocok dengan pencarian/filter."}
+                  </TableCell></TableRow>
+                )}
+                {listReadState === "ready" && filteredList.map((row: any) => (
                   <TableRow key={row.id} className="cursor-pointer hover:bg-muted/50" onClick={() => openDetail(row)}>
                     <TableCell className="font-mono text-xs text-primary">{row.advance_number ?? row.advanceNumber}</TableCell>
                     <TableCell className="text-sm">{row.date}</TableCell>
