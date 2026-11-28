@@ -4,7 +4,7 @@ import {createServer,type Server} from "node:http";
 import {once} from "node:events";
 
 const state=vi.hoisted(()=>({environment:"development",actor:null as null|{id:string;email:string;role:string;companyId:number|null},
-  sql:[] as Array<{sql:string;args:unknown[]}>,runStatus:"draft",released:0,fail:false,shared:0}));
+  sql:[] as Array<{sql:string;args:unknown[]}>,runStatus:"draft",released:0,fail:false,shared:0,pendingKasbon:false}));
 vi.mock("./dev-auth",()=>({isDevelopmentEnvironment:()=>state.environment==="development",
   getProductionSession:()=>null,getProductionUser:async()=>null,getDevSession:()=>state.actor}));
 vi.mock("@workspace/db",()=>({
@@ -19,7 +19,17 @@ vi.mock("@workspace/db",()=>({
       if(state.fail)throw Error("SYNTHETIC_READ_ERROR");
       if(sql.includes("FROM public.payroll_salary_profiles"))return rows([{employeeId:21,firstName:"QA",lastName:"Employee",baseSalary:"5000000",allowance:"1000000",salaryEffectiveFrom:"2026-11-01"}]);
       if(sql.includes("FROM public.payroll_deduction_settings"))return rows(["bpjs_jht_employee","bpjs_kes_employee","pph21","other_deductions","kasbon_deduction"].map(code=>({employeeId:21,code,amount:"0",effectiveFrom:"2026-11-01",notes:null})));
-      if(sql.includes("FROM public.cash_advances")||sql.includes("FROM public.payroll_kasbon_auto_plans")||sql.includes("FROM public.payroll_kasbon_auto_reservations"))return rows([]);
+      if(sql.includes("FROM public.cash_advances"))return rows(state.pendingKasbon?[{
+        id:23,companyId:1,employeeId:21,type:"kasbon",status:"active",lifecycleStatus:"approved",
+        currency:"IDR",amount:"500000.00",paidAmount:"0.00",settledAmount:"0.00",
+        remainingAmount:"500000.00",approvedAt:"2026-11-20",approvedBy:"fixture-owner",
+        disbursedAt:null,disbursedBy:null,accountingEntryId:null,postingStatus:"PENDING",voidedAt:null,
+      }]:[]);
+      if(sql.includes("FROM public.payroll_kasbon_auto_plans"))return rows(state.pendingKasbon?[{
+        companyId:1,employeeId:21,advanceId:23,choice:"FULL",installmentAmount:null,
+        firstPeriod:"2026-11-01",updatedAt:"2026-11-20",
+      }]:[]);
+      if(sql.includes("FROM public.payroll_kasbon_auto_reservations"))return rows([]);
       throw Error("UNEXPECTED_QUERY");
     },
   })}),
@@ -37,7 +47,7 @@ describe("Payroll effective setup GET behind canonical authorization",()=>{
     root="http://127.0.0.1:"+address.port+"/api";
   });
   beforeEach(()=>{
-    state.environment="development";state.actor=actor;state.sql=[];state.released=0;state.runStatus="draft";state.fail=false;state.shared=0;
+    state.environment="development";state.actor=actor;state.sql=[];state.released=0;state.runStatus="draft";state.fail=false;state.shared=0;state.pendingKasbon=false;
     vi.stubEnv("APP_ENV","development");
     vi.stubEnv("PAYROLL_DATABASE_URL_DEV","postgresql://bizportal_payroll_dev.xssrfshdrtdfupgqwfdw:ci_only@127.0.0.1:65432/payroll_ci");
   });
@@ -62,6 +72,20 @@ describe("Payroll effective setup GET behind canonical authorization",()=>{
     expect(state.sql[1].args).toEqual(["1"]);
     expect(state.sql.slice(2,-1).every(x=>x.sql.startsWith("SELECT")&&x.args[0]===1)).toBe(true);
     expect(state.sql.at(-1)?.sql).toBe("COMMIT");expect(state.released).toBe(1);expect(state.shared).toBe(0);
+  });
+  it("never deducts approved but undisbursed kasbon even with a FULL payroll plan",async()=>{
+    state.pendingKasbon=true;
+    const res=await get();expect(res.status).toBe(200);
+    const preview=await res.json();
+    expect(preview).toMatchObject({readOnly:true,persisted:false,canMaterialize:false,readyForPayment:false});
+    expect(preview).toMatchObject({rows:[{
+      deductions:{kasbon_deduction:"0.00"},
+      net:null,
+      issues:expect.arrayContaining(["KASBON_PLAN_SOURCE_NOT_ELIGIBLE"]),
+    }]});
+    expect(state.sql.filter(x=>/^\s*(insert|update|delete)\b/i.test(x.sql))).toHaveLength(0);
+    expect(state.sql.at(-1)?.sql).toBe("COMMIT");
+    expect(state.shared).toBe(0);
   });
   it("rejects missing and non-draft runs without reading employee salary",async()=>{
     expect((await get(99)).status).toBe(404);
