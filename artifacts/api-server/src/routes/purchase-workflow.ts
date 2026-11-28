@@ -13,6 +13,7 @@ interface VendorInvoiceListRow {
   status: string;
   grand_total: string;
   reconciled_amount_paid: string;
+  posted_disbursement_amount: string;
   three_way_match_status: string | null;
   company_id: number;
   invoice_date: string | Date | null;
@@ -634,6 +635,7 @@ router.get("/purchase-workflow/vendor-invoices", async (req, res): Promise<void>
       select vi.id, vi.invoice_number, vi.vendor_invoice_ref, vi.supplier_name,
              vi.status::text status, vi.grand_total,
              coalesce(rvip.paid_amount, 0) reconciled_amount_paid,
+             coalesce(posted_disbursement.amount, 0) posted_disbursement_amount,
 
              vi.three_way_match_status, vi.company_id, vi.invoice_date,
              vi.journal_entry_id, ae.status::text journal_status,
@@ -643,6 +645,16 @@ router.get("/purchase-workflow/vendor-invoices", async (req, res): Promise<void>
         from public.vendor_invoices vi
         left join public.accounting_entries ae on ae.id = vi.journal_entry_id
         ${RECONCILED_PAYMENT_JOIN}
+        left join lateral (
+          select coalesce(sum(bdi.amount), 0) amount
+          from public.bank_disbursement_items bdi
+          join public.bank_disbursements bd on bd.id = bdi.disbursement_id
+          where bdi.vendor_invoice_id = vi.id
+            and bdi.transaction_type = 'supplier_payment'
+            and bd.company_id = vi.company_id
+            and bd.status = 'posted'
+            and bd.void_entry_id is null
+        ) posted_disbursement on true
         left join lateral (
           select coalesce(sum(bdi.amount), 0) paid_amount
           from public.bank_disbursement_items bdi
@@ -667,6 +679,7 @@ router.get("/purchase-workflow/vendor-invoices", async (req, res): Promise<void>
         grandTotal: Number(row.grand_total),
         reconciledAmountPaid: Number(row.reconciled_amount_paid),
         amountPaid: Number(row.reconciled_amount_paid),
+        postedDisbursementAmount: Number(row.posted_disbursement_amount),
         threeWayMatchStatus: row.three_way_match_status,
         companyId: row.company_id,
         invoiceDate: row.invoice_date,
