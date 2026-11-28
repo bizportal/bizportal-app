@@ -64,6 +64,23 @@ describe("Payroll effective setup GET behind canonical authorization",()=>{
     state.environment="production";vi.stubEnv("APP_ENV","production");expect((await get()).status).toBe(401);
     expect(state.sql).toHaveLength(0);expect(state.shared).toBe(0);
   });
+  it("returns a non-secret reason for disabled preview while never enabling Payroll writes",async()=>{
+    vi.stubEnv("PAYROLL_DATABASE_URL_DEV","");
+    let cap=await fetch(root+"/payroll/capabilities?companyId=1");
+    expect(await cap.json()).toMatchObject({
+      canPreviewSetup:false,previewSetupStatus:"dedicated_reader_not_configured",
+      canCalculate:false,canApprove:false,canPay:false,
+    });
+    vi.stubEnv("PAYROLL_DATABASE_URL_DEV","postgresql://wrong_role:placeholder@127.0.0.1:65432/payroll_ci");
+    cap=await fetch(root+"/payroll/capabilities?companyId=1");
+    const rejected=await cap.json() as Record<string,unknown>;
+    expect(rejected).toMatchObject({
+      canPreviewSetup:false,previewSetupStatus:"dedicated_reader_config_invalid",
+    });
+    expect(JSON.stringify(rejected)).not.toContain("placeholder");
+    expect(JSON.stringify(rejected)).not.toContain("wrong_role");
+    expect(state.sql).toHaveLength(0);expect(state.shared).toBe(0);
+  });
   it("exposes an explicitly read-only DEV capability and GET projection in one scoped snapshot",async()=>{
     const cap=await fetch(root+"/payroll/capabilities?companyId=1");expect(await cap.json()).toMatchObject({canPreviewSetup:true,canCalculate:false,canApprove:false,canPay:false});
     const res=await get();expect(res.status).toBe(200);expect(res.headers.get("cache-control")).toBe("no-store");
