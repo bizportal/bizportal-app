@@ -103,19 +103,23 @@ export default function PayrollStandaloneComponents({companyId:validCompany}:{co
     if(!ready||validCompany===null||!selected||!calc)return;
     if(!window.confirm("Konfirmasi tujuh komponen gaji mulai "+effectiveFrom+
       "? Pastikan nominal sudah diverifikasi. Tidak ada pembayaran, jurnal, atau pelunasan kasbon."))return;
-    const scope=validCompany, employeeId=Number(selected);
+    const scope=validCompany, employeeId=Number(selected), savedDate=effectiveFrom;
+    const confirmedValues={...values}, confirmedNotes=notes;
     setBusy(true);setError("");setNotice("");setLastReadback(null);
     try{
       const saved=await api<{companyId:number;employeeId:number;componentsSaved:number;gross:string;deductions:string;net:string;paid:false;posted:false}>(
         "/api/payroll/components/"+employeeId+"?companyId="+scope,
-        {method:"PUT",body:JSON.stringify({...values,effectiveFrom,notes,confirm:true})});
+        {method:"PUT",body:JSON.stringify({...confirmedValues,effectiveFrom:savedDate,notes:confirmedNotes,confirm:true})});
       if(saved.companyId!==scope||saved.employeeId!==employeeId||saved.componentsSaved!==7||
         saved.gross!==asMoney(calc.gross)||saved.deductions!==asMoney(calc.deductions)||
         saved.net!==asMoney(calc.net))throw Error("Respons perhitungan tidak cocok.");
       const verify=await api<ConfigResponse>(
-        "/api/payroll/components/"+employeeId+"?companyId="+scope);
-      if(!verify.complete||verify.summary?.net!==saved.net||verify.summary?.deductions!==saved.deductions)
-        throw Error("Simpan berhasil tetapi baca ulang belum cocok; periksa sebelum melanjutkan.");
+        "/api/payroll/components/"+employeeId+"?companyId="+scope+"&effectiveFrom="+encodeURIComponent(savedDate));
+      const valuesMatch=fields.every(f=>verify.values[f.key]!==null&&cents(verify.values[f.key]!)===cents(confirmedValues[f.key]));
+      if(verify.companyId!==scope||verify.employeeId!==employeeId||verify.effectiveFrom!==savedDate||
+        !verify.complete||!valuesMatch||verify.notes!==confirmedNotes||
+        verify.summary?.gross!==saved.gross||verify.summary?.net!==saved.net||verify.summary?.deductions!==saved.deductions)
+        throw Error("Simpan berhasil tetapi baca ulang tanggal dan komponen belum cocok; periksa sebelum melanjutkan.");
       setLastReadback({gross:saved.gross,deductions:saved.deductions,net:saved.net});
       setNotice("Tujuh komponen tersimpan dan diverifikasi. Muat ulang Pratinjau Gaji & Kasbon. Tidak ada transaksi keuangan dibuat.");
     }catch(e){setError(e instanceof Error?e.message:"Gagal menyimpan komponen Payroll.");}
