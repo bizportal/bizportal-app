@@ -4282,6 +4282,7 @@ export async function postBankMutationCanonical(
             set status=case when upper(coalesce(status,''))='DRAFT' then 'active' else status end,
                 lifecycle_status='disbursed',
                 disbursed_at=coalesce(disbursed_at,now()),
+                disbursed_by=coalesce(nullif(btrim(disbursed_by::text),''),$5),
                 receivable_account_id=coalesce(receivable_account_id,$3),
                 accounting_entry_id=coalesce(accounting_entry_id,$2),
                 entry_id=coalesce(entry_id,$2),
@@ -4291,8 +4292,41 @@ export async function postBankMutationCanonical(
             and company_id=$4
             and upper(coalesce(advance_type,''))='EMPLOYEE'
             and lower(coalesce(status,'')) not in ('repaid','void','voided','cancelled','canceled')
+            -- A kasbon finalization is a single transition of its own approved source.
+            -- The guarded UPDATE rechecks the row after any concurrent lock wait.
+            and (
+              lower(coalesce(type,'')) <> 'kasbon'
+              or (
+                lower(coalesce(lifecycle_status,''))='approved'
+                and lower(coalesce(status,'')) not in ('rejected','settled','closed')
+                and approved_at is not null
+                and nullif(btrim(approved_by::text),'') is not null
+                and nullif(btrim($5::text),'') is not null
+                and disbursed_at is null
+                and nullif(btrim(disbursed_by::text),'') is null
+                and posting_status='PENDING'
+                and voided_at is null
+                and accounting_entry_id is null and entry_id is null and journal_id is null
+                and amount > 0
+                and exists (
+                  select 1 from public.bank_mutations bm
+                   where bm.id=$6 and bm.company_id=$4
+                     and upper(coalesce(bm.direction,''))='OUT'
+                     and bm.amount=cash_advances.amount
+                )
+                and (select count(*) from public.accounting_entry_lines l where l.entry_id=$2)=2
+                and exists (
+                  select 1 from public.accounting_entry_lines l where l.entry_id=$2
+                    and l.account_id=$3 and l.debit=cash_advances.amount and l.credit=0
+                )
+                and exists (
+                  select 1 from public.accounting_entry_lines l where l.entry_id=$2
+                    and l.account_id<>$3 and l.credit=cash_advances.amount and l.debit=0
+                )
+              )
+            )
           returning id`,
-        [selected.candidate_id, entryId, kasbonCoaId, mutation.company_id],
+        [selected.candidate_id, entryId, kasbonCoaId, mutation.company_id, actor.email, mutationId],
       );
       if (!advanceUpdate.rows[0]) {
         throw new ApprovalError(

@@ -155,6 +155,11 @@ describe("bank reconciliation candidate source integrity", () => {
     expect(source).toContain("code = '1-1032-CST'");
     expect(source).toContain('selectedCandidateType === "cash_advance"');
     expect(source).toContain("lifecycle_status='disbursed'");
+    expect(source).toContain("disbursed_by=coalesce(nullif(btrim(disbursed_by::text),''),$5)");
+    expect(source).toContain("[selected.candidate_id, entryId, kasbonCoaId, mutation.company_id, actor.email, mutationId]");
+    expect(source).toContain("lower(coalesce(lifecycle_status,''))='approved'");
+    expect(source).toContain("and accounting_entry_id is null and entry_id is null and journal_id is null");
+    expect(source).toContain("and bm.amount=cash_advances.amount");
     expect(source).toContain("posting_status='POSTED'");
   });
 
