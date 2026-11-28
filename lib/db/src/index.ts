@@ -2,6 +2,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
 import * as schema from "./schema";
 import { resolveDatabaseUrl } from "./connection";
+import { SUPABASE_ROOT_CA_2021 } from "./supabase-root-ca-2021";
 
 const { Pool } = pg;
 
@@ -81,12 +82,32 @@ export type PayrollDbClient = import("pg").PoolClient;
 export type PayrollDbQueryResult = import("pg").QueryResult;
 
 
+/**
+ * node-postgres connection strings with sslmode/sslrootcert replace an explicit
+ * SSL config. Remove only conflicting SSL query options from this *copy*
+ * so the dedicated DEV Payroll reader always verifies Supabase's public CA
+ * and the server's hostname. The original secret stays in process.env.
+ */
+export function verifiedPayrollReaderConnectionString(raw: string): string {
+  const url = new URL(raw);
+  if (!["postgres:", "postgresql:"].includes(url.protocol)) {
+    throw new Error("INVALID_PAYROLL_DB_SCHEME");
+  }
+  // Preserve host, user, password, database and non-SSL configuration exactly.
+  for (const key of ["sslmode", "ssl", "sslcert", "sslkey", "sslrootcert", "uselibpqcompat"]) {
+    url.searchParams.delete(key);
+  }
+  return url.toString();
+}
+
 /** Dedicated DEV Payroll connection with a restricted PostgreSQL role.
  * Never use this credential for the general BizPortal application pool.
+ * Never turn off certificate chain / hostname verification.
  */
 export function createDedicatedPayrollPool(connectionString: string): InstanceType<typeof Pool> {
   return new Pool({
-    connectionString,
+    connectionString: verifiedPayrollReaderConnectionString(connectionString),
+    ssl: { ca: SUPABASE_ROOT_CA_2021, rejectUnauthorized: true },
     application_name: "bizportal-payroll-dev",
     max: 2,
     idleTimeoutMillis: 5_000,
