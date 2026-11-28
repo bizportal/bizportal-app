@@ -62,7 +62,7 @@ describe("restored DEV Payroll components",()=>{
     expect((await request("capabilities?companyId=1")).data).toMatchObject({canReviewComponents:true,canEditComponents:false,canCalculate:false,canPay:false});
     const r=await request("components/21?companyId=1");
     expect(r.status).toBe(200);expect(r.data).toMatchObject({employeeId:21,masterSalaryCandidate:"5000000",complete:false,values:{baseSalary:null,allowance:null,kasbonDeduction:null}});
-    expect(state.sql.some(x=>x.sql==="BEGIN READ ONLY")).toBe(true);expect(state.shared).toBe(0);
+    expect(state.sql.some(x=>x.sql==="BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")).toBe(true);expect(state.shared).toBe(0);
   });
   it("requires a signed Owner or Super Admin and rejects restricted roles before SQL",async()=>{
     state.role="";expect((await request("components/employees?companyId=1")).status).toBe(401);

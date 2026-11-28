@@ -93,7 +93,8 @@ export function registerStandalonePayrollComponents(router: IRouter): void {
     let c;
     try {
       c=await getPayrollPool().connect();
-      await c.query("BEGIN READ ONLY");
+      // Profile and its five deductions must come from one consistent snapshot.
+      await c.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
       await setPayrollCompanyScope(c,companyId);
       const e=await c.query("SELECT id,salary::numeric::text AS \"masterSalary\" FROM public.employees WHERE id=$1 AND company_id=$2 AND status='active' AND deleted_at IS NULL",[id,companyId]);
       if(e.rowCount!==1){await c.query("ROLLBACK");res.status(404).json({message:"Karyawan aktif tidak ditemukan."});return;}
