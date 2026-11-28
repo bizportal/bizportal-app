@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { PayrollKasbonAutoPlanPanel } from "./payroll-kasbon-auto-plan";
 
 const fields = [
   {key:"baseSalary", label:"Gaji Pokok"},
@@ -161,6 +162,7 @@ export default function PayrollStandaloneComponents({companyId:validCompany}:{co
           </span>}
         </label>)}
       </div>
+      {selected && !loading && <PayrollKasbonAutoPlanPanel key={validCompany+":"+selected+":"+effectiveFrom.slice(0,7)} companyId={validCompany} employeeId={Number(selected)} effectiveFrom={effectiveFrom}/>}
       <label className="block text-sm">Catatan sumber persetujuan gaji dan potongan (wajib)
         <textarea aria-label="Sumber komponen gaji" className="mt-1 w-full rounded border bg-background p-2"
           maxLength={500} value={notes} onChange={e=>{setNotes(e.target.value);setLastReadback(null)}}
