@@ -7,6 +7,7 @@ import { registerEffectiveSetupPreviewRoutes, canPreviewEffectiveSetup, payrollP
 import { registerPayrollProdConnectionPreflightRoutes } from "./payroll-prod-connection-preflight";
 import {registerStandalonePayrollComponents,canReviewDevPayrollComponents,canWriteDevPayrollComponents} from "./payroll-standalone-components";
 import { registerPayrollKasbonAutoRoutes } from "./payroll-kasbon-automatic-routes";
+import {registerPayrollLegacySalaryComparisonRoutes} from "./payroll-legacy-salary-comparison";
 import { readPayrollSuperAdminApprovalReceipt } from "./payroll-super-admin-approval-receipt";
 import { getDevSession, getProductionSession, getProductionUser, isDevelopmentEnvironment, type DevAuthUser } from "./dev-auth";
 
@@ -72,6 +73,7 @@ registerPayrollSetupReadinessRoutes(router);
 registerEffectiveSetupPreviewRoutes(router);
 registerStandalonePayrollComponents(router);
 registerPayrollKasbonAutoRoutes(router);
+registerPayrollLegacySalaryComparisonRoutes(router);
 // Port exact legacy read-only scoped PROD connection diagnostic; write paths remain disabled.
 registerPayrollProdConnectionPreflightRoutes(router);
 

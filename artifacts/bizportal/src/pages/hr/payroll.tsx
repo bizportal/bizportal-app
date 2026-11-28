@@ -1,5 +1,7 @@
 import React from "react";
 import { PayrollSetupPreview } from "./PayrollSetupPreview";
+import {PayrollLegacySalaryComparison} from "./PayrollLegacySalaryComparison";
+import {PayrollDailySourceReference} from "./PayrollDailySourceReference";
 import PayrollStandaloneComponents from "./payroll-components";
 import { summarizePersistedPayrollItems } from "./payroll-summary";
 import { useEffect, useState } from "react";
@@ -323,6 +325,10 @@ export default function PayrollWorkspace() {
                   </div>
                 )}
                 {draft && canPreviewSetup && detail.run.companyId === companyId && <PayrollSetupPreview key={`${companyId}:${detail.run.id}`} companyId={companyId} runId={detail.run.id} year={detail.run.year} month={detail.run.month} />}
+                {draft && canReviewComponents && detail.run.companyId === companyId && <>
+                  <PayrollLegacySalaryComparison companyId={companyId} runId={detail.run.id}/>
+                  <PayrollDailySourceReference key={`${companyId}:${detail.run.id}`} year={detail.run.year} month={detail.run.month}/>
+                </>}
                 <div className="overflow-x-auto"><table className="w-full text-left text-sm">
                   <thead><tr className="border-b"><th className="p-2">Karyawan</th><th className="p-2 text-right">Gaji Pokok</th><th className="p-2 text-right">Tunjangan</th><th className="p-2 text-right">Kasbon</th><th className="p-2 text-right">Bersih</th>{draft && canEditItems && <th className="p-2 text-right">Tindakan</th>}</tr></thead>
                   <tbody>{detail.items.map(({ item, employee }) =>
