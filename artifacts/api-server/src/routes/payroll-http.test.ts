@@ -163,7 +163,8 @@ describe("payroll HTTP isolation", () => {
     state.actor = { id: "u1", email: "user@example.test", role: "owner", companyId: 1, firstName: null, lastName: null };
     for (const suffix of ["", "/8/generate-items", "/8/calculate", "/8/approve", "/8/pay"]) {
       const response = await fetch(root + "/api/payroll/runs" + suffix + "?companyId=1", { method: "POST" });
-      expect([404, 501]).toContain(response.status);
+      if (suffix.endsWith("/generate-items")) expect(response.status).toBe(410);
+      else expect([404, 501]).toContain(response.status);
     }
     expect(state.queries).toHaveLength(0);
   });
