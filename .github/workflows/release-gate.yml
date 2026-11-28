@@ -10,6 +10,7 @@ on:
     branches:
       - main
       - develop
+      - dev/ai-task-kasbon-main-0a7a0fc7
   workflow_dispatch:
 
 permissions:
@@ -107,7 +108,7 @@ jobs:
       - name: Required disposable PostgreSQL cash ledger QA
         env:
           CASH_QA_PG_URL: postgresql://cash_qa:cash_qa_ci_only@127.0.0.1:55432/cash_qa
-        run: pnpm --filter @workspace/api-server exec vitest run src/__tests__/cash-ledger-postgres-disposable.test.ts src/__tests__/accounting-outbox-atomic.postgres.test.ts --maxWorkers=1
+        run: pnpm --filter @workspace/api-server exec vitest run src/__tests__/cash-ledger-postgres-disposable.test.ts src/__tests__/accounting-outbox-atomic.postgres.test.ts src/__tests__/kasbon-canonical-posting-disposable.test.ts --maxWorkers=1
 
       - name: BizPortal tests
         run: pnpm --filter @workspace/bizportal test
