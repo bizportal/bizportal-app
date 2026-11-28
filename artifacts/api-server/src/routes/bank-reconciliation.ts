@@ -1268,7 +1268,7 @@ async function loadLocalMatchCandidates(
                   select 1
                     from public.bank_reconciliation_matches brm
                    where brm.candidate_type = 'payroll_item'
-                     and brm.candidate_id = pi.id
+                     and brm.candidate_id::text = pi.id::text
                      and brm.candidate_source = 'public.payroll_items'
                      and brm.status in ('approved','posted')
                 )
@@ -1329,7 +1329,7 @@ async function loadLocalMatchCandidates(
                 select 1
                   from public.bank_reconciliation_matches brm
                  where brm.candidate_type = 'cash_advance'
-                   and brm.candidate_id = ca.id
+                   and brm.candidate_id::text = ca.id::text
                    and brm.candidate_source = 'public.cash_advances'
                    and brm.status in ('approved','posted')
               )
@@ -1405,7 +1405,7 @@ async function loadLocalMatchCandidates(
               select 1
                 from public.bank_reconciliation_matches brm
                where brm.candidate_type = 'vendor_invoice'
-                 and brm.candidate_id = vi.id
+                 and brm.candidate_id::text = vi.id::text
                  and brm.candidate_source = 'public.vendor_invoices'
                  and brm.status in ('approved', 'posted')
             )
