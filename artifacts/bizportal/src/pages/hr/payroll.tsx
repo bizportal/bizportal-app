@@ -304,6 +304,13 @@ export default function PayrollWorkspace() {
                   <Button variant="outline" disabled={!canGenerate || busy} title={canGenerate ? "Muat karyawan aktif ke Draft DEV" : "Menunggu verifikasi backend DEV"} onClick={() => perform("generate")}><Users className="mr-2 h-4 w-4" />Muat Karyawan Aktif</Button>
                   <Button variant="outline" disabled title="Menunggu verifikasi alokasi kasbon" onClick={() => perform("calculate")}><Calculator className="mr-2 h-4 w-4" />Hitung Payroll</Button>
                 </div>}
+                {draft && !canPreviewSetup && detail.run.companyId === companyId && (
+                  <div role="status" className="rounded-md border border-amber-500/40 p-3 text-sm text-amber-700">
+                    Pratinjau Payroll baca-saja belum tersedia pada runtime ini.
+                    Periksa koneksi Payroll DEV khusus dan konfigurasi APP_ENV.
+                    Tidak ada pemotongan kasbon atau transaksi yang dijalankan.
+                  </div>
+                )}
                 {draft && canPreviewSetup && detail.run.companyId === companyId && <PayrollSetupPreview key={`${companyId}:${detail.run.id}`} companyId={companyId} runId={detail.run.id} year={detail.run.year} month={detail.run.month} />}
                 <div className="overflow-x-auto"><table className="w-full text-left text-sm">
                   <thead><tr className="border-b"><th className="p-2">Karyawan</th><th className="p-2 text-right">Gaji Pokok</th><th className="p-2 text-right">Tunjangan</th><th className="p-2 text-right">Kasbon</th><th className="p-2 text-right">Bersih</th>{draft && canEditItems && <th className="p-2 text-right">Tindakan</th>}</tr></thead>
