@@ -2,6 +2,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
 import * as schema from "./schema";
 import { resolveDatabaseUrl } from "./connection";
+import { payrollDedicatedConnectionConfig } from "./payroll-dev-direct-tls";
 
 const { Pool } = pg;
 
@@ -86,7 +87,7 @@ export type PayrollDbQueryResult = import("pg").QueryResult;
  */
 export function createDedicatedPayrollPool(connectionString: string): InstanceType<typeof Pool> {
   return new Pool({
-    connectionString,
+    ...payrollDedicatedConnectionConfig(connectionString, process.env.APP_ENV),
     application_name: "bizportal-payroll-dev",
     max: 2,
     idleTimeoutMillis: 5_000,
