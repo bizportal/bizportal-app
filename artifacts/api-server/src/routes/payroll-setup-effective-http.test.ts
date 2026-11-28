@@ -110,7 +110,8 @@ describe("Payroll effective setup GET behind canonical authorization",()=>{
     expect(state.sql.filter(x=>x.sql.includes("FROM public.employees"))).toHaveLength(0);
   });
   it("rolls back on read failure and never enables Calculate or payment",async()=>{
-    state.fail=true;expect((await get()).status).toBe(503);
+    state.fail=true;const failed=await get();expect(failed.status).toBe(503);
+    expect(await failed.json()).toMatchObject({previewFailureStage:"read_preview",message:"Pratinjau tidak dapat dihitung. Tidak ada data yang diubah."});
     expect(state.sql.at(-1)?.sql).toBe("ROLLBACK");expect(state.released).toBe(1);
     expect((await fetch(root+"/payroll/runs/8/calculate?companyId=1",{method:"POST"})).status).toBe(501);
     expect(state.shared).toBe(0);

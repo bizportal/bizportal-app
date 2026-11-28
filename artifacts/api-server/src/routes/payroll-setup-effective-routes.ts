@@ -51,11 +51,16 @@ export function registerEffectiveSetupPreviewRoutes(router:IRouter):void{
       res.status(400).json({message:"Periode atau lingkup perusahaan tidak valid."});return;
     }
     let client:PayrollDbClient|undefined,started=false;
+    let stage:"reader_connect"|"begin_read_only"|"company_scope"|"read_preview"|"commit"="reader_connect";
     try{
       client=await getPayrollPool().connect();
+      stage="begin_read_only";
       await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");started=true;
+      stage="company_scope";
       await setPayrollCompanyScope(client,companyId);
+      stage="read_preview";
       const result=await loadEffectivePayrollSetupPreview((sql,args)=>client!.query(sql,args),companyId,runId);
+      stage="commit";
       await client.query("COMMIT");started=false;
       if(result.kind==="missing"){
         res.status(404).json({message:"Periode bukan milik perusahaan aktif."});return;
@@ -66,8 +71,9 @@ export function registerEffectiveSetupPreviewRoutes(router:IRouter):void{
       res.json(result.preview);
     }catch(error){
       if(started&&client)try{await client.query("ROLLBACK");}catch{}
-      req.log?.error?.({error,companyId,runId},"Payroll DEV effective setup preview failed");
-      res.status(503).json({message:"Pratinjau tidak dapat dihitung. Tidak ada data yang diubah."});
+      req.log?.error?.({error,companyId,runId,stage},"Payroll DEV effective setup preview failed");
+      // Fixed failure stages contain no SQL, credentials, employee information or exception text.
+      res.status(503).json({message:"Pratinjau tidak dapat dihitung. Tidak ada data yang diubah.",previewFailureStage:stage});
     }finally{client?.release();}
   });
 }
