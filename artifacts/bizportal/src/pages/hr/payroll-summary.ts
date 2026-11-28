@@ -8,7 +8,8 @@ export type StoredPayrollSummary = {
 const numberFromStoredMoney = (v:unknown):number|null => {
   if (typeof v!=="string" || !/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(v)) return null;
   const n=Number(v);
-  return Number.isFinite(n)?n:null;
+  // Reject values whose cent precision cannot be represented safely in JS.
+  return Number.isFinite(n) && Number.isSafeInteger(Math.round(n * 100)) ? n : null;
 };
 
 export function summarizePersistedPayrollItems(items:readonly StoredPayrollItem[]):StoredPayrollSummary {
