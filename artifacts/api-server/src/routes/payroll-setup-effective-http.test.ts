@@ -4,12 +4,14 @@ import {createServer,type Server} from "node:http";
 import {once} from "node:events";
 
 const state=vi.hoisted(()=>({environment:"development",actor:null as null|{id:string;email:string;role:string;companyId:number|null},
-  sql:[] as Array<{sql:string;args:unknown[]}>,runStatus:"draft",released:0,fail:false,shared:0,pendingKasbon:false}));
+  sql:[] as Array<{sql:string;args:unknown[]}>,runStatus:"draft",released:0,fail:false,shared:0,pendingKasbon:false,connectError:null as Error|null}));
 vi.mock("./dev-auth",()=>({isDevelopmentEnvironment:()=>state.environment==="development",
   getProductionSession:()=>null,getProductionUser:async()=>null,getDevSession:()=>state.actor}));
 vi.mock("@workspace/db",()=>({
   pool:{query:async()=>{state.shared++;throw Error("SHARED_POOL_FORBIDDEN");},connect:async()=>{state.shared++;throw Error("SHARED_POOL_FORBIDDEN");}},
-  createDedicatedPayrollPool:()=>({end:async()=>{},connect:async()=>({
+  createDedicatedPayrollPool:()=>({end:async()=>{},connect:async()=>{
+    if(state.connectError)throw state.connectError;
+    return {
     release:()=>{state.released++;},
     query:async(sql:string,args:unknown[]=[])=>{
       state.sql.push({sql,args});
@@ -32,7 +34,7 @@ vi.mock("@workspace/db",()=>({
       if(sql.includes("FROM public.payroll_kasbon_auto_reservations"))return rows([]);
       throw Error("UNEXPECTED_QUERY");
     },
-  })}),
+  };}}),
 }));
 
 describe("Payroll effective setup GET behind canonical authorization",()=>{
@@ -47,7 +49,7 @@ describe("Payroll effective setup GET behind canonical authorization",()=>{
     root="http://127.0.0.1:"+address.port+"/api";
   });
   beforeEach(()=>{
-    state.environment="development";state.actor=actor;state.sql=[];state.released=0;state.runStatus="draft";state.fail=false;state.shared=0;state.pendingKasbon=false;
+    state.environment="development";state.actor=actor;state.sql=[];state.released=0;state.runStatus="draft";state.fail=false;state.shared=0;state.pendingKasbon=false;state.connectError=null;
     vi.stubEnv("APP_ENV","development");
     vi.stubEnv("PAYROLL_DATABASE_URL_DEV","postgresql://bizportal_payroll_dev.xssrfshdrtdfupgqwfdw:ci_only@127.0.0.1:65432/payroll_ci");
   });
@@ -108,6 +110,25 @@ describe("Payroll effective setup GET behind canonical authorization",()=>{
     expect((await get(99)).status).toBe(404);
     state.runStatus="approved";expect((await get()).status).toBe(409);
     expect(state.sql.filter(x=>x.sql.includes("FROM public.employees"))).toHaveLength(0);
+  });
+  it.each([
+    ["28P01","password authentication failed","PAYROLL_DEV_DATABASE_PASSWORD_REJECTED"],
+    ["ENETUNREACH","network unavailable","PAYROLL_DEV_DATABASE_NETWORK_OR_TIMEOUT"],
+    ["ENOTFOUND","host not found","PAYROLL_DEV_DATABASE_DNS_FAILED"],
+    ["UNABLE_TO_VERIFY_LEAF_SIGNATURE","certificate verification failed","PAYROLL_DEV_DATABASE_TLS_FAILED"],
+    ["XX000","Tenant or user not found","PAYROLL_DEV_POOLER_ROUTING_FAILED"],
+    ["","timeout exceeded when trying to connect","PAYROLL_DEV_DATABASE_NETWORK_OR_TIMEOUT"],
+    ["UNRECOGNIZED","unclassified driver exception","PAYROLL_DEV_DATABASE_OPERATION_FAILED"],
+  ])("returns only fixed safe connect reasons (%s)",async(code,message,reason)=>{
+    vi.stubEnv("PAYROLL_DATABASE_URL_DEV","postgresql://bizportal_payroll_dev.xssrfshdrtdfupgqwfdw:fixture_private_value@aws-1-ap-southeast-2.pooler.supabase.com:5432/postgres?sslmode=require");
+    state.connectError=Object.assign(new Error(message+" fixture_private_value"),{code});
+    const res=await get();expect(res.status).toBe(503);
+    const payload=await res.json();
+    expect(payload).toMatchObject({previewFailureStage:"reader_connect",previewFailureReason:reason,previewReaderTransport:"session_pooler"});
+    expect(JSON.stringify(payload)).not.toContain("fixture_private_value");
+    expect(JSON.stringify(payload)).not.toContain("aws-1-ap-southeast-2");
+    expect(JSON.stringify(payload)).not.toContain("bizportal_payroll_dev");
+    expect(state.sql).toHaveLength(0);expect(state.shared).toBe(0);expect(state.released).toBe(0);
   });
   it("rolls back on read failure and never enables Calculate or payment",async()=>{
     state.fail=true;const failed=await get();expect(failed.status).toBe(503);
